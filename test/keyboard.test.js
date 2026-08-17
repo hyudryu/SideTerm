@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveTerminalShortcut } from '../src/keyboard.js';
+import {
+  consumeTerminalShortcutEvent,
+  keyboardEventToAccelerator,
+  resolveTerminalShortcut
+} from '../src/keyboard.js';
 
 function key(key, overrides = {}) {
   return { key, ctrlKey: true, shiftKey: false, altKey: false, ...overrides };
@@ -30,4 +34,30 @@ test('session and sidebar shortcuts are recognized', () => {
 test('unrelated and Alt-modified keys are left to the terminal', () => {
   assert.equal(resolveTerminalShortcut(key('l'), false), null);
   assert.equal(resolveTerminalShortcut(key('c', { altKey: true }), true), null);
+});
+
+test('custom bindings override productivity actions', () => {
+  assert.equal(resolveTerminalShortcut(key('n', { shiftKey: true }), false, { newSession: 'Ctrl+Shift+N' }), 'new-session');
+  assert.equal(resolveTerminalShortcut(key('t', { shiftKey: true }), false, { newSession: 'Ctrl+Shift+N' }), null);
+});
+
+test('keyboard events normalize into editable accelerator labels', () => {
+  assert.equal(keyboardEventToAccelerator(key(',', { shiftKey: false })), 'Ctrl+,');
+  assert.equal(keyboardEventToAccelerator(key('Tab', { shiftKey: true })), 'Ctrl+Shift+Tab');
+});
+
+test('handled shortcuts cancel browser defaults to avoid duplicate paste events', () => {
+  let prevented = 0;
+  let stopped = 0;
+  const event = {
+    preventDefault: () => prevented += 1,
+    stopPropagation: () => stopped += 1
+  };
+
+  assert.equal(consumeTerminalShortcutEvent(event, 'paste'), true);
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
+  assert.equal(consumeTerminalShortcutEvent(event, 'terminal-input'), false);
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
 });
