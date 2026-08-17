@@ -159,7 +159,7 @@ button { font: inherit; }
 
 .group-header {
   display: grid;
-  grid-template-columns: 20px 14px 24px minmax(0, 1fr) auto auto 22px;
+  grid-template-columns: 20px 14px 24px minmax(0, 1fr) auto auto 22px 22px;
   align-items: center;
   min-height: 34px;
   gap: 4px;
@@ -171,7 +171,7 @@ button { font: inherit; }
 }
 .group-header:active { cursor: grabbing; }
 .group-header:hover { color: #efefef; background: rgba(255,255,255,.045); }
-.group-toggle, .group-delete {
+.group-toggle, .group-add, .group-delete {
   display: grid;
   place-items: center;
   width: 20px;
@@ -183,7 +183,7 @@ button { font: inherit; }
   border-radius: 4px;
   cursor: pointer;
 }
-.group-toggle:hover, .group-delete:hover { color: #fff; background: rgba(255,255,255,.1); }
+.group-toggle:hover, .group-add:hover, .group-delete:hover { color: #fff; background: rgba(255,255,255,.1); }
 .group-toggle svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; transition: transform 130ms ease; }
 .session-group:not(.group-collapsed) .group-toggle svg { transform: rotate(90deg); }
 .group-grip { color: #646464; font-size: 14px; line-height: 1; }
@@ -199,7 +199,7 @@ button { font: inherit; }
   font-size: 10px;
   font-weight: 700;
 }
-.group-title { overflow: hidden; font-size: 11px; font-weight: 600; letter-spacing: .03em; text-overflow: ellipsis; white-space: nowrap; }
+.group-title { overflow: hidden; font-size: 11px; font-weight: 600; letter-spacing: .03em; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
 .group-title.renaming { padding: 2px 4px; color: #fff; background: #111; border: 1px solid var(--accent); border-radius: 3px; cursor: text; outline: none; user-select: text; }
 .group-session-count { min-width: 17px; color: #777; font-size: 10px; text-align: center; }
 .group-notification-badge {
@@ -216,8 +216,8 @@ button { font: inherit; }
   text-align: center;
 }
 .group-notification-badge[hidden] { display: none; }
-.group-delete { font-size: 16px; opacity: 0; }
-.group-header:hover .group-delete { opacity: .8; }
+.group-add, .group-delete { font-size: 16px; opacity: .62; }
+.group-header:hover .group-add, .group-header:hover .group-delete { opacity: 1; }
 .group-sessions { display: flex; min-height: 5px; flex-direction: column; gap: 3px; }
 .group-collapsed .group-sessions { display: none; }
 
@@ -382,6 +382,7 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .sidebar-collapsed .group-grip,
 .sidebar-collapsed .group-title,
 .sidebar-collapsed .group-session-count,
+.sidebar-collapsed .group-add,
 .sidebar-collapsed .group-delete,
 .sidebar-collapsed .session-details,
 .sidebar-collapsed .session-close,
@@ -414,7 +415,7 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .toolbar-button.icon-only { width: 34px; padding: 0; }
 
 .terminal-stack { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #0c0c0c; }
-.terminal-pane { position: absolute; inset: 0; display: none; padding: 14px 16px 10px; }
+.terminal-pane { position: absolute; inset: 0; display: none; padding: 14px 16px 18px; }
 .terminal-pane.active { display: block; }
 .terminal-pane .xterm { height: 100%; }
 .terminal-pane .xterm-viewport { scrollbar-color: #555 transparent; scrollbar-width: thin; }

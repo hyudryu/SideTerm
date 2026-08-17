@@ -40,7 +40,8 @@ let clearApiKeyRequested = false;
 let settings = {
   llmEnabled: false,
   hasApiKey: false,
-  model: 'gpt-5.6-luna',
+  apiUrl: '',
+  model: '',
   sidebarWidth: 282,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
@@ -118,15 +119,16 @@ document.querySelector('#app').innerHTML = `
         <form id="settings-form">
           <div class="settings-scroll">
             <section class="settings-section">
-              <div class="settings-section-title"><strong>AI session context</strong><span>Optional · OpenAI Responses API</span></div>
+              <div class="settings-section-title"><strong>AI session context</strong><span>Optional · compatible provider</span></div>
               <label class="toggle-row">
                 <span><strong>Automatic session naming</strong><small>Summarize recent terminal context after activity settles.</small></span>
                 <input id="ai-enabled" type="checkbox"><i></i>
               </label>
-              <label class="field-row"><span>API key</span><input id="api-key" type="password" autocomplete="off" placeholder="sk-…"></label>
+              <label class="field-row"><span>API URL</span><input id="ai-api-url" type="url" autocomplete="off" placeholder="http://localhost:11434/v1" spellcheck="false"></label>
+              <label class="field-row"><span>API key <small>(optional)</small></span><input id="api-key" type="password" autocomplete="off" placeholder="Provider key"></label>
               <div class="credential-actions"><span id="api-key-state">No key configured</span><button id="clear-api-key" type="button">Clear key</button></div>
-              <label class="field-row"><span>Model</span><input id="ai-model" type="text" value="gpt-5.6-luna" spellcheck="false"></label>
-              <p class="settings-note">When enabled, recent terminal text is sent to the configured OpenAI model to produce a short name and context. The API key is encrypted by Electron and never exposed to the terminal renderer.</p>
+              <label class="field-row"><span>Model name</span><input id="ai-model" type="text" placeholder="Your provider's model ID" spellcheck="false"></label>
+              <p class="settings-note">Uses the OpenAI-compatible Chat Completions format. Enter a base URL such as <code>http://localhost:11434/v1</code>, or the full <code>/chat/completions</code> URL. Provider keys are encrypted by Electron and never exposed to the terminal renderer.</p>
               <div class="test-row"><button id="test-ai" class="secondary-button" type="button">Test connection</button><span id="ai-test-status"></span></div>
             </section>
             <section class="settings-section">
@@ -247,9 +249,10 @@ function populateSettingsPanel() {
   clearApiKeyRequested = false;
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#api-key').value = '';
-  document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'sk-…';
+  document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'Provider key';
   document.querySelector('#api-key-state').textContent = settings.hasApiKey ? 'Encrypted key configured' : 'No key configured';
   document.querySelector('#clear-api-key').hidden = !settings.hasApiKey;
+  document.querySelector('#ai-api-url').value = settings.apiUrl || '';
   document.querySelector('#ai-model').value = settings.model;
   document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
   document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
@@ -280,6 +283,7 @@ function settingsPayload() {
     llmEnabled: document.querySelector('#ai-enabled').checked,
     apiKey: document.querySelector('#api-key').value,
     clearApiKey: clearApiKeyRequested,
+    apiUrl: document.querySelector('#ai-api-url').value,
     model: document.querySelector('#ai-model').value,
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
@@ -404,7 +408,7 @@ function trackTerminalInput(session, data) {
 }
 
 function scheduleAiSummary(session) {
-  if (!settings.llmEnabled || !settings.hasApiKey || session.exited) return;
+  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited) return;
   window.clearTimeout(session.aiSummaryTimer);
   session.aiSummaryTimer = window.setTimeout(() => void requestAiSummary(session), AI_SUMMARY_SETTLE_MS);
 }
@@ -550,7 +554,7 @@ function groupNotificationCount(group) {
 
 function updateSessionItem(session) {
   if (!session.item) return;
-  const aiLabelActive = settings.llmEnabled && settings.hasApiKey && session.summary;
+  const aiLabelActive = settings.llmEnabled && settings.apiUrl && settings.model && session.summary;
   const primary = aiLabelActive
     ? `${session.agent || session.displayName || 'Terminal'}:`
     : session.title;
@@ -592,6 +596,7 @@ function updateVisualState() {
 
 function startGroupRename(group, titleElement) {
   const original = group.title;
+  let finished = false;
   titleElement.contentEditable = 'true';
   titleElement.classList.add('renaming');
   titleElement.focus();
@@ -599,6 +604,10 @@ function startGroupRename(group, titleElement) {
   selection?.selectAllChildren(titleElement);
 
   const finish = (commit) => {
+    if (finished) return;
+    finished = true;
+    titleElement.removeEventListener('keydown', onKeyDown);
+    titleElement.removeEventListener('blur', onBlur);
     titleElement.contentEditable = 'false';
     titleElement.classList.remove('renaming');
     const next = titleElement.textContent.trim().slice(0, 32);
@@ -607,7 +616,7 @@ function startGroupRename(group, titleElement) {
     schedulePersist();
   };
 
-  titleElement.addEventListener('keydown', (event) => {
+  const onKeyDown = (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
       titleElement.blur();
@@ -616,8 +625,10 @@ function startGroupRename(group, titleElement) {
       event.preventDefault();
       finish(false);
     }
-  }, { once: false });
-  titleElement.addEventListener('blur', () => finish(true), { once: true });
+  };
+  const onBlur = () => finish(true);
+  titleElement.addEventListener('keydown', onKeyDown);
+  titleElement.addEventListener('blur', onBlur);
 }
 
 function renderGroups() {
@@ -634,9 +645,10 @@ function renderGroups() {
         </button>
         <span class="group-grip" aria-hidden="true">⠿</span>
         <span class="group-avatar" aria-hidden="true"></span>
-        <strong class="group-title" title="Double-click to rename"></strong>
+        <strong class="group-title" title="Click to rename"></strong>
         <span class="group-session-count"></span>
         <span class="group-notification-badge" hidden></span>
+        <button class="group-add" type="button" aria-label="New session in this group" title="New session in this group">+</button>
         <button class="group-delete" type="button" aria-label="Delete group" title="Delete group">×</button>
       </header>
       <div class="group-sessions" role="list"></div>
@@ -644,8 +656,9 @@ function renderGroups() {
     section.querySelector('.group-avatar').textContent = group.title.slice(0, 1).toUpperCase();
     const title = section.querySelector('.group-title');
     title.textContent = group.title;
-    title.addEventListener('dblclick', (event) => {
+    title.addEventListener('click', (event) => {
       event.stopPropagation();
+      if (title.isContentEditable) return;
       startGroupRename(group, title);
     });
     section.querySelector('.group-toggle').addEventListener('click', (event) => {
@@ -653,6 +666,11 @@ function renderGroups() {
       group.collapsed = !group.collapsed;
       renderGroups();
       schedulePersist();
+    });
+    section.querySelector('.group-add').addEventListener('click', (event) => {
+      event.stopPropagation();
+      const recentSession = [...group.sessionIds].reverse().map((id) => sessions.get(id)).find(Boolean);
+      void addSession(recentSession?.cwd, { groupId: group.id });
     });
     section.querySelector('.group-delete').addEventListener('click', (event) => {
       event.stopPropagation();
@@ -950,7 +968,7 @@ function closeSession(id) {
   schedulePersist();
 }
 
-function createNewGroup() {
+async function createNewGroup() {
   const group = createGroup(makeGroupId(), `Group ${groups.length + 1}`);
   groups.push(group);
   activeGroupId = group.id;
@@ -960,10 +978,9 @@ function createNewGroup() {
   }
   renderGroups();
   schedulePersist();
-  requestAnimationFrame(() => {
-    const title = sessionList.querySelector(`[data-group-id="${group.id}"] .group-title`);
-    if (title) startGroupRename(group, title);
-  });
+  await addSession(undefined, { groupId: group.id });
+  const title = sessionList.querySelector(`[data-group-id="${group.id}"] .group-title`);
+  if (title) startGroupRename(group, title);
 }
 
 function deleteGroup(groupId) {
@@ -974,11 +991,39 @@ function deleteGroup(groupId) {
   const index = groups.findIndex((group) => group.id === groupId);
   if (index < 0) return;
   const removed = groups[index];
+  const sessionCount = removed.sessionIds.filter((id) => sessions.has(id)).length;
+  const message = sessionCount > 0
+    ? `Kill “${removed.title}” and all ${sessionCount} session${sessionCount === 1 ? '' : 's'} inside?\n\nAny running processes in those sessions will be terminated.`
+    : `Delete the empty group “${removed.title}”?`;
+  if (!window.confirm(message)) return;
+
   const fallback = groups[index > 0 ? index - 1 : index + 1];
-  fallback.sessionIds.push(...removed.sessionIds);
+  const removedActiveSession = removed.sessionIds.includes(activeId);
+  for (const sessionId of removed.sessionIds) {
+    const session = sessions.get(sessionId);
+    if (!session) continue;
+    if (!session.exited) api.close(sessionId);
+    window.clearTimeout(session.notificationTimer);
+    window.clearTimeout(session.aiSummaryTimer);
+    session.terminal.dispose();
+    session.pane.remove();
+    session.item.remove();
+    sessions.delete(sessionId);
+  }
   groups = groups.filter((group) => group.id !== groupId);
   if (activeGroupId === groupId) activeGroupId = fallback.id;
   renderGroups();
+  if (removedActiveSession) {
+    const nextId = orderedSessionIds()[0];
+    if (nextId) {
+      activateSession(nextId);
+    } else {
+      activeId = null;
+      activeTitle.textContent = 'No session';
+      activeSubtitle.textContent = 'Create a session to begin';
+      statusDot.classList.remove('stopped');
+    }
+  }
   schedulePersist();
 }
 
@@ -1113,8 +1158,8 @@ new ResizeObserver(fitActive).observe(terminalStack);
 window.addEventListener('resize', fitActive);
 collapseButton.addEventListener('click', toggleSidebar);
 newSessionButton.addEventListener('click', () => void addSession(sessions.get(activeId)?.cwd, { groupId: activeGroupId }));
-document.querySelector('#new-group').addEventListener('click', createNewGroup);
-document.querySelector('#heading-new-group').addEventListener('click', createNewGroup);
+document.querySelector('#new-group').addEventListener('click', () => void createNewGroup());
+document.querySelector('#heading-new-group').addEventListener('click', () => void createNewGroup());
 document.querySelector('#copy-button').addEventListener('click', () => void copySelection());
 document.querySelector('#paste-button').addEventListener('click', () => void pasteClipboard());
 document.querySelector('#open-folder-button').addEventListener('click', () => {

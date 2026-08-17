@@ -47,6 +47,12 @@
       "build/icon.png",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "vendor/tmux",
+        "to": "tmux"
+      }
+    ],
     "directories": {
       "buildResources": "build",
       "output": "release"
