@@ -415,9 +415,9 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .toolbar-button.icon-only { width: 34px; padding: 0; }
 
 .terminal-stack { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #0c0c0c; }
-.terminal-pane { position: absolute; inset: 0; display: none; padding: 14px 16px 18px; }
+.terminal-pane { position: absolute; inset: 0; display: none; }
 .terminal-pane.active { display: block; }
-.terminal-pane .xterm { height: 100%; }
+.terminal-pane .xterm { height: 100%; padding: 14px 16px 18px; }
 .terminal-pane .xterm-viewport { scrollbar-color: #555 transparent; scrollbar-width: thin; }
 
 .toast-region { position: absolute; right: 18px; bottom: 18px; z-index: 5; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
