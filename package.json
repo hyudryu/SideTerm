@@ -1,0 +1,75 @@
+{
+  "name": "sideterm",
+  "version": "0.1.0",
+  "description": "A Windows-inspired Ubuntu terminal with collapsible sessions in a left sidebar.",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "author": {
+    "name": "hyudryu",
+    "email": "hyudryu@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/hyudryu/SideTerm",
+  "repository": "github:hyudryu/SideTerm",
+  "desktopName": "sideterm.desktop",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "start": "electron .",
+    "test": "node --test",
+    "build:web": "vite build",
+    "generate:icon": "node scripts/generate-icon.mjs",
+    "build": "npm run test && npm run build:web",
+    "dist": "npm run generate:icon && npm run build && electron-builder --linux deb AppImage",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "vite": "^7.1.2"
+  },
+  "build": {
+    "appId": "io.github.hyudryu.sideterm",
+    "productName": "SideTerm",
+    "artifactName": "SideTerm-${version}-${arch}.${ext}",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Utility;TerminalEmulator",
+      "icon": "build/icon.png",
+      "executableName": "sideterm",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "SideTerm",
+          "Comment": "Terminal sessions in a collapsible left sidebar",
+          "Keywords": "terminal;shell;console;command;prompt;"
+        }
+      }
+    },
+    "deb": {
+      "priority": "optional"
+    }
+  }
+}
