@@ -13,6 +13,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Keeps every open session visible in a resizable left rail and lets you collapse the rail to icons.
 - Uses `Ctrl+C` to copy selected terminal text; with no selection it still sends `SIGINT` to the running command.
 - Uses `Ctrl+V` to paste. `Ctrl+Shift+C` and `Ctrl+Shift+V` work too.
+- Uses the mouse wheel for visible terminal scrollback instead of shell/query history. Hold `Ctrl` while scrolling to pass the wheel through to the foreground terminal application.
 - Adds session shortcuts: `Ctrl+Shift+T` creates one, `Ctrl+Shift+W` closes one, `Ctrl+Tab` cycles, and `Ctrl+Shift+B` collapses the sidebar.
 - Lets every productivity shortcut be overridden from Settings (`Ctrl+,`).
 - Captures HTTP(S) links printed in each session and shows them chronologically from the link badge on that session.
@@ -22,7 +23,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 
 ## Optional AI session naming
 
-Open **Settings → AI session context**, enter your provider's API base URL (or full `/chat/completions` URL), model name, and optional API key. Enable automatic naming and test the connection. SideTerm sends standard OpenAI-compatible Chat Completions requests, so it can work with local servers and hosted compatible providers instead of being tied to OpenAI.
+Open **Settings → AI session context**, enter your provider's API base URL (or full `/chat/completions` URL), model name, and optional API key. Enable automatic naming and test the connection. SideTerm sends standard OpenAI-compatible Chat Completions requests, so it can work with local servers and hosted compatible providers instead of being tied to OpenAI. Naming runs once, after the first context-bearing command or agent prompt is submitted; launching a bare `codex`, `claude`, `hermes`, or `gemini` command does not trigger it.
 
 Recent terminal context is sent only when this feature is enabled. The API key is encrypted through Electron's OS-backed secure storage and is never exposed through the renderer bridge or written to workspace/localStorage data.
 

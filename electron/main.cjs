@@ -211,6 +211,21 @@ function tmuxSessionExists(runtime, sessionName) {
   }
 }
 
+function configureTmux(runtime) {
+  const options = [
+    ['set-option', '-g', 'history-limit', '50000'],
+    ['set-option', '-g', 'mouse', 'off'],
+    ['set-option', '-g', 'status', 'off']
+  ];
+  for (const args of options) {
+    try {
+      runTmux(runtime, args);
+    } catch {
+      // Keep the terminal usable if an optional tmux setting is unavailable.
+    }
+  }
+}
+
 function safeCwd(requested) {
   if (requested) {
     try {
@@ -238,9 +253,13 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   const tmux = tmuxRuntime();
   const tmuxSession = tmux ? tmuxSessionName(id) : null;
   const resumed = tmux ? tmuxSessionExists(tmux, tmuxSession) : false;
+  if (tmux && !resumed) {
+    runTmux(tmux, ['new-session', '-d', '-s', tmuxSession, '-c', workingDirectory, shellPath]);
+  }
+  if (tmux) configureTmux(tmux);
   const executable = tmux?.binary || shellPath;
   const args = tmux
-    ? ['-L', 'sideterm', 'new-session', '-A', '-s', tmuxSession, '-c', workingDirectory, shellPath]
+    ? ['-L', 'sideterm', 'attach-session', '-t', tmuxSession]
     : [];
   const processHandle = pty.spawn(executable, args, {
     name: 'xterm-256color',
@@ -303,6 +322,28 @@ function detachAllSessions() {
   }
 }
 
+function scrollSession(id, amount) {
+  const session = sessions.get(id);
+  if (!session?.tmux || !session.tmuxSession || !Number.isFinite(amount) || amount === 0) return false;
+  const lineCount = Math.max(1, Math.min(50, Math.abs(Math.trunc(amount))));
+  try {
+    const inCopyMode = runTmux(
+      session.tmux,
+      ['display-message', '-p', '-t', session.tmuxSession, '#{pane_in_mode}'],
+      { capture: true }
+    ).trim() === '1';
+    if (!inCopyMode && amount > 0) return true;
+    if (!inCopyMode) runTmux(session.tmux, ['copy-mode', '-e', '-t', session.tmuxSession]);
+    runTmux(session.tmux, [
+      'send-keys', '-X', '-t', session.tmuxSession, '-N', String(lineCount),
+      amount < 0 ? 'scroll-up' : 'scroll-down'
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('terminal:create', (_event, options) => createSession(options));
   ipcMain.on('terminal:write', (_event, { id, data }) => {
@@ -317,6 +358,7 @@ function registerIpc() {
       // Ignore resize races while a process is exiting.
     }
   });
+  ipcMain.on('terminal:scroll', (_event, { id, amount }) => scrollSession(id, amount));
   ipcMain.on('terminal:close', (_event, id) => closeSession(id));
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);

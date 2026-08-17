@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
+import { isBareAgentLaunchCommand, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -22,7 +23,7 @@ const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const BACKGROUND_SETTLE_MS = 4_000;
-const AI_SUMMARY_SETTLE_MS = 6_000;
+const AI_SUMMARY_SETTLE_MS = 1_200;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
 const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
@@ -386,17 +387,21 @@ function appendSessionContext(session, text) {
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
   if (captureLinks(session, plain)) updateSessionItem(session);
-  scheduleAiSummary(session);
 }
 
 function trackTerminalInput(session, data) {
-  for (const character of data) {
+  const input = data.replace(/\x1b\[(?:200|201)~/g, '');
+  for (const character of input) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
       if (command) {
         const agent = detectedAgent(command);
         if (agent) session.agent = agent;
         appendSessionContext(session, `$ ${command}`);
+        if (!isBareAgentLaunchCommand(command)) {
+          session.hasUserActivity = true;
+          scheduleAiSummary(session);
+        }
       }
       session.commandBuffer = '';
     } else if (character === '\x7f') {
@@ -408,13 +413,13 @@ function trackTerminalInput(session, data) {
 }
 
 function scheduleAiSummary(session) {
-  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited) return;
+  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || session.summary || session.aiSummaryInFlight) return;
   window.clearTimeout(session.aiSummaryTimer);
   session.aiSummaryTimer = window.setTimeout(() => void requestAiSummary(session), AI_SUMMARY_SETTLE_MS);
 }
 
 async function requestAiSummary(session) {
-  if (session.aiSummaryInFlight || session.context.length - session.lastSummarizedLength < 60) return;
+  if (session.aiSummaryInFlight || session.summary || session.context.length - session.lastSummarizedLength < 4) return;
   session.aiSummaryInFlight = true;
   try {
     const result = await api.summarizeSession({ context: session.context, agent: session.agent || 'Terminal' });
@@ -489,6 +494,7 @@ function persistWorkspaceNow() {
         displayName: session.displayName,
         summary: session.summary,
         agent: session.agent,
+        hasUserActivity: session.hasUserActivity,
         links: session.links
       });
     }
@@ -756,6 +762,7 @@ function activateSession(id) {
   requestAnimationFrame(() => {
     fitSession(next);
     next.terminal.focus();
+    window.setTimeout(() => fitSession(next), 120);
   });
 }
 
@@ -808,7 +815,10 @@ function markSessionNotification(session) {
 }
 
 function noteBackgroundActivity(session, data) {
-  if (!session || session.id === activeId) return;
+  if (!session || session.id === activeId || restoringWorkspace) return;
+  if (!session.hasUserActivity) return;
+  const meaningfulOutput = plainTerminalText(data).trim();
+  if (!meaningfulOutput && !data.includes('\x07')) return;
   window.clearTimeout(session.notificationTimer);
   window.clearTimeout(session.aiSummaryTimer);
   if (data.includes('\x07')) {
@@ -876,11 +886,23 @@ async function addSession(cwd, options = {}) {
     aiSummaryTimer: null,
     aiSummaryInFlight: false,
     aiErrorShown: false,
-    lastSummarizedLength: 0
+    lastSummarizedLength: 0,
+    hasUserActivity: Boolean(options.hasUserActivity),
+    persistent: false
   };
   sessions.set(id, session);
   renderSessionItem(session);
   renderGroups();
+
+  terminal.attachCustomWheelEventHandler((event) => {
+    const amount = terminalWheelAmount(event);
+    if (amount === null) return true;
+    event.preventDefault();
+    event.stopPropagation();
+    if (session.persistent) api.scroll(session.id, amount);
+    else terminal.scrollLines(amount);
+    return false;
+  });
 
   if (options.history) {
     const restored = options.history.replace(/\r?\n/g, '\r\n');
@@ -928,6 +950,7 @@ async function addSession(cwd, options = {}) {
     const details = await api.createSession({ id, cwd, cols: terminal.cols, rows: terminal.rows });
     session.shell = details.shell;
     session.cwd = details.cwd;
+    session.persistent = Boolean(details.persistent);
     updateSessionItem(session);
   } catch (error) {
     session.exited = true;
@@ -1254,6 +1277,7 @@ async function restoreSavedWorkspace() {
       displayName: saved.displayName,
       summary: saved.summary,
       agent: saved.agent,
+      hasUserActivity: saved.hasUserActivity,
       links: saved.links,
       activate: false
     });

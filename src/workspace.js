@@ -56,6 +56,7 @@ export function parseSavedWorkspace(raw) {
         displayName: typeof session.displayName === 'string' ? session.displayName : '',
         summary: typeof session.summary === 'string' ? session.summary : '',
         agent: typeof session.agent === 'string' ? session.agent : '',
+        hasUserActivity: Boolean(session.hasUserActivity),
         links: Array.isArray(session.links)
           ? session.links
             .filter((link) => link && typeof link.url === 'string' && /^https?:\/\//.test(link.url))
