@@ -163,7 +163,7 @@ button { font: inherit; }
   align-items: center;
   min-height: 34px;
   gap: 4px;
-  padding: 2px 3px;
+  padding: 2px 0 2px 3px;
   color: #b9b9b9;
   border-radius: 5px;
   cursor: grab;
@@ -216,7 +216,7 @@ button { font: inherit; }
   text-align: center;
 }
 .group-notification-badge[hidden] { display: none; }
-.group-add, .group-delete { font-size: 16px; opacity: .62; }
+.group-add, .group-delete { font-size: 16px; opacity: .62; transform: translateX(2px); }
 .group-header:hover .group-add, .group-header:hover .group-delete { opacity: 1; }
 .group-sessions { display: flex; min-height: 5px; flex-direction: column; gap: 3px; }
 .group-collapsed .group-sessions { display: none; }
