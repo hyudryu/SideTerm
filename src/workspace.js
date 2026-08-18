@@ -61,6 +61,7 @@ export function parseSavedWorkspace(raw) {
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
         notified: Boolean(session.notified),
+        activityArmed: Boolean(session.activityArmed),
         displayName: typeof session.displayName === 'string' ? session.displayName : '',
         summary: typeof session.summary === 'string' ? session.summary : '',
         agent: typeof session.agent === 'string' ? session.agent : '',

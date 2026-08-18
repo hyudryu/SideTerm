@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { isBareAgentLaunchCommand, scanTerminalUrls, terminalWheelAmount } from './activity.js';
+import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -80,10 +80,15 @@ document.querySelector('#app').innerHTML = `
         <span><kbd>Ctrl</kbd>+<kbd>C</kbd> Copy</span>
         <span><kbd>Ctrl</kbd>+<kbd>V</kbd> Paste</span>
       </footer>
-      <button id="settings-button" class="settings-button" type="button" title="Settings (Ctrl+,)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.55.72 1 .9.35.15.73.2 1.1.1h.1v4h-.09a1.7 1.7 0 0 0-1.51.6c-.28.28-.48.62-.6 1Z"/></svg>
-        <span class="action-label">Settings</span>
-      </button>
+      <div class="sidebar-footer-actions">
+        <button id="settings-button" class="settings-button" type="button" title="Settings (Ctrl+,)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.55.72 1 .9.35.15.73.2 1.1.1h.1v4h-.09a1.7 1.7 0 0 0-1.51.6c-.28.28-.48.62-.6 1Z"/></svg>
+          <span class="action-label">Settings</span>
+        </button>
+        <button id="mobile-button" class="mobile-button" type="button" title="Connect from mobile" aria-label="Connect from mobile">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M10 5h4M11 18.5h2"/></svg>
+        </button>
+      </div>
       <div id="sidebar-resizer" class="sidebar-resizer" title="Drag to resize sidebar"></div>
     </aside>
     <section class="workspace">
@@ -147,6 +152,28 @@ document.querySelector('#app').innerHTML = `
         </form>
       </section>
     </div>
+    <div id="mobile-backdrop" class="settings-backdrop" hidden>
+      <section class="mobile-panel" role="dialog" aria-modal="true" aria-labelledby="mobile-title">
+        <header class="settings-header">
+          <div><strong id="mobile-title">SideTerm on mobile</strong><span>Secure browser access to your running sessions</span></div>
+          <button id="mobile-close" class="settings-close" type="button" aria-label="Close mobile setup">×</button>
+        </header>
+        <div class="mobile-panel-body">
+          <div class="mobile-status-row"><span id="mobile-status-dot"></span><strong id="mobile-status">Checking mobile access…</strong><button id="mobile-toggle" class="primary-button" type="button">Enable</button></div>
+          <p>SideTerm runs a private web app from this Ubuntu computer. The long address contains its access key—only share it with your own devices.</p>
+          <div id="mobile-urls" class="mobile-urls"></div>
+          <section class="mobile-steps">
+            <strong>Set up your phone</strong>
+            <ol>
+              <li>Connect the phone and this computer through Tailscale, or use the same local network.</li>
+              <li>Open the Tailscale or local-network URL below in your phone browser. <code>localhost</code> works only on this computer.</li>
+              <li>Use <strong>Add to Home Screen</strong> or <strong>Install app</strong> from the browser menu.</li>
+            </ol>
+          </section>
+          <p class="mobile-security-note">Disabling mobile access immediately closes connected phones. SideTerm must remain running for the mobile app to connect.</p>
+        </div>
+      </section>
+    </div>
     <aside id="link-popover" class="link-popover" hidden></aside>
   </main>
 `;
@@ -161,6 +188,7 @@ const collapseButton = document.querySelector('#collapse-button');
 const newSessionButton = document.querySelector('#new-session');
 const toastRegion = document.querySelector('#toast-region');
 const settingsBackdrop = document.querySelector('#settings-backdrop');
+const mobileBackdrop = document.querySelector('#mobile-backdrop');
 const settingsForm = document.querySelector('#settings-form');
 const linkPopover = document.querySelector('#link-popover');
 const sidebarResizer = document.querySelector('#sidebar-resizer');
@@ -385,7 +413,7 @@ function appendSessionContext(session, text) {
 }
 
 function trackTerminalInput(session, data) {
-  const input = data.replace(/\x1b\[(?:200|201)~/g, '');
+  const input = stripTerminalControlInput(data);
   if (input) session.busySuppressedUntil = 0;
   for (const character of input) {
     if (character === '\r' || character === '\n') {
@@ -396,7 +424,10 @@ function trackTerminalInput(session, data) {
         appendSessionContext(session, `$ ${command}`);
         if (!isBareAgentLaunchCommand(command)) {
           session.hasUserActivity = true;
+          session.activityArmed = true;
+          session.notifyWhenIdle = false;
           scheduleAiSummary(session);
+          schedulePersist();
         }
       }
       session.commandBuffer = '';
@@ -489,6 +520,7 @@ function persistWorkspaceNow() {
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
         notified: session.notified,
+        activityArmed: session.activityArmed,
         displayName: session.displayName,
         summary: session.summary,
         agent: session.agent,
@@ -499,19 +531,31 @@ function persistWorkspaceNow() {
   }
 
   try {
+    const savedGroups = groups.map((group) => ({
+      id: group.id,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+      sessionIds: group.sessionIds.filter((id) => sessions.has(id))
+    }));
     localStorage.setItem(WORKSPACE_KEY, JSON.stringify({
       version: WORKSPACE_VERSION,
-      groups: groups.map((group) => ({
-        id: group.id,
-        title: group.title,
-        color: group.color,
-        collapsed: group.collapsed,
-        sessionIds: group.sessionIds.filter((id) => sessions.has(id))
-      })),
+      groups: savedGroups,
       sessions: savedSessions,
       activeId,
       activeGroupId
     }));
+    api.updateMobileWorkspace({
+      groups: savedGroups,
+      sessions: savedSessions.map((session) => ({
+        id: session.id,
+        groupId: session.groupId,
+        title: session.title,
+        subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
+        notified: session.notified,
+        busy: sessions.get(session.id)?.busy
+      }))
+    });
   } catch {
     showToast('Workspace storage is full; older scrollback was not saved');
   }
@@ -551,6 +595,61 @@ function updateSidebarState() {
 function toggleSidebar() {
   sidebarCollapsed = !sidebarCollapsed;
   updateSidebarState();
+}
+
+function closeMobilePanel() {
+  mobileBackdrop.classList.remove('visible');
+  window.setTimeout(() => { mobileBackdrop.hidden = true; }, 140);
+}
+
+function renderMobileInfo(info) {
+  const status = document.querySelector('#mobile-status');
+  const dot = document.querySelector('#mobile-status-dot');
+  const toggle = document.querySelector('#mobile-toggle');
+  const urls = document.querySelector('#mobile-urls');
+  status.textContent = info.enabled ? `Available on port ${info.port}` : 'Mobile access is disabled';
+  dot.classList.toggle('online', info.enabled);
+  toggle.textContent = info.enabled ? 'Disable' : 'Enable';
+  toggle.classList.toggle('danger-button', info.enabled);
+  urls.replaceChildren();
+  if (!info.enabled) {
+    const hint = document.createElement('span');
+    hint.className = 'mobile-url-empty';
+    hint.textContent = 'Enable access to generate private connection URLs.';
+    urls.append(hint);
+    return;
+  }
+  for (const address of info.urls) {
+    const row = document.createElement('div');
+    row.className = 'mobile-url-row';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'secondary-button';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', async () => {
+      await api.writeClipboard(address.url);
+      copy.textContent = 'Copied';
+      window.setTimeout(() => { copy.textContent = 'Copy'; }, 1_200);
+    });
+    const text = document.createElement('div');
+    const label = document.createElement('strong');
+    label.textContent = address.label;
+    const url = document.createElement('code');
+    url.textContent = address.url;
+    text.append(label, url);
+    row.append(text, copy);
+    urls.append(row);
+  }
+}
+
+async function openMobilePanel() {
+  mobileBackdrop.hidden = false;
+  requestAnimationFrame(() => mobileBackdrop.classList.add('visible'));
+  try {
+    renderMobileInfo(await api.getMobileInfo());
+  } catch (error) {
+    document.querySelector('#mobile-status').textContent = error.message;
+  }
 }
 
 function groupNotificationCount(group) {
@@ -801,7 +900,7 @@ function activateSession(id) {
   if (!next) return;
   if (activeTitle.isContentEditable) activeTitle.blur();
   const previous = sessions.get(activeId);
-  if (previous && previous.id !== id && previous.busy && previous.hasUserActivity) {
+  if (previous && previous.id !== id && previous.busy && previous.activityArmed) {
     previous.notifyWhenIdle = true;
   }
   if (previous?.id !== id && !next.busy) {
@@ -816,8 +915,10 @@ function activateSession(id) {
       renderGroups();
     }
   }
+  const acknowledgedNotification = next.notified;
   next.notified = false;
   next.notifyWhenIdle = false;
+  if (acknowledgedNotification && !next.busy) next.activityArmed = false;
   activeTitle.textContent = next.title;
   activeSubtitle.textContent = next.exited
     ? `${next.shell} · stopped · ${next.cwd}`
@@ -874,6 +975,8 @@ function cycleSession(direction) {
 function markSessionNotification(session) {
   if (!session || session.id === activeId || session.notified) return;
   session.notified = true;
+  session.activityArmed = false;
+  session.notifyWhenIdle = false;
   updateSessionItem(session);
   updateVisualState();
   schedulePersist();
@@ -881,6 +984,7 @@ function markSessionNotification(session) {
 
 function noteSessionBusy(session, data) {
   if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  if (!session.activityArmed) return;
   if (!session.busy && Date.now() < session.busySuppressedUntil) return;
   window.clearTimeout(session.busyTimer);
   if (!session.busy) {
@@ -892,14 +996,17 @@ function noteSessionBusy(session, data) {
     updateSessionItem(session);
     if (session.notifyWhenIdle) {
       session.notifyWhenIdle = false;
-      if (session.id !== activeId && session.hasUserActivity) markSessionNotification(session);
+      if (session.id !== activeId) markSessionNotification(session);
+    } else if (session.id === activeId) {
+      session.activityArmed = false;
+      schedulePersist();
     }
   }, SESSION_BUSY_SETTLE_MS);
 }
 
 function noteBackgroundActivity(session, data) {
   if (!session || session.id === activeId || restoringWorkspace) return;
-  if (!session.hasUserActivity) return;
+  if (!session.activityArmed) return;
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
   window.clearTimeout(session.aiSummaryTimer);
@@ -957,6 +1064,7 @@ async function addSession(cwd, options = {}) {
     item: null,
     exited: false,
     notified: Boolean(options.notified),
+    activityArmed: Boolean(options.activityArmed),
     notifyWhenIdle: false,
     busy: false,
     busyTimer: null,
@@ -1010,7 +1118,9 @@ async function addSession(cwd, options = {}) {
     updateSessionItem(session);
     schedulePersist();
   });
-  terminal.onBell(() => markSessionNotification(session));
+  terminal.onBell(() => {
+    if (session.activityArmed) markSessionNotification(session);
+  });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
     const action = resolveTerminalShortcut(event, terminal.hasSelection(), settings.hotkeys);
@@ -1248,11 +1358,17 @@ api.onData(({ id, data }) => {
   noteBackgroundActivity(session, data);
 });
 
+api.onRemoteInput(({ id, data }) => {
+  const session = sessions.get(id);
+  if (session && !session.exited) trackTerminalInput(session, data);
+});
+
 api.onExit(({ id, exitCode }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.exited = true;
   session.busy = false;
+  session.activityArmed = false;
   session.notifyWhenIdle = false;
   window.clearTimeout(session.busyTimer);
   session.terminal.options.disableStdin = true;
@@ -1282,6 +1398,23 @@ document.querySelector('#open-folder-button').addEventListener('click', () => {
 });
 activeTitle.addEventListener('click', () => startSessionRename(sessions.get(activeId), activeTitle));
 document.querySelector('#settings-button').addEventListener('click', openSettingsPanel);
+document.querySelector('#mobile-button').addEventListener('click', () => void openMobilePanel());
+document.querySelector('#mobile-close').addEventListener('click', closeMobilePanel);
+mobileBackdrop.addEventListener('mousedown', (event) => {
+  if (event.target === mobileBackdrop) closeMobilePanel();
+});
+document.querySelector('#mobile-toggle').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const current = await api.getMobileInfo();
+    renderMobileInfo(current.enabled ? await api.stopMobile() : await api.startMobile());
+  } catch (error) {
+    document.querySelector('#mobile-status').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 document.querySelector('#settings-close').addEventListener('click', closeSettingsPanel);
 document.querySelector('#settings-cancel').addEventListener('click', closeSettingsPanel);
 settingsBackdrop.addEventListener('mousedown', (event) => {
@@ -1329,12 +1462,17 @@ linkPopover.addEventListener('mouseenter', () => window.clearTimeout(linkPopover
 linkPopover.addEventListener('mouseleave', hideLinkPopoverSoon);
 
 window.addEventListener('keydown', (event) => {
+  if (!mobileBackdrop.hidden && event.key === 'Escape') {
+    event.preventDefault();
+    closeMobilePanel();
+    return;
+  }
   if (!settingsBackdrop.hidden && event.key === 'Escape') {
     event.preventDefault();
     closeSettingsPanel();
     return;
   }
-  if (event.target instanceof Element && event.target.closest('.settings-panel')) return;
+  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel')) return;
   if (event.target instanceof Element && event.target.closest('.xterm')) return;
   const action = resolveTerminalShortcut(event, sessions.get(activeId)?.terminal.hasSelection() ?? false, settings.hotkeys);
   if (!action || action === 'terminal-input') return;
@@ -1367,6 +1505,7 @@ async function restoreSavedWorkspace() {
       shell: saved.shell,
       history: saved.history,
       notified: saved.notified,
+      activityArmed: saved.activityArmed,
       displayName: saved.displayName,
       summary: saved.summary,
       agent: saved.agent,

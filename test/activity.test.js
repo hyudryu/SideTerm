@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isBareAgentLaunchCommand, scanTerminalUrls, terminalWheelAmount } from '../src/activity.js';
+import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -15,6 +15,12 @@ test('plain wheel scrolls terminal history while Ctrl+wheel passes through', () 
   assert.equal(terminalWheelAmount({ ctrlKey: false, deltaY: 72 }), 2);
   assert.equal(terminalWheelAmount({ ctrlKey: true, deltaY: -108 }), null);
   assert.equal(terminalWheelAmount({ ctrlKey: false, deltaY: 0 }), null);
+});
+
+test('terminal-generated control replies do not count as user input', () => {
+  assert.equal(stripTerminalControlInput('\x1b[I\x1b[?1;2c\x1b[12;40R\x1bOA'), '');
+  assert.equal(stripTerminalControlInput('\x1b[200~fix auth\x1b[201~\r'), 'fix auth\r');
+  assert.equal(stripTerminalControlInput('fix\x1b[D token\r'), 'fix token\r');
 });
 
 test('GitHub pull request URLs are captured across terminal output chunks', () => {

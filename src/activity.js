@@ -9,6 +9,15 @@ export function terminalWheelAmount({ ctrlKey, deltaY }) {
   return deltaY < 0 ? -lineCount : lineCount;
 }
 
+export function stripTerminalControlInput(value) {
+  return String(value)
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+    .replace(/\x1B[P^_].*?(?:\x1B\\|$)/gs, '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1BO./g, '')
+    .replace(/\x1B./g, '');
+}
+
 export function scanTerminalUrls(previousBuffer, chunk) {
   const buffer = `${previousBuffer || ''}${chunk || ''}`.slice(-4096);
   const urls = new Set();

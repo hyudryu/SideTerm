@@ -9,8 +9,8 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Renames a group by clicking its title, and confirms before deleting a group and terminating every session inside it.
 - Keeps running shells and coding agents alive when the SideTerm window closes, then reconnects to them when it reopens. SideTerm bundles an isolated tmux backend, so this does not require a system tmux installation.
 - Restores group layout, session order, active state, working directories, unread state, link history, and bounded scrollback after restarting SideTerm or Ubuntu.
-- Marks completed/stopped background work with a red session dot and aggregates unread counts on each group. Leaving a busy session arms its notification for the moment continuous output stops.
-- Shows an animated activity ring while a session is continuously producing output, while ignoring terminal redraws caused by activating or resizing a dormant session.
+- Marks completed/stopped background work with a red session dot and aggregates unread counts on each group. Each submitted prompt creates one notification cycle, preventing idle terminal repaints from repeatedly re-arming a dot.
+- Shows an animated activity ring while a submitted task is continuously producing output, while ignoring terminal redraws and terminal-generated focus/query responses.
 - Keeps every open session visible in a resizable left rail and lets you collapse the rail to icons.
 - Uses `Ctrl+C` to copy selected terminal text; with no selection it still sends `SIGINT` to the running command.
 - Uses `Ctrl+V` to paste. `Ctrl+Shift+C` and `Ctrl+Shift+V` work too.
@@ -19,6 +19,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Lets every productivity shortcut be overridden from Settings (`Ctrl+,`).
 - Captures HTTP(S) links printed in each session and shows them chronologically from the link badge. GitHub links are filtered to canonical pull-request URLs and remain detectable when terminal output splits the URL across chunks.
 - Renames the active session by clicking its title in the top command bar; manual titles persist and override later shell title changes.
+- Provides an authenticated mobile web app from the phone icon beside Settings. It mirrors live groups and terminal sessions, supports touch-friendly terminal input and quick keys, and can be saved to a phone home screen over Tailscale or a trusted local network.
 - Optionally uses a custom OpenAI-compatible provider to turn recent coding-terminal activity into useful two-line labels such as `Codex: Fix token refresh` or `Hermes: Review checkout PR`.
 - Right-click copies a selection or pastes when nothing is selected.
 - Produces Ubuntu `.deb` and AppImage packages, including app-menu/taskbar launcher metadata.
@@ -65,6 +66,8 @@ After installation, open the Ubuntu app grid, search for **SideTerm**, launch it
 The renderer has no Node.js access. A narrow preload bridge is the only path to PTY, settings, AI, approved HTTP(S) links, and clipboard operations. External navigation is blocked, API credentials remain in the main process, and each session is explicitly cleaned up when closed.
 
 Closing SideTerm detaches from its bundled tmux sessions; explicitly closing a session or confirming group deletion terminates the corresponding shells and child processes. Workspace restoration recreates shells in their saved working directories and replays bounded scrollback after an operating-system restart. Running processes cannot survive an operating-system restart.
+
+Mobile access is disabled until enabled from the phone icon. SideTerm binds its companion server to port `43110` and protects it with a persistent random URL key. Use the Tailscale URL when available, or the local-network URL while both devices are on a trusted network. Disable mobile access from the same panel to close connected phones immediately.
 
 ## License
 

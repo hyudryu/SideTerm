@@ -2,12 +2,18 @@ const { app, BrowserWindow, clipboard, ipcMain, safeStorage, shell } = require('
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const http = require('node:http');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const pty = require('node-pty');
+const { WebSocketServer } = require('ws');
 
 const isDev = !app.isPackaged;
 const sessions = new Map();
 let mainWindow;
+let mobileServer = null;
+let mobileSocketServer = null;
+let mobileWorkspace = { groups: [], sessions: [] };
 
 const DEFAULT_HOTKEYS = {
   copy: 'Ctrl+C',
@@ -24,6 +30,8 @@ const DEFAULT_SETTINGS = {
   llmEnabled: false,
   apiUrl: '',
   model: '',
+  mobileEnabled: false,
+  mobilePort: 43110,
   sidebarWidth: 282,
   hotkeys: DEFAULT_HOTKEYS
 };
@@ -42,6 +50,9 @@ function readSettingsRecord() {
       llmEnabled: hasCompatibleProvider && Boolean(parsed.llmEnabled),
       apiUrl: hasCompatibleProvider ? parsed.apiUrl : '',
       model: hasCompatibleProvider && typeof parsed.model === 'string' ? parsed.model : '',
+      mobileEnabled: Boolean(parsed.mobileEnabled),
+      mobilePort: Number.isInteger(parsed.mobilePort) && parsed.mobilePort >= 1024 && parsed.mobilePort <= 65535 ? parsed.mobilePort : DEFAULT_SETTINGS.mobilePort,
+      mobileToken: typeof parsed.mobileToken === 'string' && /^[a-f0-9]{32}$/.test(parsed.mobileToken) ? parsed.mobileToken : '',
       hotkeys: { ...DEFAULT_HOTKEYS, ...(parsed.hotkeys || {}) }
     };
   } catch {
@@ -50,8 +61,14 @@ function readSettingsRecord() {
 }
 
 function publicSettings(record = readSettingsRecord()) {
-  const { encryptedApiKey: _encryptedApiKey, ...settings } = record;
+  const { encryptedApiKey: _encryptedApiKey, mobileToken: _mobileToken, ...settings } = record;
   return { ...settings, hasApiKey: Boolean(record.encryptedApiKey) };
+}
+
+function writeSettingsRecord(record) {
+  fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
+  fs.writeFileSync(settingsFile(), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(settingsFile(), 0o600);
 }
 
 function saveSettings(update = {}) {
@@ -80,9 +97,7 @@ function saveSettings(update = {}) {
     delete next.encryptedApiKey;
   }
 
-  fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  fs.writeFileSync(settingsFile(), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(settingsFile(), 0o600);
+  writeSettingsRecord(next);
   return publicSettings(next);
 }
 
@@ -243,6 +258,209 @@ function send(channel, payload) {
   }
 }
 
+function sanitizeMobileWorkspace(value) {
+  const groups = Array.isArray(value?.groups) ? value.groups.slice(0, 80).map((group) => ({
+    id: String(group?.id || '').slice(0, 100),
+    title: String(group?.title || 'Group').slice(0, 80),
+    color: /^#[0-9a-f]{6}$/i.test(group?.color) ? group.color.toLowerCase() : '#60cdff',
+    sessionIds: Array.isArray(group?.sessionIds) ? group.sessionIds.map(String).slice(0, 200) : []
+  })).filter((group) => group.id) : [];
+  const workspaceSessions = Array.isArray(value?.sessions) ? value.sessions.slice(0, 300).map((session) => ({
+    id: String(session?.id || '').slice(0, 100),
+    groupId: String(session?.groupId || '').slice(0, 100),
+    title: String(session?.title || 'Terminal').slice(0, 100),
+    subtitle: String(session?.subtitle || '').slice(0, 160),
+    notified: Boolean(session?.notified),
+    busy: Boolean(session?.busy)
+  })).filter((session) => session.id) : [];
+  return { groups, sessions: workspaceSessions };
+}
+
+function mobileSessionSnapshot() {
+  const metadata = new Map(mobileWorkspace.sessions.map((session) => [session.id, session]));
+  return [...sessions.keys()].map((id) => ({
+    id,
+    title: metadata.get(id)?.title || 'Terminal',
+    subtitle: metadata.get(id)?.subtitle || '',
+    groupId: metadata.get(id)?.groupId || '',
+    notified: Boolean(metadata.get(id)?.notified),
+    busy: Boolean(metadata.get(id)?.busy)
+  }));
+}
+
+function sendMobile(client, payload) {
+  if (client?.readyState === 1) client.send(JSON.stringify(payload));
+}
+
+function broadcastMobile(payload) {
+  if (!mobileSocketServer) return;
+  for (const client of mobileSocketServer.clients) sendMobile(client, payload);
+}
+
+function broadcastMobileSnapshot() {
+  broadcastMobile({ type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
+}
+
+function captureSessionScreen(session) {
+  if (!session?.tmux || !session.tmuxSession) return '';
+  try {
+    return runTmux(session.tmux, ['capture-pane', '-p', '-e', '-J', '-S', '-600', '-t', session.tmuxSession], { capture: true }).slice(-300_000);
+  } catch {
+    try {
+      return runTmux(session.tmux, ['capture-pane', '-p', '-J', '-S', '-600', '-t', session.tmuxSession], { capture: true }).slice(-300_000);
+    } catch {
+      return '';
+    }
+  }
+}
+
+function mobileAddresses(port, token) {
+  const addresses = [{ label: 'This computer', url: `http://localhost:${port}/${token}/` }];
+  const seen = new Set(['127.0.0.1']);
+  for (const [name, records] of Object.entries(os.networkInterfaces())) {
+    for (const record of records || []) {
+      if (record.family !== 'IPv4' || record.internal || seen.has(record.address)) continue;
+      seen.add(record.address);
+      const tailscale = /tailscale/i.test(name) || /^100\.(?:6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\./.test(record.address);
+      addresses.push({
+        label: tailscale ? 'Tailscale' : `Local network · ${name}`,
+        url: `http://${record.address}:${port}/${token}/`
+      });
+    }
+  }
+  return addresses.sort((left, right) => Number(right.label === 'Tailscale') - Number(left.label === 'Tailscale'));
+}
+
+function mobileInfo() {
+  const settings = readSettingsRecord();
+  const running = Boolean(mobileServer?.listening);
+  return {
+    enabled: running,
+    port: settings.mobilePort,
+    urls: running ? mobileAddresses(settings.mobilePort, settings.mobileToken) : []
+  };
+}
+
+function mobileContentType(fileName) {
+  if (fileName.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (fileName.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (fileName.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (fileName.endsWith('.png')) return 'image/png';
+  return 'application/octet-stream';
+}
+
+function serveMobileFile(response, filePath, cache = false) {
+  fs.readFile(filePath, (error, data) => {
+    if (error) {
+      response.writeHead(404).end('Not found');
+      return;
+    }
+    response.writeHead(200, {
+      'Content-Type': mobileContentType(filePath),
+      'Cache-Control': cache ? 'public, max-age=3600' : 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; manifest-src 'self'"
+    });
+    response.end(data);
+  });
+}
+
+async function startMobileServer({ persist = true } = {}) {
+  if (mobileServer?.listening) return mobileInfo();
+  const settings = readSettingsRecord();
+  settings.mobileToken ||= crypto.randomBytes(16).toString('hex');
+  settings.mobileEnabled = true;
+  if (persist) writeSettingsRecord(settings);
+  const token = settings.mobileToken;
+  const prefix = `/${token}`;
+  const mobileDirectory = path.join(__dirname, 'mobile');
+  const xtermScript = require.resolve('@xterm/xterm');
+  const xtermStyles = require.resolve('@xterm/xterm/css/xterm.css');
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (url.pathname === prefix) {
+      response.writeHead(302, { Location: `${prefix}/`, 'Cache-Control': 'no-store' }).end();
+      return;
+    }
+    if (!url.pathname.startsWith(`${prefix}/`)) {
+      response.writeHead(404, { 'Cache-Control': 'no-store' }).end('Not found');
+      return;
+    }
+    const route = url.pathname.slice(prefix.length + 1);
+    if (!route || route === 'index.html') return serveMobileFile(response, path.join(mobileDirectory, 'index.html'));
+    if (route === 'mobile.js') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.js'));
+    if (route === 'mobile.css') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.css'));
+    if (route === 'xterm.js') return serveMobileFile(response, xtermScript, true);
+    if (route === 'xterm.css') return serveMobileFile(response, xtermStyles, true);
+    if (route === 'icon.png') return serveMobileFile(response, path.join(__dirname, '..', 'build', 'icon.png'), true);
+    if (route === 'manifest.webmanifest') {
+      response.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-store' });
+      response.end(JSON.stringify({
+        name: 'SideTerm Mobile', short_name: 'SideTerm', start_url: './', scope: './', display: 'standalone',
+        background_color: '#0c0c0c', theme_color: '#202020',
+        icons: [{ src: './icon.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
+      }));
+      return;
+    }
+    if (route === 'sw.js') return serveMobileFile(response, path.join(mobileDirectory, 'sw.js'));
+    response.writeHead(404, { 'Cache-Control': 'no-store' }).end('Not found');
+  });
+  const socketServer = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
+  server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (url.pathname !== `${prefix}/socket`) {
+      socket.destroy();
+      return;
+    }
+    socketServer.handleUpgrade(request, socket, head, (client) => socketServer.emit('connection', client));
+  });
+  socketServer.on('connection', (client) => {
+    sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
+    client.on('message', (raw) => {
+      let message;
+      try { message = JSON.parse(String(raw)); } catch { return; }
+      const session = sessions.get(String(message.id || ''));
+      if (message.type === 'input' && session && typeof message.data === 'string' && message.data.length <= 65_536) {
+        send('terminal:remote-input', { id: message.id, data: message.data });
+        session.processHandle.write(message.data);
+      }
+      if (message.type === 'select' && session) {
+        sendMobile(client, { type: 'reset', id: message.id, data: captureSessionScreen(session) });
+      }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(settings.mobilePort, '0.0.0.0', resolve);
+  }).catch((error) => {
+    socketServer.close();
+    server.close();
+    settings.mobileEnabled = false;
+    if (persist) writeSettingsRecord(settings);
+    throw new Error(`Could not start mobile access on port ${settings.mobilePort}: ${error.message}`);
+  });
+  mobileServer = server;
+  mobileSocketServer = socketServer;
+  return mobileInfo();
+}
+
+async function stopMobileServer({ persist = true } = {}) {
+  const settings = readSettingsRecord();
+  settings.mobileEnabled = false;
+  if (persist) writeSettingsRecord(settings);
+  const server = mobileServer;
+  const socketServer = mobileSocketServer;
+  mobileServer = null;
+  mobileSocketServer = null;
+  if (socketServer) {
+    for (const client of socketServer.clients) client.close(1001, 'Mobile access disabled');
+    socketServer.close();
+  }
+  if (server) await new Promise((resolve) => server.close(resolve));
+  return mobileInfo();
+}
+
 function createSession({ id, cwd, cols = 100, rows = 30 }) {
   if (!id || sessions.has(id)) {
     throw new Error('A unique session id is required.');
@@ -277,11 +495,18 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
 
   const session = { processHandle, tmux, tmuxSession };
   sessions.set(id, session);
-  processHandle.onData((data) => send('terminal:data', { id, data }));
+  processHandle.onData((data) => {
+    send('terminal:data', { id, data });
+    broadcastMobile({ type: 'data', id, data });
+  });
   processHandle.onExit(({ exitCode, signal }) => {
     sessions.delete(id);
     send('terminal:exit', { id, exitCode, signal });
+    broadcastMobile({ type: 'exit', id, exitCode, signal });
+    broadcastMobileSnapshot();
   });
+
+  broadcastMobileSnapshot();
 
   return {
     id,
@@ -309,6 +534,7 @@ function closeSession(id) {
   } catch {
     // The process may already have exited.
   }
+  broadcastMobileSnapshot();
 }
 
 function detachAllSessions() {
@@ -402,6 +628,13 @@ function registerIpc() {
     return result;
   });
   ipcMain.handle('ai:summarize-session', (_event, payload) => summarizeSession(payload));
+  ipcMain.handle('mobile:get-info', () => mobileInfo());
+  ipcMain.handle('mobile:start', () => startMobileServer());
+  ipcMain.handle('mobile:stop', () => stopMobileServer());
+  ipcMain.on('mobile:update-workspace', (_event, workspace) => {
+    mobileWorkspace = sanitizeMobileWorkspace(workspace);
+    broadcastMobileSnapshot();
+  });
 }
 
 function createWindow() {
@@ -447,6 +680,7 @@ app.setAppUserModelId('io.github.hyudryu.sideterm');
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  if (readSettingsRecord().mobileEnabled) void startMobileServer({ persist: false }).catch(() => {});
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

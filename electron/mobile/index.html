@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="theme-color" content="#202020">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="SideTerm">
+    <title>SideTerm Mobile</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" href="./icon.png">
+    <link rel="stylesheet" href="./xterm.css">
+    <link rel="stylesheet" href="./mobile.css">
+    <script defer src="./xterm.js"></script>
+    <script defer src="./mobile.js"></script>
+  </head>
+  <body>
+    <div id="mobile-app">
+      <aside id="drawer" aria-label="Terminal sessions">
+        <header><img src="./icon.png" alt=""><div><strong>SideTerm</strong><span>Mobile sessions</span></div><button id="drawer-close" aria-label="Close sessions">×</button></header>
+        <nav id="mobile-sessions"></nav>
+        <footer><span id="connection-detail">Connecting…</span><button id="install-button" hidden>Install app</button></footer>
+      </aside>
+      <button id="drawer-shade" aria-label="Close sessions" hidden></button>
+      <main>
+        <header class="mobile-topbar">
+          <button id="menu-button" aria-label="Open sessions"><span></span><span></span><span></span></button>
+          <div><strong id="mobile-title">SideTerm</strong><span id="mobile-subtitle">Connecting…</span></div>
+          <i id="connection-dot" title="Connection status"></i>
+        </header>
+        <section id="mobile-terminal" aria-label="Terminal"></section>
+        <div id="quick-keys" aria-label="Terminal keys">
+          <button data-key="escape">Esc</button><button data-key="tab">Tab</button><button data-key="interrupt">Ctrl C</button><button data-key="clear-line">Ctrl U</button><button data-key="up">↑</button><button data-key="down">↓</button><button data-key="enter" class="enter-key">Enter</button>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   close: (id) => ipcRenderer.send('terminal:close', id),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
+  onRemoteInput: (callback) => subscribe('terminal:remote-input', callback),
   onExit: (callback) => subscribe('terminal:exit', callback),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
@@ -22,5 +23,9 @@ contextBridge.exposeInMainWorld('sideTerm', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   testAiSettings: () => ipcRenderer.invoke('settings:test-ai'),
-  summarizeSession: (payload) => ipcRenderer.invoke('ai:summarize-session', payload)
+  summarizeSession: (payload) => ipcRenderer.invoke('ai:summarize-session', payload),
+  getMobileInfo: () => ipcRenderer.invoke('mobile:get-info'),
+  startMobile: () => ipcRenderer.invoke('mobile:start'),
+  stopMobile: () => ipcRenderer.invoke('mobile:stop'),
+  updateMobileWorkspace: (workspace) => ipcRenderer.send('mobile:update-workspace', workspace)
 });
