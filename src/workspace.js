@@ -49,6 +49,7 @@ export function parseSavedWorkspace(raw) {
         id: session.id,
         groupId: session.groupId,
         title: typeof session.title === 'string' ? session.title : 'Terminal',
+        manualTitle: Boolean(session.manualTitle),
         shell: typeof session.shell === 'string' ? session.shell : 'shell',
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',

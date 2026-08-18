@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isBareAgentLaunchCommand, terminalWheelAmount } from '../src/activity.js';
+import { isBareAgentLaunchCommand, scanTerminalUrls, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -15,4 +15,19 @@ test('plain wheel scrolls terminal history while Ctrl+wheel passes through', () 
   assert.equal(terminalWheelAmount({ ctrlKey: false, deltaY: 72 }), 2);
   assert.equal(terminalWheelAmount({ ctrlKey: true, deltaY: -108 }), null);
   assert.equal(terminalWheelAmount({ ctrlKey: false, deltaY: 0 }), null);
+});
+
+test('GitHub pull request URLs are captured across terminal output chunks', () => {
+  const first = scanTerminalUrls('', 'Review https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pu');
+  assert.deepEqual(first.urls, []);
+  const second = scanTerminalUrls(first.buffer, 'll/684 before merging\n');
+  assert.deepEqual(second.urls, ['https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pull/684']);
+});
+
+test('GitHub links are limited to pull requests while other HTTP links remain available', () => {
+  const result = scanTerminalUrls('', [
+    'https://github.com/Andorra-Labs/Andorra-Labs-Alpha/issues/12',
+    'https://docs.example.com/setup'
+  ].join(' '));
+  assert.deepEqual(result.urls, ['https://docs.example.com/setup']);
 });

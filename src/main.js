@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { isBareAgentLaunchCommand, terminalWheelAmount } from './activity.js';
+import { isBareAgentLaunchCommand, scanTerminalUrls, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -23,6 +23,7 @@ const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const BACKGROUND_SETTLE_MS = 4_000;
+const SESSION_BUSY_SETTLE_MS = 1_400;
 const AI_SUMMARY_SETTLE_MS = 1_200;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
@@ -90,7 +91,7 @@ document.querySelector('#app').innerHTML = `
         <div class="active-session-heading">
           <span class="status-dot"></span>
           <div>
-            <strong id="active-title">Terminal</strong>
+            <strong id="active-title" title="Click to rename session">Terminal</strong>
             <span id="active-subtitle">Restoring workspace…</span>
           </div>
         </div>
@@ -361,32 +362,26 @@ function detectedAgent(commandOrOutput) {
 }
 
 function captureLinks(session, text) {
-  const matches = plainTerminalText(text).match(/https?:\/\/[^\s<>"'`]+/g) || [];
+  const scan = scanTerminalUrls(session.linkScanBuffer, text);
+  session.linkScanBuffer = scan.buffer;
   let changed = false;
-  for (const match of matches) {
-    const url = match.replace(/[),.;:!?]+$/, '');
-    try {
-      const parsed = new URL(url);
-      if (!['http:', 'https:'].includes(parsed.protocol)) continue;
-      const normalized = parsed.toString();
-      if (session.links.some((link) => link.url === normalized)) continue;
-      session.links.push({ url: normalized, seenAt: Date.now() });
-      changed = true;
-    } catch {
-      // Ignore partial URLs emitted while a terminal frame is still streaming.
-    }
+  for (const url of scan.urls) {
+    if (session.links.some((link) => link.url === url)) continue;
+    session.links.push({ url, seenAt: Date.now() });
+    changed = true;
   }
   if (session.links.length > 100) session.links.splice(0, session.links.length - 100);
   return changed;
 }
 
 function appendSessionContext(session, text) {
-  const plain = plainTerminalText(text).trim();
+  const terminalText = plainTerminalText(text);
+  if (captureLinks(session, terminalText)) updateSessionItem(session);
+  const plain = terminalText.trim();
   if (!plain) return;
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
-  if (captureLinks(session, plain)) updateSessionItem(session);
 }
 
 function trackTerminalInput(session, data) {
@@ -460,8 +455,9 @@ function showLinkPopover(session, trigger) {
     const button = document.createElement('button');
     button.type = 'button';
     const parsed = new URL(link.url);
+    const isPullRequest = parsed.hostname.toLowerCase() === 'github.com' && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(parsed.pathname);
     button.innerHTML = `<strong></strong><span></span><time></time>`;
-    button.querySelector('strong').textContent = parsed.hostname;
+    button.querySelector('strong').textContent = isPullRequest ? 'GitHub pull request' : parsed.hostname;
     button.querySelector('span').textContent = `${parsed.pathname}${parsed.search}` || '/';
     button.querySelector('time').textContent = new Date(link.seenAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     button.addEventListener('click', () => void api.openExternal(link.url));
@@ -487,6 +483,7 @@ function persistWorkspaceNow() {
         id: session.id,
         groupId: group.id,
         title: session.title,
+        manualTitle: session.manualTitle,
         shell: session.shell,
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
@@ -561,23 +558,28 @@ function groupNotificationCount(group) {
 function updateSessionItem(session) {
   if (!session.item) return;
   const aiLabelActive = settings.llmEnabled && settings.apiUrl && settings.model && session.summary;
-  const primary = aiLabelActive
+  const primary = session.manualTitle
+    ? session.title
+    : aiLabelActive
     ? `${session.agent || session.displayName || 'Terminal'}:`
     : session.title;
-  const secondary = aiLabelActive
+  const secondary = session.manualTitle && session.summary
+    ? session.summary
+    : aiLabelActive
     ? session.summary
     : session.exited
       ? `${session.shell} · stopped`
       : `${session.shell} · ${session.cwd === '~' ? '~' : session.cwd.split('/').filter(Boolean).at(-1) || '/'}`;
-  session.item.title = aiLabelActive ? `${primary} ${secondary}` : session.title;
+  session.item.title = (aiLabelActive || session.manualTitle) ? `${primary} ${secondary}` : session.title;
   session.item.querySelector('.session-details strong').textContent = primary;
   session.item.querySelector('.session-details small').textContent = secondary;
   session.item.classList.toggle('has-notification', session.notified);
+  session.item.classList.toggle('session-busy', session.busy);
   session.item.classList.toggle('session-exited', session.exited);
   const linkTrigger = session.item.querySelector('.session-link-trigger');
   linkTrigger.hidden = session.links.length === 0;
   linkTrigger.querySelector('span').textContent = String(session.links.length);
-  if (session.id === activeId) activeTitle.textContent = session.title;
+  if (session.id === activeId && !activeTitle.isContentEditable) activeTitle.textContent = session.title;
 }
 
 function updateVisualState() {
@@ -628,6 +630,47 @@ function startGroupRename(group, titleElement) {
       titleElement.blur();
     }
     if (event.key === 'Escape') {
+      event.preventDefault();
+      finish(false);
+    }
+  };
+  const onBlur = () => finish(true);
+  titleElement.addEventListener('keydown', onKeyDown);
+  titleElement.addEventListener('blur', onBlur);
+}
+
+function startSessionRename(session, titleElement) {
+  if (!session || titleElement.isContentEditable) return;
+  const original = session.title;
+  let finished = false;
+  titleElement.contentEditable = 'true';
+  titleElement.classList.add('renaming');
+  titleElement.focus();
+  window.getSelection()?.selectAllChildren(titleElement);
+
+  const finish = (commit) => {
+    if (finished) return;
+    finished = true;
+    titleElement.removeEventListener('keydown', onKeyDown);
+    titleElement.removeEventListener('blur', onBlur);
+    titleElement.contentEditable = 'false';
+    titleElement.classList.remove('renaming');
+    const next = titleElement.textContent.trim().replace(/\s+/g, ' ').slice(0, 50);
+    if (commit && next) {
+      session.title = next;
+      session.manualTitle = true;
+    } else {
+      session.title = original;
+    }
+    titleElement.textContent = session.title;
+    updateSessionItem(session);
+    schedulePersist();
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      titleElement.blur();
+    } else if (event.key === 'Escape') {
       event.preventDefault();
       finish(false);
     }
@@ -709,6 +752,7 @@ function renderSessionItem(session) {
   item.innerHTML = `
     <span class="session-icon-wrap">
       <span class="session-icon">›_</span>
+      <span class="activity-spinner" aria-label="Session is producing output"></span>
       <span class="notification-dot" aria-label="Session needs attention"></span>
     </span>
     <span class="session-details">
@@ -741,6 +785,7 @@ function renderSessionItem(session) {
 function activateSession(id) {
   const next = sessions.get(id);
   if (!next) return;
+  if (activeTitle.isContentEditable) activeTitle.blur();
   activeId = id;
   const group = getGroupForSession(id);
   if (group) {
@@ -814,6 +859,19 @@ function markSessionNotification(session) {
   schedulePersist();
 }
 
+function noteSessionBusy(session, data) {
+  if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  window.clearTimeout(session.busyTimer);
+  if (!session.busy) {
+    session.busy = true;
+    updateSessionItem(session);
+  }
+  session.busyTimer = window.setTimeout(() => {
+    session.busy = false;
+    updateSessionItem(session);
+  }, SESSION_BUSY_SETTLE_MS);
+}
+
 function noteBackgroundActivity(session, data) {
   if (!session || session.id === activeId || restoringWorkspace) return;
   if (!session.hasUserActivity) return;
@@ -877,10 +935,14 @@ async function addSession(cwd, options = {}) {
     exited: false,
     notified: Boolean(options.notified),
     notificationTimer: null,
+    busy: false,
+    busyTimer: null,
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
+    manualTitle: Boolean(options.manualTitle),
     links: Array.isArray(options.links) ? options.links : [],
+    linkScanBuffer: '',
     context: '',
     commandBuffer: '',
     aiSummaryTimer: null,
@@ -917,6 +979,7 @@ async function addSession(cwd, options = {}) {
   });
   terminal.onResize(({ cols, rows }) => api.resize(id, cols, rows));
   terminal.onTitleChange((title) => {
+    if (session.manualTitle) return;
     const cleaned = title.trim();
     if (!cleaned) return;
     session.title = cleaned.length > 34 ? `${cleaned.slice(0, 31)}…` : cleaned;
@@ -971,6 +1034,7 @@ function closeSession(id) {
   const index = ids.indexOf(id);
   if (!session.exited) api.close(id);
   window.clearTimeout(session.notificationTimer);
+  window.clearTimeout(session.busyTimer);
   session.terminal.dispose();
   session.pane.remove();
   session.item.remove();
@@ -1027,6 +1091,7 @@ function deleteGroup(groupId) {
     if (!session) continue;
     if (!session.exited) api.close(sessionId);
     window.clearTimeout(session.notificationTimer);
+    window.clearTimeout(session.busyTimer);
     window.clearTimeout(session.aiSummaryTimer);
     session.terminal.dispose();
     session.pane.remove();
@@ -1156,6 +1221,7 @@ api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.terminal.write(data);
+  noteSessionBusy(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
 });
@@ -1164,6 +1230,8 @@ api.onExit(({ id, exitCode }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.exited = true;
+  session.busy = false;
+  window.clearTimeout(session.busyTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
   if (id === activeId) {
@@ -1189,6 +1257,7 @@ document.querySelector('#open-folder-button').addEventListener('click', () => {
   const session = sessions.get(activeId);
   if (session) void api.openPath(session.cwd);
 });
+activeTitle.addEventListener('click', () => startSessionRename(sessions.get(activeId), activeTitle));
 document.querySelector('#settings-button').addEventListener('click', openSettingsPanel);
 document.querySelector('#settings-close').addEventListener('click', closeSettingsPanel);
 document.querySelector('#settings-cancel').addEventListener('click', closeSettingsPanel);
@@ -1271,6 +1340,7 @@ async function restoreSavedWorkspace() {
       id: saved.id,
       groupId: getGroupForSession(saved.id)?.id ?? saved.groupId,
       title: saved.title,
+      manualTitle: saved.manualTitle,
       shell: saved.shell,
       history: saved.history,
       notified: saved.notified,
