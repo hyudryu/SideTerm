@@ -503,6 +503,7 @@ function persistWorkspaceNow() {
       groups: groups.map((group) => ({
         id: group.id,
         title: group.title,
+        color: group.color,
         collapsed: group.collapsed,
         sessionIds: group.sessionIds.filter((id) => sessions.has(id))
       })),
@@ -687,6 +688,7 @@ function renderGroups() {
     section.className = 'session-group';
     section.dataset.groupId = group.id;
     section.classList.toggle('group-collapsed', group.collapsed);
+    section.style.setProperty('--group-color', group.color);
     section.innerHTML = `
       <header class="group-header" draggable="true">
         <button class="group-toggle" type="button" aria-label="${group.collapsed ? 'Expand' : 'Collapse'} group" title="${group.collapsed ? 'Expand' : 'Collapse'} group">
@@ -695,6 +697,7 @@ function renderGroups() {
         <span class="group-grip" aria-hidden="true">⠿</span>
         <span class="group-avatar" aria-hidden="true"></span>
         <strong class="group-title" title="Click to rename"></strong>
+        <input class="group-color" type="color" value="${group.color}" draggable="false" aria-label="Choose group color" title="Choose group color">
         <span class="group-session-count"></span>
         <span class="group-notification-badge" hidden></span>
         <button class="group-add" type="button" aria-label="New session in this group" title="New session in this group">+</button>
@@ -709,6 +712,16 @@ function renderGroups() {
       event.stopPropagation();
       if (title.isContentEditable) return;
       startGroupRename(group, title);
+    });
+    const colorInput = section.querySelector('.group-color');
+    colorInput.setAttribute('aria-label', `Choose color for ${group.title}`);
+    colorInput.addEventListener('pointerdown', (event) => event.stopPropagation());
+    colorInput.addEventListener('click', (event) => event.stopPropagation());
+    colorInput.addEventListener('input', (event) => {
+      event.stopPropagation();
+      group.color = event.currentTarget.value;
+      section.style.setProperty('--group-color', group.color);
+      schedulePersist();
     });
     section.querySelector('.group-toggle').addEventListener('click', (event) => {
       event.stopPropagation();

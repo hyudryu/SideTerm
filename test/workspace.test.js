@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_GROUP_COLOR,
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
@@ -42,8 +43,8 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
     activeId: 'b',
     activeGroupId: 'missing',
     groups: [
-      { id: 'first', title: ' Work ', sessionIds: ['a', 'a'] },
-      { id: 'second', title: '', collapsed: true, sessionIds: [] }
+      { id: 'first', title: ' Work ', color: '#A142F4', sessionIds: ['a', 'a'] },
+      { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
       { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', displayName: 'API work', summary: 'Fix auth', agent: 'Codex', links: [{ url: 'https://github.com/a/b/pull/1', seenAt: 1 }] },
@@ -52,8 +53,10 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   }));
 
   assert.equal(saved.groups[0].title, 'Work');
+  assert.equal(saved.groups[0].color, '#a142f4');
   assert.deepEqual(saved.groups[0].sessionIds, ['a']);
   assert.deepEqual(saved.groups[1].sessionIds, ['b']);
+  assert.equal(saved.groups[1].color, DEFAULT_GROUP_COLOR);
   assert.equal(saved.groups[1].collapsed, true);
   assert.equal(saved.activeGroupId, 'first');
   assert.equal(saved.sessions[0].displayName, 'API work');

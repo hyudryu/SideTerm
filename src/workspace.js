@@ -1,7 +1,14 @@
 export const WORKSPACE_VERSION = 1;
+export const DEFAULT_GROUP_COLOR = '#60cdff';
 
-export function createGroup(id, title, collapsed = false) {
-  return { id, title, collapsed, sessionIds: [] };
+export function normalizeGroupColor(color) {
+  return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)
+    ? color.toLowerCase()
+    : DEFAULT_GROUP_COLOR;
+}
+
+export function createGroup(id, title, collapsed = false, color = DEFAULT_GROUP_COLOR) {
+  return { id, title, collapsed, color: normalizeGroupColor(color), sessionIds: [] };
 }
 
 export function reorderGroup(groups, sourceId, targetId, position) {
@@ -73,6 +80,7 @@ export function parseSavedWorkspace(raw) {
         return {
           id: group.id,
           title: typeof group.title === 'string' && group.title.trim() ? group.title.trim() : 'Group',
+          color: normalizeGroupColor(group.color),
           collapsed: Boolean(group.collapsed),
           sessionIds: Array.isArray(group.sessionIds)
             ? [...new Set(group.sessionIds.filter((id) => validSessionIds.has(id)))]

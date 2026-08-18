@@ -5,7 +5,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 ## What it does
 
 - Runs real interactive shell sessions through a PTY (your configured `$SHELL`, with Bash as fallback).
-- Organizes sessions into persistent, collapsible groups. New groups start with a session, and each group has its own add-session button; groups may become empty when sessions are moved out. Groups and sessions can be dragged, reordered, and moved with focused drop zones and snap indicators.
+- Organizes sessions into persistent, collapsible, color-coded groups. Each group color is configurable from its header. New groups start with a session, and each group has its own add-session button; groups may become empty when sessions are moved out. Groups and sessions can be dragged, reordered, and moved with focused drop zones and snap indicators.
 - Renames a group by clicking its title, and confirms before deleting a group and terminating every session inside it.
 - Keeps running shells and coding agents alive when the SideTerm window closes, then reconnects to them when it reopens. SideTerm bundles an isolated tmux backend, so this does not require a system tmux installation.
 - Restores group layout, session order, active state, working directories, unread state, link history, and bounded scrollback after restarting SideTerm or Ubuntu.
