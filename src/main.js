@@ -45,10 +45,25 @@ let settings = {
   hasApiKey: false,
   apiUrl: '',
   model: '',
+  agentEnabled: false,
+  personality: 'Warm, direct, calm, and concise.',
+  agentInstructions: '',
+  wakeWord: 'Hey Agent',
+  sttModel: 'turbo',
+  ttsModel: 'kyutai/pocket-tts',
+  ttsVoice: 'alba',
   sidebarWidth: 282,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
 let linkPopoverTimer = null;
+let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
+let agentCatchUpInFlight = false;
+let desktopVoiceMode = false;
+let voiceStream = null;
+let voiceAudioContext = null;
+let voiceMonitorFrame = null;
+let voiceRecorder = null;
+let voiceCaptureMuted = false;
 
 document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
@@ -85,6 +100,10 @@ document.querySelector('#app').innerHTML = `
         <button id="settings-button" class="settings-button" type="button" title="Settings (Ctrl+,)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.55.72 1 .9.35.15.73.2 1.1.1h.1v4h-.09a1.7 1.7 0 0 0-1.51.6c-.28.28-.48.62-.6 1Z"/></svg>
           <span class="action-label">Settings</span>
+        </button>
+        <button id="agent-button" class="agent-button" type="button" title="Open supervisor" aria-label="Open supervisor">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v2a4 4 0 0 0 2 3.46V17h3l1 2 1-2h3v-2.54A4 4 0 0 0 18 11V9a6 6 0 0 0-6-6Z"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="10" r="1"/></svg>
+          <span class="agent-unread-badge" hidden>0</span>
         </button>
         <button id="mobile-button" class="mobile-button" type="button" title="Connect from mobile" aria-label="Connect from mobile">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M10 5h4M11 18.5h2"/></svg>
@@ -140,6 +159,24 @@ document.querySelector('#app').innerHTML = `
               <div class="test-row"><button id="test-ai" class="secondary-button" type="button">Test connection</button><span id="ai-test-status"></span></div>
             </section>
             <section class="settings-section">
+              <div class="settings-section-title"><strong>Strands supervisor</strong><span>Persistent human assistant</span></div>
+              <label class="toggle-row">
+                <span><strong>Enable supervisor agent</strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
+                <input id="agent-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
+              <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
+              <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
+            </section>
+            <section class="settings-section">
+              <div class="settings-section-title"><strong>Voice mode</strong><span>Local · opt in only</span></div>
+              <label class="field-row"><span>Wake word</span><input id="voice-wake-word" type="text" maxlength="80" placeholder="Hey Agent"></label>
+              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
+              <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
+              <p class="settings-note">Recommended: Whisper turbo for accurate multilingual coding terms on this GPU, or Distil-Whisper large-v3 for lighter English-only use. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
+            </section>
+            <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
               <label class="range-row"><span>Sidebar width</span><input id="sidebar-width" type="range" min="210" max="480" step="1"><output id="sidebar-width-value"></output></label>
             </section>
@@ -163,6 +200,7 @@ document.querySelector('#app').innerHTML = `
           <div class="mobile-status-row"><span id="mobile-status-dot"></span><strong id="mobile-status">Checking mobile access…</strong><button id="mobile-toggle" class="primary-button" type="button">Enable</button></div>
           <p>SideTerm runs a private web app from this Ubuntu computer. The long address contains its access key—only share it with your own devices.</p>
           <div id="mobile-urls" class="mobile-urls"></div>
+          <div class="tailscale-https-row"><div><strong>Secure mobile voice</strong><span id="tailscale-https-status">Checking Tailscale HTTPS…</span></div><button id="enable-tailscale-https" class="secondary-button" type="button">Enable HTTPS</button></div>
           <section class="mobile-steps">
             <strong>Set up your phone</strong>
             <ol>
@@ -172,6 +210,21 @@ document.querySelector('#app').innerHTML = `
             </ol>
           </section>
           <p class="mobile-security-note">Disabling mobile access immediately closes connected phones. SideTerm must remain running for the mobile app to connect.</p>
+        </div>
+      </section>
+    </div>
+    <div id="agent-backdrop" class="settings-backdrop" hidden>
+      <section class="agent-panel" role="dialog" aria-modal="true" aria-labelledby="agent-panel-title">
+        <header class="settings-header">
+          <div><strong id="agent-panel-title">SideTerm supervisor</strong><span>Persistent Strands agent across every terminal session</span></div>
+          <button id="agent-close" class="settings-close" type="button" aria-label="Close supervisor">×</button>
+        </header>
+        <div class="agent-panel-body">
+          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
+          <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
+          <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
+          <div id="agent-confirmations" class="agent-confirmations"></div>
+          <form id="agent-chat-form" class="agent-chat-form"><textarea id="agent-chat-input" rows="2" placeholder="Ask about a session, create work, or request terminal input…"></textarea><button class="primary-button" type="submit">Send</button></form>
         </div>
       </section>
     </div>
@@ -190,6 +243,7 @@ const newSessionButton = document.querySelector('#new-session');
 const toastRegion = document.querySelector('#toast-region');
 const settingsBackdrop = document.querySelector('#settings-backdrop');
 const mobileBackdrop = document.querySelector('#mobile-backdrop');
+const agentBackdrop = document.querySelector('#agent-backdrop');
 const settingsForm = document.querySelector('#settings-form');
 const linkPopover = document.querySelector('#link-popover');
 const sidebarResizer = document.querySelector('#sidebar-resizer');
@@ -285,11 +339,19 @@ function populateSettingsPanel() {
   document.querySelector('#clear-api-key').hidden = !settings.hasApiKey;
   document.querySelector('#ai-api-url').value = settings.apiUrl || '';
   document.querySelector('#ai-model').value = settings.model;
+  document.querySelector('#agent-enabled').checked = settings.agentEnabled;
+  document.querySelector('#agent-personality').value = settings.personality || '';
+  document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
+  document.querySelector('#voice-wake-word').value = settings.wakeWord || '';
+  document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
+  document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
+  document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
   document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
+  void refreshSpeechStatus();
 }
 
 function openSettingsPanel() {
@@ -316,6 +378,13 @@ function settingsPayload() {
     clearApiKey: clearApiKeyRequested,
     apiUrl: document.querySelector('#ai-api-url').value,
     model: document.querySelector('#ai-model').value,
+    agentEnabled: document.querySelector('#agent-enabled').checked,
+    personality: document.querySelector('#agent-personality').value,
+    agentInstructions: document.querySelector('#agent-instructions').value,
+    wakeWord: document.querySelector('#voice-wake-word').value,
+    sttModel: document.querySelector('#stt-model').value,
+    ttsModel: document.querySelector('#tts-model').value,
+    ttsVoice: document.querySelector('#tts-voice').value,
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
   };
@@ -426,6 +495,7 @@ function trackTerminalInput(session, data) {
         if (!isBareAgentLaunchCommand(command)) {
           session.hasUserActivity = true;
           session.activityArmed = true;
+          session.activityCycleId = crypto.randomUUID();
           session.notifyWhenIdle = false;
           scheduleAiSummary(session);
           schedulePersist();
@@ -608,7 +678,7 @@ function renderMobileInfo(info) {
   const dot = document.querySelector('#mobile-status-dot');
   const toggle = document.querySelector('#mobile-toggle');
   const urls = document.querySelector('#mobile-urls');
-  status.textContent = info.enabled ? `Available on port ${info.port}` : 'Mobile access is disabled';
+  status.textContent = info.enabled ? `Available on port ${info.port} · starts with SideTerm` : 'Mobile access is disabled';
   dot.classList.toggle('online', info.enabled);
   toggle.textContent = info.enabled ? 'Disable' : 'Enable';
   toggle.classList.toggle('danger-button', info.enabled);
@@ -693,9 +763,361 @@ async function openMobilePanel() {
   requestAnimationFrame(() => mobileBackdrop.classList.add('visible'));
   try {
     renderMobileInfo(await api.getMobileInfo());
+    const tailscale = await api.getTailscaleHttpsStatus();
+    document.querySelector('#tailscale-https-status').textContent = tailscale.enabled
+      ? `Ready at ${tailscale.url}`
+      : tailscale.available ? 'Required for phone microphone access' : 'Tailscale is not installed';
+    document.querySelector('#enable-tailscale-https').hidden = tailscale.enabled || !tailscale.available;
   } catch (error) {
     document.querySelector('#mobile-status').textContent = error.message;
   }
+}
+
+function updateAgentBadge() {
+  const unread = (agentState.notifications || []).filter((item) => !item.read).length;
+  const badge = document.querySelector('.agent-unread-badge');
+  badge.textContent = unread > 99 ? '99+' : String(unread);
+  badge.hidden = unread === 0;
+}
+
+function renderAgentState(nextState) {
+  agentState = { ...agentState, ...(nextState || {}) };
+  updateAgentBadge();
+  const dot = document.querySelector('#agent-status-dot');
+  const label = document.querySelector('#agent-status-label');
+  const detail = document.querySelector('#agent-status-detail');
+  dot.className = agentState.status === 'thinking' ? 'thinking' : agentState.status === 'error' ? 'error' : '';
+  label.textContent = !agentState.enabled ? 'Supervisor disabled' : agentState.status === 'thinking' ? 'Thinking…' : agentState.status === 'error' ? 'Needs attention' : 'Ready';
+  detail.textContent = !agentState.enabled ? 'Enable it in Settings to start tracking sessions' : agentState.configured ? 'Watching all SideTerm sessions' : 'Configure an API URL and model';
+
+  const unread = (agentState.notifications || []).filter((item) => !item.read);
+  document.querySelector('#agent-notification-count').textContent = String(unread.length);
+  const notifications = document.querySelector('#agent-notifications');
+  notifications.replaceChildren();
+  const visibleNotifications = (agentState.notifications || []).slice(-10).reverse();
+  if (!visibleNotifications.length) {
+    const empty = document.createElement('span');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = 'No completed-session updates yet.';
+    notifications.append(empty);
+  }
+  for (const item of visibleNotifications) {
+    const card = document.createElement('article');
+    card.className = 'agent-notification';
+    const title = document.createElement('strong');
+    title.textContent = item.title;
+    const summary = document.createElement('span');
+    summary.textContent = item.summary || (item.read ? 'Update delivered' : 'Finished · awaiting summary');
+    card.append(title, summary);
+    notifications.append(card);
+  }
+
+  const chat = document.querySelector('#agent-chat');
+  chat.replaceChildren();
+  if (!(agentState.messages || []).length) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = agentState.enabled ? 'Ask for a status update or tell me what to work on next.' : 'The supervisor dashboard will appear here when enabled.';
+    chat.append(empty);
+  }
+  for (const message of agentState.messages || []) {
+    const bubble = document.createElement('div');
+    bubble.className = `agent-message ${message.role}`;
+    bubble.textContent = message.text;
+    chat.append(bubble);
+  }
+  chat.scrollTop = chat.scrollHeight;
+
+  const confirmations = document.querySelector('#agent-confirmations');
+  confirmations.replaceChildren();
+  for (const confirmation of agentState.confirmations || []) {
+    const row = document.createElement('div');
+    row.className = 'agent-confirmation';
+    const copy = document.createElement('div');
+    const heading = document.createElement('strong');
+    heading.textContent = confirmation.kind === 'archive' ? `Archive ${confirmation.title}?` : `Send input to ${confirmation.title}?`;
+    const detailText = document.createElement('code');
+    detailText.textContent = confirmation.kind === 'archive' ? confirmation.summary : confirmation.input;
+    copy.append(heading, detailText);
+    const deny = document.createElement('button');
+    deny.type = 'button';
+    deny.className = 'secondary-button';
+    deny.textContent = 'Deny';
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'secondary-button approve';
+    approve.textContent = 'Approve';
+    deny.addEventListener('click', () => void respondToAgentConfirmation(confirmation.id, false));
+    approve.addEventListener('click', () => void respondToAgentConfirmation(confirmation.id, true));
+    row.append(copy, deny, approve);
+    confirmations.append(row);
+  }
+}
+
+async function respondToAgentConfirmation(id, approved) {
+  try {
+    renderAgentState(await api.confirmAgentAction(id, approved));
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function openAgentPanel() {
+  agentBackdrop.hidden = false;
+  requestAnimationFrame(() => agentBackdrop.classList.add('visible'));
+  try {
+    renderAgentState(await api.getAgentState());
+    if (agentState.enabled && agentState.notifications.some((item) => !item.read) && !agentCatchUpInFlight) {
+      agentCatchUpInFlight = true;
+      try {
+        const result = await api.catchUpAgent();
+        renderAgentState(result.state);
+      } finally {
+        agentCatchUpInFlight = false;
+      }
+    }
+  } catch (error) {
+    showToast(`Supervisor: ${error.message}`);
+  }
+}
+
+function closeAgentPanel() {
+  if (desktopVoiceMode) stopDesktopVoiceMode();
+  agentBackdrop.classList.remove('visible');
+  window.setTimeout(() => {
+    agentBackdrop.hidden = true;
+    sessions.get(activeId)?.terminal.focus();
+  }, 140);
+}
+
+async function submitAgentChat(text) {
+  const input = document.querySelector('#agent-chat-input');
+  const prompt = String(text ?? input.value).trim();
+  if (!prompt) return;
+  input.value = '';
+  try {
+    const result = await api.chatWithAgent(prompt);
+    renderAgentState(result.state);
+    await speakAgentResponse(result.response);
+  } catch (error) {
+    showToast(`Supervisor: ${error.message}`);
+    renderAgentState(await api.getAgentState().catch(() => agentState));
+  }
+}
+
+async function handleAgentAction({ requestId, type, payload }) {
+  try {
+    if (type === 'create-session') {
+      let group = payload.groupName
+        ? groups.find((item) => item.title.toLowerCase() === String(payload.groupName).toLowerCase())
+        : getGroup(activeGroupId);
+      if (!group) {
+        group = createGroup(makeGroupId(), String(payload.groupName || `Group ${groups.length + 1}`).slice(0, 32));
+        groups.push(group);
+        renderGroups();
+      }
+      const session = await addSession(payload.cwd, {
+        groupId: group.id,
+        title: String(payload.name).slice(0, 64),
+        manualTitle: true
+      });
+      api.resolveAgentAction(requestId, { id: session.id, title: session.title, group: group.title, cwd: session.cwd });
+      return;
+    }
+    if (type === 'archive-session') {
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The session is no longer available.');
+      const group = getGroupForSession(session.id);
+      const result = { id: session.id, title: session.title, group: group?.title || '' };
+      closeSession(session.id);
+      api.resolveAgentAction(requestId, result);
+      return;
+    }
+    throw new Error(`Unknown supervisor action: ${type}`);
+  } catch (error) {
+    api.resolveAgentAction(requestId, null, error.message);
+  }
+}
+
+function reportSessionCompletion(session) {
+  if (!session?.activityCycleId || session.lastReportedCycleId === session.activityCycleId) return;
+  session.lastReportedCycleId = session.activityCycleId;
+  api.reportSessionFinished({
+    cycleId: session.activityCycleId,
+    sessionId: session.id,
+    title: session.title,
+    summary: session.summary,
+    context: session.context || terminalHistory(session.terminal),
+    cwd: session.cwd,
+    links: session.links
+  });
+}
+
+function renderSpeechStatus(status) {
+  const stt = document.querySelector('#stt-status');
+  const tts = document.querySelector('#tts-status');
+  if (stt) stt.textContent = status.sttInstalled ? 'Installed' : 'Not installed';
+  if (tts) tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
+  const installStt = document.querySelector('#install-stt');
+  const installTts = document.querySelector('#install-tts');
+  if (installStt) installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
+  if (installTts) installTts.textContent = status.ttsInstalled ? 'Reinstall' : 'Install';
+}
+
+async function refreshSpeechStatus() {
+  try {
+    const status = await api.getSpeechStatus();
+    renderSpeechStatus(status);
+    return status;
+  } catch (error) {
+    document.querySelector('#stt-status').textContent = error.message;
+    document.querySelector('#tts-status').textContent = error.message;
+    return { sttInstalled: false, ttsInstalled: false };
+  }
+}
+
+async function installSpeech(kind) {
+  const button = document.querySelector(kind === 'stt' ? '#install-stt' : '#install-tts');
+  const status = document.querySelector(kind === 'stt' ? '#stt-status' : '#tts-status');
+  button.disabled = true;
+  status.textContent = 'Installing…';
+  await saveSettingsFromPanel({ close: false });
+  try {
+    renderSpeechStatus(await api.installSpeech(kind));
+    showToast(`${kind === 'stt' ? 'Speech to text' : 'Pocket TTS'} installed`);
+  } catch (error) {
+    status.textContent = 'Install failed';
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function playSpeechAudio(audio) {
+  if (!audio?.data) throw new Error('The speech runtime returned no audio.');
+  voiceCaptureMuted = true;
+  await api.pauseDesktopMedia().catch(() => {});
+  try {
+    const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    await player.play();
+    await new Promise((resolve, reject) => {
+      player.addEventListener('ended', resolve, { once: true });
+      player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
+    });
+  } finally {
+    await api.resumeDesktopMedia().catch(() => {});
+    voiceCaptureMuted = false;
+  }
+}
+
+async function speakAgentResponse(text) {
+  if (!desktopVoiceMode) return;
+  try {
+    await playSpeechAudio(await api.synthesizeSpeech(text, settings.ttsVoice));
+  } catch (error) {
+    showToast(`Voice: ${error.message}`);
+  }
+}
+
+async function processVoiceUtterance(blob, durationMs) {
+  if (!desktopVoiceMode || voiceCaptureMuted || durationMs < 650 || blob.size < 1000) return;
+  const label = document.querySelector('#agent-status-detail');
+  label.textContent = 'Transcribing locally…';
+  try {
+    const transcript = await api.transcribeSpeech(new Uint8Array(await blob.arrayBuffer()), blob.type);
+    if (transcript.ignored) {
+      label.textContent = transcript.reason || 'Waiting for the wake word';
+      return;
+    }
+    document.querySelector('#agent-chat-input').value = transcript.text;
+    await submitAgentChat(transcript.text);
+  } catch (error) {
+    showToast(`Voice: ${error.message}`);
+  } finally {
+    if (desktopVoiceMode) label.textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
+  }
+}
+
+async function startDesktopVoiceMode() {
+  const status = await refreshSpeechStatus();
+  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Install both local speech models in Settings first.');
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Microphone recording is unavailable in this desktop session.');
+  voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  voiceAudioContext = new AudioContext();
+  const source = voiceAudioContext.createMediaStreamSource(voiceStream);
+  const analyser = voiceAudioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+  const chunks = [];
+  let header = null;
+  let preRoll = [];
+  let utterance = [];
+  let speaking = false;
+  let startedAt = 0;
+  let silenceAt = 0;
+  voiceRecorder = new MediaRecorder(voiceStream);
+  voiceRecorder.addEventListener('dataavailable', (event) => {
+    if (!event.data.size) return;
+    chunks.push(event.data);
+    if (!header) {
+      header = event.data;
+      return;
+    }
+    if (speaking) utterance.push(event.data);
+    else {
+      preRoll.push(event.data);
+      if (preRoll.length > 5) preRoll.shift();
+    }
+  });
+  voiceRecorder.start(220);
+  const monitor = () => {
+    if (!desktopVoiceMode || !voiceAudioContext) return;
+    analyser.getFloatTimeDomainData(samples);
+    const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
+    const now = performance.now();
+    if (!voiceCaptureMuted && rms > 0.035) {
+      if (!speaking) {
+        speaking = true;
+        startedAt = now;
+        utterance = [...preRoll];
+      }
+      silenceAt = 0;
+    } else if (speaking) {
+      silenceAt ||= now;
+      if (now - silenceAt > 850 || now - startedAt > 14_000) {
+        const duration = now - startedAt;
+        const material = header ? [header, ...utterance] : utterance;
+        const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+        speaking = false;
+        silenceAt = 0;
+        utterance = [];
+        preRoll = [];
+        void processVoiceUtterance(blob, duration);
+      }
+    }
+    voiceMonitorFrame = requestAnimationFrame(monitor);
+  };
+  voiceMonitorFrame = requestAnimationFrame(monitor);
+  desktopVoiceMode = true;
+  document.querySelector('#desktop-voice-toggle').textContent = 'Voice on';
+  document.querySelector('#desktop-voice-toggle').classList.add('voice-active');
+  document.querySelector('#agent-status-detail').textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
+}
+
+function stopDesktopVoiceMode() {
+  desktopVoiceMode = false;
+  if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
+  voiceMonitorFrame = null;
+  if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();
+  voiceRecorder = null;
+  for (const track of voiceStream?.getTracks() || []) track.stop();
+  voiceStream = null;
+  void voiceAudioContext?.close();
+  voiceAudioContext = null;
+  document.querySelector('#desktop-voice-toggle').textContent = 'Voice off';
+  document.querySelector('#desktop-voice-toggle').classList.remove('voice-active');
+  document.querySelector('#agent-status-detail').textContent = 'Watching all SideTerm sessions';
 }
 
 function groupNotificationCount(group) {
@@ -1040,6 +1462,7 @@ function noteSessionBusy(session, data) {
   session.busyTimer = window.setTimeout(() => {
     session.busy = false;
     updateSessionItem(session);
+    reportSessionCompletion(session);
     if (session.notifyWhenIdle) {
       session.notifyWhenIdle = false;
       if (session.id !== activeId) markSessionNotification(session);
@@ -1128,6 +1551,8 @@ async function addSession(cwd, options = {}) {
     aiErrorShown: false,
     lastSummarizedLength: 0,
     hasUserActivity: Boolean(options.hasUserActivity),
+    activityCycleId: '',
+    lastReportedCycleId: '',
     persistent: false
   };
   sessions.set(id, session);
@@ -1414,6 +1839,7 @@ api.onExit(({ id, exitCode }) => {
   if (!session) return;
   session.exited = true;
   session.busy = false;
+  reportSessionCompletion(session);
   session.activityArmed = false;
   session.notifyWhenIdle = false;
   window.clearTimeout(session.busyTimer);
@@ -1444,6 +1870,21 @@ document.querySelector('#open-folder-button').addEventListener('click', () => {
 });
 activeTitle.addEventListener('click', () => startSessionRename(sessions.get(activeId), activeTitle));
 document.querySelector('#settings-button').addEventListener('click', openSettingsPanel);
+document.querySelector('#agent-button').addEventListener('click', () => void openAgentPanel());
+document.querySelector('#agent-close').addEventListener('click', closeAgentPanel);
+agentBackdrop.addEventListener('mousedown', (event) => {
+  if (event.target === agentBackdrop) closeAgentPanel();
+});
+document.querySelector('#agent-chat-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  void submitAgentChat();
+});
+document.querySelector('#agent-chat-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    void submitAgentChat();
+  }
+});
 document.querySelector('#mobile-button').addEventListener('click', () => void openMobilePanel());
 document.querySelector('#mobile-close').addEventListener('click', closeMobilePanel);
 mobileBackdrop.addEventListener('mousedown', (event) => {
@@ -1457,6 +1898,21 @@ document.querySelector('#mobile-toggle').addEventListener('click', async (event)
     renderMobileInfo(current.enabled ? await api.stopMobile() : await api.startMobile());
   } catch (error) {
     document.querySelector('#mobile-status').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+document.querySelector('#enable-tailscale-https').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  document.querySelector('#tailscale-https-status').textContent = 'Configuring private HTTPS…';
+  try {
+    const result = await api.enableTailscaleHttps();
+    renderMobileInfo(result.mobile);
+    document.querySelector('#tailscale-https-status').textContent = `Ready at ${result.tailscale.url}`;
+    button.hidden = true;
+  } catch (error) {
+    document.querySelector('#tailscale-https-status').textContent = error.message;
   } finally {
     button.disabled = false;
   }
@@ -1503,11 +1959,45 @@ document.querySelector('#test-ai').addEventListener('click', async () => {
     status.textContent = error.message;
   }
 });
+document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
+document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
+document.querySelector('#preview-voice').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = 'Generating…';
+  try {
+    await playSpeechAudio(await api.previewVoice(document.querySelector('#tts-voice').value));
+  } catch (error) {
+    showToast(`Voice preview: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Play preview';
+  }
+});
+document.querySelector('#desktop-voice-toggle').addEventListener('click', async () => {
+  if (desktopVoiceMode) {
+    stopDesktopVoiceMode();
+    return;
+  }
+  try {
+    await startDesktopVoiceMode();
+  } catch (error) {
+    showToast(`Voice: ${error.message}`);
+  }
+});
 sidebarResizer.addEventListener('pointerdown', beginSidebarResize);
 linkPopover.addEventListener('mouseenter', () => window.clearTimeout(linkPopoverTimer));
 linkPopover.addEventListener('mouseleave', hideLinkPopoverSoon);
+api.onAgentState(renderAgentState);
+api.onAgentAction((action) => void handleAgentAction(action));
+api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (!agentBackdrop.hidden && event.key === 'Escape') {
+    event.preventDefault();
+    closeAgentPanel();
+    return;
+  }
   if (!mobileBackdrop.hidden && event.key === 'Escape') {
     event.preventDefault();
     closeMobilePanel();
@@ -1518,7 +2008,7 @@ window.addEventListener('keydown', (event) => {
     closeSettingsPanel();
     return;
   }
-  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel')) return;
+  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel, .agent-panel')) return;
   if (event.target instanceof Element && event.target.closest('.xterm')) return;
   const action = resolveTerminalShortcut(event, sessions.get(activeId)?.terminal.hasSelection() ?? false, settings.hotkeys);
   if (!action || action === 'terminal-input') return;
@@ -1579,6 +2069,11 @@ async function initializeApp() {
   applySettings();
   updateSidebarState();
   await restoreSavedWorkspace();
+  try {
+    renderAgentState(await api.getAgentState());
+  } catch {
+    // The terminal remains usable if the optional supervisor is unavailable.
+  }
 }
 
 void initializeApp();

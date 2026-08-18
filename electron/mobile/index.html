@@ -27,12 +27,26 @@
         <header class="mobile-topbar">
           <button id="menu-button" aria-label="Open sessions"><span></span><span></span><span></span></button>
           <div><strong id="mobile-title">SideTerm</strong><span id="mobile-subtitle">Connecting…</span></div>
-          <i id="connection-dot" title="Connection status"></i>
+          <div class="mobile-topbar-actions"><i id="connection-dot" title="Connection status"></i><button id="mode-toggle" type="button" aria-label="Switch view">Agent</button></div>
         </header>
-        <section id="mobile-terminal" aria-label="Terminal"></section>
-        <div id="quick-keys" aria-label="Terminal keys">
-          <button data-key="escape">Esc</button><button data-key="tab">Tab</button><button data-key="interrupt">Ctrl C</button><button data-key="clear-line">Ctrl U</button><button data-key="up">↑</button><button data-key="down">↓</button><button data-key="enter" class="enter-key">Enter</button>
-        </div>
+        <section id="agent-dashboard" hidden>
+          <div class="agent-mobile-status"><span id="agent-mobile-dot"></span><div><strong id="agent-mobile-status">Supervisor</strong><small id="agent-mobile-detail">Connecting…</small></div><button id="mobile-voice-toggle" type="button">Voice off</button></div>
+          <section class="agent-mobile-notifications"><header><strong>Notifications</strong><span id="mobile-notification-count">0</span></header><div id="mobile-notifications"></div></section>
+          <div id="mobile-agent-chat" class="agent-mobile-chat"></div>
+          <div id="mobile-waveform" class="mobile-waveform" hidden><div class="wave-ring"><i></i><i></i><i></i><i></i><i></i></div><strong>Listening</strong><span id="mobile-wave-detail">Say the wake word, then ask</span></div>
+          <div id="mobile-confirmations"></div>
+          <form id="mobile-agent-form"><textarea id="mobile-agent-input" rows="2" enterkeyhint="send" placeholder="Ask your supervisor…"></textarea><button type="submit">Send</button></form>
+        </section>
+        <section id="terminal-view">
+          <section id="mobile-terminal" aria-label="Terminal"></section>
+          <form id="mobile-input-bar">
+            <textarea id="mobile-input" rows="1" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Type a command or prompt…" aria-label="Command or prompt"></textarea>
+            <button type="submit">Send</button>
+          </form>
+          <div id="quick-keys" aria-label="Terminal keys">
+            <button data-key="escape">Esc</button><button data-key="tab">Tab</button><button data-key="interrupt">Ctrl C</button><button data-key="clear-line">Ctrl U</button><button data-key="up">↑</button><button data-key="down">↓</button><button data-key="enter" class="enter-key">Enter</button>
+          </div>
+        </section>
       </main>
     </div>
   </body>
