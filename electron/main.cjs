@@ -454,6 +454,12 @@ function voicePython() {
   return path.join(voiceRuntimeDirectory(), 'venv', 'bin', 'python');
 }
 
+function voiceSidecarPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', 'voice', 'sidecar.py')
+    : path.join(__dirname, 'voice', 'sidecar.py');
+}
+
 function voiceMarker(kind) {
   return path.join(voiceRuntimeDirectory(), `${kind}-installed.json`);
 }
@@ -516,7 +522,7 @@ async function installSpeechComponent(kind) {
   const settings = readSettingsRecord();
   const command = kind === 'stt' ? 'download-stt' : 'download-tts';
   const model = kind === 'stt' ? settings.sttModel : settings.ttsModel;
-  await runChild(python, [path.join(__dirname, 'voice', 'sidecar.py'), command, '--root', voiceRuntimeDirectory(), '--model', model]);
+  await runChild(python, [voiceSidecarPath(), command, '--root', voiceRuntimeDirectory(), '--model', model]);
   fs.writeFileSync(voiceMarker(kind), `${JSON.stringify({ model, installedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
   const status = speechStatus();
   send('voice:status', status);
@@ -533,7 +539,7 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice) {
   const outputPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
   try {
     await runChild(voicePython(), [
-      path.join(__dirname, 'voice', 'sidecar.py'), 'synthesize',
+      voiceSidecarPath(), 'synthesize',
       '--root', voiceRuntimeDirectory(), '--model', DEFAULT_SETTINGS.ttsModel,
       '--voice', String(voice), '--text', safeText, '--output', outputPath
     ]);
@@ -555,7 +561,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm') {
   try {
     const settings = readSettingsRecord();
     const result = await runChild(voicePython(), [
-      path.join(__dirname, 'voice', 'sidecar.py'), 'transcribe',
+      voiceSidecarPath(), 'transcribe',
       '--root', voiceRuntimeDirectory(), '--model', settings.sttModel, '--input', inputPath
     ]);
     const line = result.stdout.trim().split('\n').at(-1);

@@ -44,7 +44,8 @@
     "artifactName": "SideTerm-${version}-${arch}.${ext}",
     "asar": true,
     "asarUnpack": [
-      "node_modules/node-pty/**"
+      "node_modules/node-pty/**",
+      "electron/voice/sidecar.py"
     ],
     "files": [
       "dist/**/*",
