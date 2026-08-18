@@ -536,6 +536,19 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .model-install-row label, .voice-picker-row label { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #aaa; font-size: 11px; }
 .model-install-row select, .voice-picker-row select { height: 32px; min-width: 0; padding: 0 8px; color: #eee; background: #111; border: 1px solid #464646; border-radius: 5px; }
 .model-install-row > span { align-self: center; color: #858585; font-size: 9px; }
+.model-install-row > span.install-error {
+  grid-column: 1 / -1;
+  max-height: 110px;
+  padding: 8px 10px;
+  overflow: auto;
+  color: #ffb4ab;
+  background: rgba(255, 80, 80, .08);
+  border: 1px solid rgba(255, 100, 100, .2);
+  border-radius: 5px;
+  font: 10px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .voice-picker-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
 .field-row input:focus, .hotkey-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(96,205,255,.1); }
 .credential-actions, .test-row { display: flex; min-height: 20px; align-items: center; justify-content: space-between; gap: 10px; color: #777; font-size: 10px; }
