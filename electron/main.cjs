@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, net, safeStorage, shell } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -7,6 +7,14 @@ const crypto = require('node:crypto');
 const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
+const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
+
+// Desktop launchers may close their inherited output pipes after starting the
+// application. Electron logs rejected IPC handlers internally; without an
+// error listener that secondary log write can crash the main process (EPIPE)
+// and hide the useful error already being returned to the renderer.
+process.stdout?.on('error', () => {});
+process.stderr?.on('error', () => {});
 
 if (process.env.SIDETERM_USER_DATA_DIR) app.setPath('userData', path.resolve(process.env.SIDETERM_USER_DATA_DIR));
 
@@ -482,12 +490,20 @@ function runChild(executable, args, { env = process.env, timeoutMs = 30 * 60 * 1
   });
 }
 
+async function downloadRuntimeFile(url, destination) {
+  const response = await net.fetch(url, { redirect: 'follow' });
+  if (!response.ok) throw new Error(`Could not download ${url} (${response.status}).`);
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length === 0) throw new Error(`The download from ${url} was empty.`);
+  fs.writeFileSync(destination, body, { mode: 0o600 });
+}
+
 async function ensureVoiceEnvironment() {
-  fs.mkdirSync(voiceRuntimeDirectory(), { recursive: true });
-  if (!fs.existsSync(voicePython())) {
-    await runChild('/usr/bin/python3', ['-m', 'venv', path.join(voiceRuntimeDirectory(), 'venv')]);
-  }
-  return voicePython();
+  return ensurePythonVoiceEnvironment({
+    runtimeDirectory: voiceRuntimeDirectory(),
+    runChild,
+    downloadFile: downloadRuntimeFile
+  });
 }
 
 async function installSpeechComponent(kind) {
@@ -1223,7 +1239,13 @@ function registerIpc() {
     else pending.resolve(result.value);
   });
   ipcMain.handle('voice:get-status', () => speechStatus());
-  ipcMain.handle('voice:install', (_event, kind) => installSpeechComponent(String(kind)));
+  ipcMain.handle('voice:install', async (_event, kind) => {
+    try {
+      return { ok: true, status: await installSpeechComponent(String(kind)) };
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error || 'Speech installation failed.') };
+    }
+  });
   ipcMain.handle('voice:preview', (_event, voice) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice));
   ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
   ipcMain.handle('voice:transcribe', (_event, { bytes, mimeType }) => transcribeSpeech(bytes, mimeType));

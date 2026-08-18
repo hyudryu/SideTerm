@@ -981,8 +981,8 @@ async function installSpeech(kind) {
   const status = document.querySelector(kind === 'stt' ? '#stt-status' : '#tts-status');
   button.disabled = true;
   status.textContent = 'Installing…';
-  await saveSettingsFromPanel({ close: false });
   try {
+    if (!await saveSettingsFromPanel({ close: false })) throw new Error('Could not save the speech settings.');
     renderSpeechStatus(await api.installSpeech(kind));
     showToast(`${kind === 'stt' ? 'Speech to text' : 'Pocket TTS'} installed`);
   } catch (error) {
