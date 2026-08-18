@@ -22,8 +22,8 @@ const api = window.sideTerm;
 const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
-const BACKGROUND_SETTLE_MS = 4_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
+const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_SUMMARY_SETTLE_MS = 1_200;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
@@ -386,6 +386,7 @@ function appendSessionContext(session, text) {
 
 function trackTerminalInput(session, data) {
   const input = data.replace(/\x1b\[(?:200|201)~/g, '');
+  if (input) session.busySuppressedUntil = 0;
   for (const character of input) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
@@ -799,6 +800,13 @@ function activateSession(id) {
   const next = sessions.get(id);
   if (!next) return;
   if (activeTitle.isContentEditable) activeTitle.blur();
+  const previous = sessions.get(activeId);
+  if (previous && previous.id !== id && previous.busy && previous.hasUserActivity) {
+    previous.notifyWhenIdle = true;
+  }
+  if (previous?.id !== id && !next.busy) {
+    next.busySuppressedUntil = Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS;
+  }
   activeId = id;
   const group = getGroupForSession(id);
   if (group) {
@@ -809,7 +817,7 @@ function activateSession(id) {
     }
   }
   next.notified = false;
-  window.clearTimeout(next.notificationTimer);
+  next.notifyWhenIdle = false;
   activeTitle.textContent = next.title;
   activeSubtitle.textContent = next.exited
     ? `${next.shell} · stopped · ${next.cwd}`
@@ -828,7 +836,6 @@ function fitSession(session) {
   if (!session || !session.pane.classList.contains('active')) return;
   try {
     session.fit.fit();
-    api.resize(session.id, session.terminal.cols, session.terminal.rows);
   } catch {
     // A hidden or closing terminal can briefly have no measurable size.
   }
@@ -874,6 +881,7 @@ function markSessionNotification(session) {
 
 function noteSessionBusy(session, data) {
   if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  if (!session.busy && Date.now() < session.busySuppressedUntil) return;
   window.clearTimeout(session.busyTimer);
   if (!session.busy) {
     session.busy = true;
@@ -882,6 +890,10 @@ function noteSessionBusy(session, data) {
   session.busyTimer = window.setTimeout(() => {
     session.busy = false;
     updateSessionItem(session);
+    if (session.notifyWhenIdle) {
+      session.notifyWhenIdle = false;
+      if (session.id !== activeId && session.hasUserActivity) markSessionNotification(session);
+    }
   }, SESSION_BUSY_SETTLE_MS);
 }
 
@@ -890,15 +902,13 @@ function noteBackgroundActivity(session, data) {
   if (!session.hasUserActivity) return;
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
-  window.clearTimeout(session.notificationTimer);
   window.clearTimeout(session.aiSummaryTimer);
   if (data.includes('\x07')) {
+    session.notifyWhenIdle = false;
     markSessionNotification(session);
     return;
   }
-  session.notificationTimer = window.setTimeout(() => {
-    if (session.id !== activeId && !session.exited) markSessionNotification(session);
-  }, BACKGROUND_SETTLE_MS);
+  session.notifyWhenIdle = true;
 }
 
 async function addSession(cwd, options = {}) {
@@ -947,9 +957,10 @@ async function addSession(cwd, options = {}) {
     item: null,
     exited: false,
     notified: Boolean(options.notified),
-    notificationTimer: null,
+    notifyWhenIdle: false,
     busy: false,
     busyTimer: null,
+    busySuppressedUntil: Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS,
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
@@ -1046,7 +1057,6 @@ function closeSession(id) {
   const ids = orderedSessionIds();
   const index = ids.indexOf(id);
   if (!session.exited) api.close(id);
-  window.clearTimeout(session.notificationTimer);
   window.clearTimeout(session.busyTimer);
   session.terminal.dispose();
   session.pane.remove();
@@ -1103,7 +1113,6 @@ function deleteGroup(groupId) {
     const session = sessions.get(sessionId);
     if (!session) continue;
     if (!session.exited) api.close(sessionId);
-    window.clearTimeout(session.notificationTimer);
     window.clearTimeout(session.busyTimer);
     window.clearTimeout(session.aiSummaryTimer);
     session.terminal.dispose();
@@ -1244,6 +1253,7 @@ api.onExit(({ id, exitCode }) => {
   if (!session) return;
   session.exited = true;
   session.busy = false;
+  session.notifyWhenIdle = false;
   window.clearTimeout(session.busyTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);

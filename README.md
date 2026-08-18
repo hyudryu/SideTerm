@@ -9,8 +9,8 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Renames a group by clicking its title, and confirms before deleting a group and terminating every session inside it.
 - Keeps running shells and coding agents alive when the SideTerm window closes, then reconnects to them when it reopens. SideTerm bundles an isolated tmux backend, so this does not require a system tmux installation.
 - Restores group layout, session order, active state, working directories, unread state, link history, and bounded scrollback after restarting SideTerm or Ubuntu.
-- Marks completed/stopped background work with a red session dot and aggregates unread counts on each group.
-- Shows an animated activity ring while a session is continuously producing output.
+- Marks completed/stopped background work with a red session dot and aggregates unread counts on each group. Leaving a busy session arms its notification for the moment continuous output stops.
+- Shows an animated activity ring while a session is continuously producing output, while ignoring terminal redraws caused by activating or resizing a dormant session.
 - Keeps every open session visible in a resizable left rail and lets you collapse the rail to icons.
 - Uses `Ctrl+C` to copy selected terminal text; with no selection it still sends `SIGINT` to the running command.
 - Uses `Ctrl+V` to paste. `Ctrl+Shift+C` and `Ctrl+Shift+V` work too.
