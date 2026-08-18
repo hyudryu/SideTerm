@@ -544,14 +544,24 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .danger-button { color: #fff !important; background: #9d2f32 !important; }
 .mobile-urls { display: flex; flex-direction: column; gap: 8px; }
 .mobile-url-empty { padding: 18px; color: #888; text-align: center; border: 1px dashed rgba(255,255,255,.12); border-radius: 8px; font-size: 11px; }
-.mobile-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; background: #171717; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; }
+.mobile-url-card { overflow: hidden; background: #171717; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; }
+.mobile-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; }
 .mobile-url-row > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .mobile-url-row strong { font-size: 11px; }
 .mobile-url-row code { overflow: hidden; color: #9edfff; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-url-actions { display: flex; gap: 6px; }
+.mobile-url-row > .mobile-url-actions { flex-direction: row; }
+.mobile-url-qr { display: grid; grid-template-columns: 196px minmax(0, 1fr); align-items: center; gap: 18px; padding: 14px; color: #111; background: #fff; border-top: 1px solid rgba(255,255,255,.08); }
+.mobile-url-qr[hidden] { display: none; }
+.mobile-url-qr canvas { display: block; width: 196px; height: 196px; }
+.mobile-url-qr > div { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.mobile-url-qr strong { font-size: 14px; }
+.mobile-url-qr code { overflow-wrap: anywhere; color: #145b7b; font-size: 9px; line-height: 1.45; }
 .mobile-steps { padding: 14px 16px; background: rgba(96,205,255,.045); border: 1px solid rgba(96,205,255,.13); border-radius: 8px; }
 .mobile-steps > strong { font-size: 12px; }
 .mobile-steps ol { margin: 10px 0 0; padding-left: 20px; color: #bbb; font-size: 11px; line-height: 1.65; }
 .mobile-security-note { color: #888 !important; font-size: 10px !important; }
+@media (max-width: 560px) { .mobile-url-qr { grid-template-columns: 1fr; justify-items: center; text-align: center; } .mobile-url-qr > div { align-items: center; } }
 
 .link-popover {
   position: fixed;

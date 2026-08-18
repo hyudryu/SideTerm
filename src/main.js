@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
@@ -620,8 +621,17 @@ function renderMobileInfo(info) {
     return;
   }
   for (const address of info.urls) {
+    const card = document.createElement('section');
+    card.className = 'mobile-url-card';
     const row = document.createElement('div');
     row.className = 'mobile-url-row';
+    const actions = document.createElement('div');
+    actions.className = 'mobile-url-actions';
+    const qr = document.createElement('button');
+    qr.type = 'button';
+    qr.className = 'secondary-button';
+    qr.textContent = 'QR code ▾';
+    qr.setAttribute('aria-expanded', 'false');
     const copy = document.createElement('button');
     copy.type = 'button';
     copy.className = 'secondary-button';
@@ -637,8 +647,44 @@ function renderMobileInfo(info) {
     const url = document.createElement('code');
     url.textContent = address.url;
     text.append(label, url);
-    row.append(text, copy);
-    urls.append(row);
+    actions.append(qr, copy);
+    row.append(text, actions);
+    const qrPanel = document.createElement('div');
+    qrPanel.className = 'mobile-url-qr';
+    qrPanel.hidden = true;
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', `QR code for ${address.label}`);
+    const qrCopy = document.createElement('div');
+    const qrHeading = document.createElement('strong');
+    qrHeading.textContent = `Scan ${address.label}`;
+    const qrUrl = document.createElement('code');
+    qrUrl.textContent = address.url;
+    qrCopy.append(qrHeading, qrUrl);
+    qrPanel.append(canvas, qrCopy);
+    let generated = false;
+    qr.addEventListener('click', async () => {
+      const opening = qrPanel.hidden;
+      qrPanel.hidden = !opening;
+      qr.setAttribute('aria-expanded', String(opening));
+      qr.textContent = opening ? 'QR code ▴' : 'QR code ▾';
+      if (!opening || generated) return;
+      try {
+        await QRCode.toCanvas(canvas, address.url, {
+          width: 196,
+          margin: 2,
+          errorCorrectionLevel: 'M',
+          color: { dark: '#101010', light: '#ffffff' }
+        });
+        generated = true;
+      } catch (error) {
+        qrPanel.hidden = true;
+        qr.setAttribute('aria-expanded', 'false');
+        showToast(`Could not generate QR code: ${error.message}`);
+      }
+    });
+    card.append(row, qrPanel);
+    urls.append(card);
   }
 }
 

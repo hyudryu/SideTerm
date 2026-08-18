@@ -19,7 +19,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Lets every productivity shortcut be overridden from Settings (`Ctrl+,`).
 - Captures HTTP(S) links printed in each session and shows them chronologically from the link badge. GitHub links are filtered to canonical pull-request URLs and remain detectable when terminal output splits the URL across chunks.
 - Renames the active session by clicking its title in the top command bar; manual titles persist and override later shell title changes.
-- Provides an authenticated mobile web app from the phone icon beside Settings. It mirrors live groups and terminal sessions, supports touch-friendly terminal input and quick keys, and can be saved to a phone home screen over Tailscale or a trusted local network.
+- Provides an authenticated mobile web app from the phone icon beside Settings. Every Tailscale, local-network, and localhost address has its own collapsible QR code. It mirrors live groups and terminal sessions, supports touch-friendly terminal input and quick keys, and can be saved to a phone home screen.
 - Optionally uses a custom OpenAI-compatible provider to turn recent coding-terminal activity into useful two-line labels such as `Codex: Fix token refresh` or `Hermes: Review checkout PR`.
 - Right-click copies a selection or pastes when nothing is selected.
 - Produces Ubuntu `.deb` and AppImage packages, including app-menu/taskbar launcher metadata.
