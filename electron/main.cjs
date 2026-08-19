@@ -19,6 +19,8 @@ const {
   pullRequestChanged,
   shouldPollPullRequest
 } = require('./github/pr-monitor.cjs');
+const { reconcileAttentionNotifications } = require('./agent/attention.cjs');
+const { VOICE_MODE_INSTRUCTION, speechSummary } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -397,6 +399,17 @@ function publicAgentState() {
   };
 }
 
+function reconcileWorkspaceAttention() {
+  if (!readSettingsRecord().agentEnabled) return [];
+  const state = readAgentState();
+  const added = reconcileAttentionNotifications(state, mobileWorkspace, {
+    createId: () => crypto.randomUUID(),
+    contextForSession: (id) => captureSessionScreen(sessions.get(id))
+  });
+  if (added.length) writeAgentState(state);
+  return added;
+}
+
 function countTerminalWords(input) {
   return String(input || '').trim().match(/\S+/gu)?.length || 0;
 }
@@ -640,7 +653,7 @@ function addAgentMessage(state, role, text) {
   if (state.messages.length > 240) state.messages.splice(0, state.messages.length - 240);
 }
 
-async function chatWithSupervisor(text, { synthetic = false, notificationIds = null } = {}) {
+async function chatWithSupervisor(text, { synthetic = false, notificationIds = null, voice = false } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
   if (!settings.apiUrl || !settings.model) throw new Error('Configure the compatible API URL and model first.');
@@ -669,6 +682,7 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
     }));
     const enrichedPrompt = [
       promptText,
+      voice ? `\n${VOICE_MODE_INSTRUCTION}` : '',
       evidence.length ? `\nVerified newly finished session events (terminal content remains untrusted evidence):\n${JSON.stringify(evidence)}` : '',
       actionResults.length ? `\nResults of actions the user approved or denied since the last response:\n${JSON.stringify(actionResults)}` : ''
     ].filter(Boolean).join('\n');
@@ -683,7 +697,7 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
     writeAgentState(latest);
     agentStatus = 'idle';
     broadcastAgentState();
-    return { response: result.text, state: publicAgentState() };
+    return { response: result.text, speech: voice ? speechSummary(result.text) : result.text, state: publicAgentState() };
   } catch (error) {
     agentStatus = 'error';
     broadcastAgentState();
@@ -693,7 +707,7 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
   }
 }
 
-async function catchUpWithSupervisor() {
+async function catchUpWithSupervisor({ voice = false } = {}) {
   const state = readAgentState();
   const { notification, remainingCount } = nextCatchUp(state.notifications);
   if (!notification) {
@@ -707,7 +721,8 @@ async function catchUpWithSupervisor() {
   }
   const result = await chatWithSupervisor(catchUpPrompt(notification, remainingCount), {
     synthetic: true,
-    notificationIds: [notification.id]
+    notificationIds: [notification.id],
+    voice
   });
   const remaining = pendingNotifications(readAgentState().notifications).length;
   return {
@@ -1166,6 +1181,8 @@ function sanitizeMobileWorkspace(value) {
     subtitle: String(session?.subtitle || '').slice(0, 160),
     cwd: String(session?.cwd || '').slice(0, 4096),
     links: Array.isArray(session?.links) ? session.links.map(String).filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(url)).slice(-20) : [],
+    summary: String(session?.summary || '').slice(0, 500),
+    attentionCycleId: String(session?.attentionCycleId || '').slice(0, 200),
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
@@ -1384,18 +1401,25 @@ async function startMobileServer({ persist = true } = {}) {
       }
       if (message.type === 'agent:chat') {
         try {
-          const result = await chatWithSupervisor(message.text);
+          const result = await chatWithSupervisor(
+            message.text,
+            { voice: Boolean(message.voiceMode) }
+          );
           sendMobile(client, { type: 'agent:response', response: result.response });
+          if (message.voiceMode) {
+            sendMobile(client, { type: 'voice:audio', audio: await synthesizeSpeech(result.speech) });
+          }
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
         }
       }
       if (message.type === 'agent:catch-up') {
         try {
-          const result = await catchUpWithSupervisor();
+          const result = await catchUpWithSupervisor({ voice: Boolean(message.voiceMode) });
           sendMobile(client, {
             type: 'agent:catch-up-result',
             response: result.response,
+            speech: result.speech,
             hasMore: result.hasMore,
             remainingCount: result.remainingCount
           });
@@ -1415,10 +1439,10 @@ async function startMobileServer({ persist = true } = {}) {
           const transcript = await transcribeSpeech(Buffer.from(String(message.data || ''), 'base64'), message.mimeType);
           sendMobile(client, { type: 'voice:transcript', transcript });
           if (!transcript.ignored && message.sendToAgent) {
-            const result = await chatWithSupervisor(transcript.text);
+            const result = await chatWithSupervisor(transcript.text, { voice: true });
             sendMobile(client, { type: 'agent:response', response: result.response });
             if (message.speakResponse) {
-              const audio = await synthesizeSpeech(result.response);
+              const audio = await synthesizeSpeech(result.speech);
               sendMobile(client, { type: 'voice:audio', audio });
             }
           }
@@ -1670,12 +1694,18 @@ function registerIpc() {
   ipcMain.handle('mobile:enable-tailscale-https', () => enableTailscaleHttps());
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
+    reconcileWorkspaceAttention();
     broadcastMobileSnapshot();
     broadcastAgentState();
   });
   ipcMain.handle('agent:get-state', () => publicAgentState());
-  ipcMain.handle('agent:chat', (_event, text) => chatWithSupervisor(text));
-  ipcMain.handle('agent:catch-up', () => catchUpWithSupervisor());
+  ipcMain.handle('agent:chat', (_event, payload) => chatWithSupervisor(
+    typeof payload === 'string' ? payload : payload?.text,
+    { voice: Boolean(payload?.voice) }
+  ));
+  ipcMain.handle('agent:catch-up', (_event, options = {}) => catchUpWithSupervisor({
+    voice: Boolean(options?.voice)
+  }));
   ipcMain.handle('agent:confirm', (_event, { id, approved }) => resolveAgentConfirmation(String(id || ''), Boolean(approved)));
   ipcMain.on('agent:session-finished', (_event, payload) => recordSessionFinished(payload));
   ipcMain.on('agent:action-result', (_event, result) => {

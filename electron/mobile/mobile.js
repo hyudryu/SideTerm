@@ -45,7 +45,7 @@ function requestNextCatchUp(hasMore = true) {
     catchupRequested = false;
     return;
   }
-  if (!send({ type: 'agent:catch-up' })) catchupRequested = false;
+  if (!send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode })) catchupRequested = false;
 }
 
 async function handleCatchUpResult(message) {
@@ -62,7 +62,7 @@ async function handleCatchUpResult(message) {
   if (mobileVoiceMode) {
     const sent = send({
       type: 'voice:synthesize',
-      text: message.response,
+      text: message.speech || message.response,
       continueCatchUp: true,
       catchUpHasMore: Boolean(message.hasMore)
     });
@@ -221,7 +221,7 @@ function renderAgentState(state) {
     confirmations.append(row);
   }
   if (agentState.enabled && unreadNotifications.length && !catchupRequested) {
-    catchupRequested = send({ type: 'agent:catch-up' });
+    catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
   }
   if (viewMode === 'agent') setView('agent');
 }
@@ -412,7 +412,7 @@ async function startMobileVoice() {
   mobileVoiceToggle.textContent = 'Voice on';
   mobileVoiceToggle.classList.add('active');
   if (!catchupRequested && agentState.notifications.some((item) => !item.read)) {
-    catchupRequested = send({ type: 'agent:catch-up' });
+    catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
   }
   const monitor = () => {
     if (!mobileVoiceMode || !voiceContext) return;
@@ -558,7 +558,7 @@ mobileAgentInput.addEventListener('keydown', (event) => {
 mobileAgentForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = mobileAgentInput.value.trim();
-  if (!text || !send({ type: 'agent:chat', text })) return;
+  if (!text || !send({ type: 'agent:chat', text, voiceMode: mobileVoiceMode })) return;
   mobileAgentInput.value = '';
 });
 mobileVoiceToggle.addEventListener('click', async () => {

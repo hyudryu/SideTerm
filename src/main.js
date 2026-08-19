@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { renderMarkdown } from './markdown.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -888,6 +889,7 @@ function persistWorkspaceNow() {
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
         notified: session.notified,
+        attentionCycleId: session.attentionCycleId,
         activityArmed: session.activityArmed,
         displayName: session.displayName,
         summary: session.summary,
@@ -942,9 +944,11 @@ function persistWorkspaceNow() {
       groupId: session.groupId,
       title: session.title,
       subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
-      cwd: session.cwd,
-      links: session.links.map((link) => link.url),
-      notified: session.notified,
+       cwd: session.cwd,
+       links: session.links.map((link) => link.url),
+       summary: session.summary,
+       attentionCycleId: session.attentionCycleId,
+       notified: session.notified,
       busy: sessions.get(session.id)?.busy
     }))
   });
@@ -1208,7 +1212,11 @@ function renderAgentState(nextState) {
   for (const message of agentState.messages || []) {
     const bubble = document.createElement('div');
     bubble.className = `agent-message ${message.role}`;
-    bubble.textContent = message.text;
+    if (message.role === 'assistant') {
+      renderMarkdown(document, bubble, message.text, { onLink: (url) => void api.openExternal(url) });
+    } else {
+      bubble.textContent = message.text;
+    }
     chat.append(bubble);
   }
   chat.scrollTop = chat.scrollHeight;
@@ -1276,10 +1284,10 @@ async function runAgentCatchUpQueue() {
   agentCatchUpInFlight = true;
   try {
     while (supervisorDashboardActive) {
-      const result = await api.catchUpAgent();
+      const result = await api.catchUpAgent({ voice: desktopVoiceMode });
       renderAgentState(result.state);
       if (!result.response) break;
-      const speechCompleted = await speakAgentResponse(result.response);
+      const speechCompleted = await speakAgentResponse(result.speech || result.response);
       if (!speechCompleted && desktopVoiceMode) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
@@ -1308,9 +1316,9 @@ async function submitAgentChat(text) {
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt);
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode });
     renderAgentState(result.state);
-    await speakAgentResponse(result.response);
+    await speakAgentResponse(result.speech || result.response);
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));
@@ -1892,6 +1900,7 @@ function activateSession(id) {
   }
   const acknowledgedNotification = next.notified;
   next.notified = false;
+  next.attentionCycleId = '';
   next.notifyWhenIdle = false;
   if (acknowledgedNotification && !next.busy) next.activityArmed = false;
   activeTitle.textContent = next.title;
@@ -1954,6 +1963,7 @@ function isSessionForeground(session) {
 function markSessionNotification(session) {
   if (!session || isSessionForeground(session) || session.notified) return;
   session.notified = true;
+  session.attentionCycleId = session.activityCycleId || crypto.randomUUID();
   session.activityArmed = false;
   session.notifyWhenIdle = false;
   updateSessionItem(session);
@@ -2065,6 +2075,7 @@ async function addSession(cwd, options = {}) {
     item: null,
     exited: false,
     notified: Boolean(options.notified),
+    attentionCycleId: String(options.attentionCycleId || (options.notified ? `restored:${id}` : '')).slice(0, 200),
     activityArmed: Boolean(options.activityArmed),
     notifyWhenIdle: false,
     busy: false,
@@ -2653,6 +2664,7 @@ async function restoreSavedWorkspace() {
       shell: saved.shell,
       history: saved.history,
       notified: saved.notified,
+      attentionCycleId: saved.attentionCycleId,
       activityArmed: saved.activityArmed,
       displayName: saved.displayName,
       summary: saved.summary,

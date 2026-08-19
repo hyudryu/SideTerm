@@ -111,6 +111,7 @@ export function parseSavedWorkspace(raw) {
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
         notified: Boolean(session.notified),
+        attentionCycleId: typeof session.attentionCycleId === 'string' ? session.attentionCycleId.slice(0, 200) : '',
         activityArmed: Boolean(session.activityArmed),
         displayName: typeof session.displayName === 'string' ? session.displayName : '',
         summary: typeof session.summary === 'string' ? session.summary : '',
