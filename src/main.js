@@ -1254,6 +1254,9 @@ function renderAgentState(nextState) {
     row.append(copy, deny, approve);
     confirmations.append(row);
   }
+  if (supervisorDashboardActive && agentState.enabled && unread.length && !agentCatchUpInFlight) {
+    void runAgentCatchUpQueue();
+  }
 }
 
 async function respondToAgentConfirmation(id, approved) {
@@ -1273,20 +1276,26 @@ async function openAgentPanel() {
   document.querySelector('#agent-button').classList.add('active');
   try {
     renderAgentState(await api.getAgentState());
-    const hasUnreadWork = agentState.notifications.some((item) => !item.read)
-      || agentState.pendingSessions?.some((item) => item.notified);
-    if (agentState.enabled && hasUnreadWork && !agentCatchUpInFlight) {
-      agentCatchUpInFlight = true;
-      try {
-        const result = await api.catchUpAgent({ voice: desktopVoiceMode });
-        renderAgentState(result.state);
-        await speakAgentResponse(result.speech || result.response);
-      } finally {
-        agentCatchUpInFlight = false;
-      }
-    }
+    await runAgentCatchUpQueue();
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
+  }
+}
+
+async function runAgentCatchUpQueue() {
+  if (agentCatchUpInFlight || !agentState.enabled || !agentState.notifications.some((item) => !item.read)) return;
+  agentCatchUpInFlight = true;
+  try {
+    while (supervisorDashboardActive) {
+      const result = await api.catchUpAgent({ voice: desktopVoiceMode });
+      renderAgentState(result.state);
+      if (!result.response) break;
+      const speechCompleted = await speakAgentResponse(result.speech || result.response);
+      if (!speechCompleted) break;
+      if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
+    }
+  } finally {
+    agentCatchUpInFlight = false;
   }
 }
 
@@ -1430,9 +1439,9 @@ async function playSpeechAudio(audio) {
     voiceBargeInStartedAt = 0;
     player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
-    await new Promise((resolve, reject) => {
-      player.addEventListener('ended', resolve, { once: true });
-      player.addEventListener('sideterm-interrupted', resolve, { once: true });
+    return await new Promise((resolve, reject) => {
+      player.addEventListener('ended', () => resolve(true), { once: true });
+      player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
       player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
     });
   } finally {
@@ -1454,11 +1463,12 @@ function interruptVoicePlayback() {
 }
 
 async function speakAgentResponse(text) {
-  if (!desktopVoiceMode) return;
+  if (!desktopVoiceMode) return true;
   try {
-    await playSpeechAudio(await api.synthesizeSpeech(text));
+    return await playSpeechAudio(await api.synthesizeSpeech(text));
   } catch (error) {
     showToast(`Voice: ${error.message}`);
+    return false;
   }
 }
 
@@ -2640,6 +2650,7 @@ document.querySelector('#desktop-voice-toggle').addEventListener('click', async 
   }
   try {
     await startDesktopVoiceMode();
+    void runAgentCatchUpQueue();
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   }
