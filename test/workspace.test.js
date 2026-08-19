@@ -74,7 +74,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', notified: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
@@ -90,6 +90,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.activeGroupId, 'first');
   assert.equal(saved.sessions[0].displayName, 'API work');
   assert.equal(saved.sessions[0].manualTitle, true);
+  assert.equal(saved.sessions[0].attentionCycleId, 'cycle-a');
   assert.equal(saved.sessions[0].activityArmed, true);
   assert.equal(saved.sessions[0].aiInitialSummaryDone, true);
   assert.equal(saved.sessions[0].lastAiSummaryAt, 1234);

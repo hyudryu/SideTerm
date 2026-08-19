@@ -880,6 +880,7 @@ function persistWorkspaceNow() {
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
         notified: session.notified,
+        attentionCycleId: session.attentionCycleId,
         activityArmed: session.activityArmed,
         displayName: session.displayName,
         summary: session.summary,
@@ -929,6 +930,8 @@ function persistWorkspaceNow() {
         subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
         cwd: session.cwd,
         links: session.links.map((link) => link.url),
+        summary: session.summary,
+        attentionCycleId: session.attentionCycleId,
         notified: session.notified,
         busy: sessions.get(session.id)?.busy
       }))
@@ -1252,7 +1255,9 @@ async function openAgentPanel() {
   document.querySelector('#agent-button').classList.add('active');
   try {
     renderAgentState(await api.getAgentState());
-    if (agentState.enabled && agentState.notifications.some((item) => !item.read) && !agentCatchUpInFlight) {
+    const hasUnreadWork = agentState.notifications.some((item) => !item.read)
+      || agentState.pendingSessions?.some((item) => item.notified);
+    if (agentState.enabled && hasUnreadWork && !agentCatchUpInFlight) {
       agentCatchUpInFlight = true;
       try {
         const result = await api.catchUpAgent();
@@ -1836,6 +1841,7 @@ function activateSession(id) {
   }
   const acknowledgedNotification = next.notified;
   next.notified = false;
+  next.attentionCycleId = '';
   next.notifyWhenIdle = false;
   if (acknowledgedNotification && !next.busy) next.activityArmed = false;
   activeTitle.textContent = next.title;
@@ -1898,6 +1904,7 @@ function isSessionForeground(session) {
 function markSessionNotification(session) {
   if (!session || isSessionForeground(session) || session.notified) return;
   session.notified = true;
+  session.attentionCycleId = session.activityCycleId || crypto.randomUUID();
   session.activityArmed = false;
   session.notifyWhenIdle = false;
   updateSessionItem(session);
@@ -2008,6 +2015,7 @@ async function addSession(cwd, options = {}) {
     item: null,
     exited: false,
     notified: Boolean(options.notified),
+    attentionCycleId: String(options.attentionCycleId || (options.notified ? `restored:${id}` : '')).slice(0, 200),
     activityArmed: Boolean(options.activityArmed),
     notifyWhenIdle: false,
     busy: false,
@@ -2589,6 +2597,7 @@ async function restoreSavedWorkspace() {
       shell: saved.shell,
       history: saved.history,
       notified: saved.notified,
+      attentionCycleId: saved.attentionCycleId,
       activityArmed: saved.activityArmed,
       displayName: saved.displayName,
       summary: saved.summary,

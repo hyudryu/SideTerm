@@ -9,6 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { discoverPullRequest, fetchPullRequest, postPullRequestComment } = require('./github/pr-monitor.cjs');
+const { reconcileAttentionNotifications } = require('./agent/attention.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -380,6 +381,17 @@ function publicAgentState() {
       terminalWordsEntered: state.metrics.terminalWordsEntered
     }
   };
+}
+
+function reconcileWorkspaceAttention() {
+  if (!readSettingsRecord().agentEnabled) return [];
+  const state = readAgentState();
+  const added = reconcileAttentionNotifications(state, mobileWorkspace, {
+    createId: () => crypto.randomUUID(),
+    contextForSession: (id) => captureSessionScreen(sessions.get(id))
+  });
+  if (added.length) writeAgentState(state);
+  return added;
 }
 
 function countTerminalWords(input) {
@@ -1072,6 +1084,8 @@ function sanitizeMobileWorkspace(value) {
     subtitle: String(session?.subtitle || '').slice(0, 160),
     cwd: String(session?.cwd || '').slice(0, 4096),
     links: Array.isArray(session?.links) ? session.links.map(String).filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(url)).slice(-20) : [],
+    summary: String(session?.summary || '').slice(0, 500),
+    attentionCycleId: String(session?.attentionCycleId || '').slice(0, 200),
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
@@ -1535,6 +1549,7 @@ function registerIpc() {
   ipcMain.handle('mobile:enable-tailscale-https', () => enableTailscaleHttps());
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
+    reconcileWorkspaceAttention();
     broadcastMobileSnapshot();
     broadcastAgentState();
   });
