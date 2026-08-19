@@ -157,14 +157,14 @@ document.querySelector('#app').innerHTML = `
             </section>
             <section class="settings-section settings-toggle-section">
               <label class="toggle-row">
-                <span><strong>AI session context</strong><small>Use the configured provider to name and summarize terminal sessions.</small></span>
+                <span><strong>AI session context <em class="llm-required-label">LLM required</em></strong><small>Use the configured provider to name and summarize terminal sessions.</small></span>
                 <input id="ai-enabled" type="checkbox"><i></i>
               </label>
             </section>
             <section class="settings-section">
-              <div class="settings-section-title"><strong>Strands supervisor</strong><span>Persistent human assistant</span></div>
+              <div class="settings-section-title"><strong>Supervisor</strong><span>Persistent human assistant</span></div>
               <label class="toggle-row">
-                <span><strong>Enable supervisor agent</strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
+                <span><strong>Enable Supervisor <em class="llm-required-label">LLM required</em></strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
                 <input id="agent-enabled" type="checkbox"><i></i>
               </label>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
@@ -401,6 +401,19 @@ function providerDraftConfigured() {
   );
 }
 
+function providerDraftPayload() {
+  return {
+    apiKey: document.querySelector('#api-key').value,
+    clearApiKey: clearApiKeyRequested,
+    apiUrl: document.querySelector('#ai-api-url').value.trim(),
+    model: document.querySelector('#ai-model').value.trim()
+  };
+}
+
+function providerDraftFingerprint() {
+  return JSON.stringify(providerDraftPayload());
+}
+
 function setProviderStatus(message = '', isError = false) {
   const status = document.querySelector('#ai-test-status');
   status.textContent = message;
@@ -409,6 +422,9 @@ function setProviderStatus(message = '', isError = false) {
 
 function syncProviderFeatureAvailability() {
   const configured = providerDraftConfigured();
+  for (const id of ['#api-key', '#clear-api-key', '#ai-api-url', '#ai-model']) {
+    document.querySelector(id).disabled = providerValidationInFlight;
+  }
   for (const id of ['#ai-enabled', '#agent-enabled']) {
     const input = document.querySelector(id);
     input.disabled = !configured || providerValidationInFlight;
@@ -430,12 +446,19 @@ function invalidateProviderFeatures() {
 async function persistDisabledProviderFeatures() {
   document.querySelector('#ai-enabled').checked = false;
   document.querySelector('#agent-enabled').checked = false;
-  await saveSettingsFromPanel({ close: false });
+  settings = await api.saveSettings({ llmEnabled: false, agentEnabled: false });
+  applySettings();
 }
 
-async function handleProviderFeatureToggle(input, featureName) {
+async function handleProviderFeatureToggle(input, featureName, settingKey) {
   if (!input.checked) {
-    await saveSettingsFromPanel({ close: false });
+    try {
+      settings = await api.saveSettings({ [settingKey]: false });
+      applySettings();
+    } catch (error) {
+      input.checked = true;
+      setProviderStatus(error.message, true);
+    }
     return;
   }
   if (!providerDraftConfigured()) {
@@ -448,18 +471,32 @@ async function handleProviderFeatureToggle(input, featureName) {
   // Persist the provider while the requested feature remains off. It is only
   // enabled after a successful live request to that exact saved configuration.
   input.checked = false;
+  const providerFingerprint = providerDraftFingerprint();
   providerValidationInFlight = true;
   syncProviderFeatureAvailability();
   setProviderStatus(`Checking the LLM Provider before enabling ${featureName}…`);
   try {
-    if (!await saveSettingsFromPanel({ close: false })) throw new Error('The provider settings could not be saved.');
+    settings = await api.saveSettings({
+      ...providerDraftPayload(),
+      llmEnabled: false,
+      agentEnabled: false
+    });
+    applySettings();
     const result = await api.testAiSettings();
+    if (providerDraftFingerprint() !== providerFingerprint) {
+      throw new Error('The provider changed during validation. Enable the feature again to test the current settings.');
+    }
     input.checked = true;
-    if (!await saveSettingsFromPanel({ close: false })) throw new Error(`${featureName} could not be enabled.`);
+    settings = await api.saveSettings({ [settingKey]: true });
+    applySettings();
     setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
-    await persistDisabledProviderFeatures();
-    setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    try {
+      await persistDisabledProviderFeatures();
+      setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    } catch (rollbackError) {
+      setProviderStatus(`Provider validation failed and AI features could not be disabled: ${rollbackError.message}`, true);
+    }
   } finally {
     providerValidationInFlight = false;
     syncProviderFeatureAvailability();
@@ -2037,8 +2074,8 @@ document.querySelector('#api-key').addEventListener('input', (event) => {
 });
 document.querySelector('#ai-api-url').addEventListener('input', invalidateProviderFeatures);
 document.querySelector('#ai-model').addEventListener('input', invalidateProviderFeatures);
-document.querySelector('#ai-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'AI session context'));
-document.querySelector('#agent-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'Strands supervisor'));
+document.querySelector('#ai-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'AI session context', 'llmEnabled'));
+document.querySelector('#agent-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'Supervisor', 'agentEnabled'));
 document.querySelector('#test-ai').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   if (!providerDraftConfigured()) {
