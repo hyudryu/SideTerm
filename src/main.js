@@ -167,6 +167,7 @@ document.querySelector('#app').innerHTML = `
             <article><span>Words saved typing</span><strong id="agent-metric-words">0</strong></article>
           </section>
           <section class="agent-pending-section"><header><strong>Pending sessions</strong><span>Running or awaiting attention</span></header><div id="agent-pending-sessions" class="agent-pending-sessions"></div></section>
+          <section class="agent-pull-section"><header><strong>GitHub pull requests</strong><span>Checked every minute after a push</span></header><div id="agent-pull-requests" class="agent-pull-requests"></div></section>
           <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
           <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
           <div id="agent-confirmations" class="agent-confirmations"></div>
@@ -677,6 +678,9 @@ function trackTerminalInput(session, data) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
       if (command) {
+        if (/(?:^|\s)git\s+push(?:\s|$)/i.test(command)) {
+          api.armGithubPush(session.id, { cwd: session.cwd, links: session.links.map((link) => link.url) });
+        }
         const agent = detectedAgent(command);
         if (agent) session.agent = agent;
         appendSessionContext(session, `$ ${command}`);
@@ -905,6 +909,8 @@ function persistWorkspaceNow() {
         groupId: session.groupId,
         title: session.title,
         subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
+        cwd: session.cwd,
+        links: session.links.map((link) => link.url),
         notified: session.notified,
         busy: sessions.get(session.id)?.busy
       }))
@@ -1099,6 +1105,46 @@ function renderAgentState(nextState) {
     pendingSessions.append(card);
   }
 
+  const pullRequests = document.querySelector('#agent-pull-requests');
+  pullRequests.replaceChildren();
+  if (!(agentState.pullRequests || []).length) {
+    const empty = document.createElement('span');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = 'No pull requests monitored yet. SideTerm starts after a successful git push.';
+    pullRequests.append(empty);
+  }
+  for (const pull of [...(agentState.pullRequests || [])].reverse()) {
+    const card = document.createElement('article');
+    card.className = 'agent-pull-card';
+    const heading = document.createElement('button');
+    heading.type = 'button';
+    heading.className = 'agent-pull-heading';
+    const title = document.createElement('strong');
+    title.textContent = pull.title || pull.url;
+    const status = document.createElement('span');
+    status.textContent = `${pull.state || 'open'} · ${pull.comments?.length || 0} comments`;
+    heading.append(title, status);
+    heading.addEventListener('click', () => void api.openExternal(pull.url));
+    const body = document.createElement('p');
+    body.textContent = pull.body || 'No pull request description.';
+    const reactions = document.createElement('div');
+    reactions.className = 'agent-pull-reactions';
+    for (const reaction of pull.reactions || []) {
+      const chip = document.createElement('span');
+      chip.textContent = `${reaction.emoji} ${reaction.count}`;
+      reactions.append(chip);
+    }
+    const latest = document.createElement('div');
+    latest.className = 'agent-pull-comments';
+    for (const comment of (pull.comments || []).slice(-3).reverse()) {
+      const row = document.createElement('span');
+      row.textContent = `${comment.author}: ${comment.body || comment.state}`;
+      latest.append(row);
+    }
+    card.append(heading, body, reactions, latest);
+    pullRequests.append(card);
+  }
+
   const unread = (agentState.notifications || []).filter((item) => !item.read);
   document.querySelector('#agent-notification-count').textContent = String(unread.length);
   const notifications = document.querySelector('#agent-notifications');
@@ -1144,9 +1190,17 @@ function renderAgentState(nextState) {
     row.className = 'agent-confirmation';
     const copy = document.createElement('div');
     const heading = document.createElement('strong');
-    heading.textContent = confirmation.kind === 'archive' ? `Archive ${confirmation.title}?` : `Send input to ${confirmation.title}?`;
+    heading.textContent = confirmation.kind === 'archive'
+      ? `Archive ${confirmation.title}?`
+      : confirmation.kind === 'github-comment'
+        ? `Post comment to ${confirmation.pullRequestUrl}?`
+        : `Send input to ${confirmation.title}?`;
     const detailText = document.createElement('code');
-    detailText.textContent = confirmation.kind === 'archive' ? confirmation.summary : confirmation.input;
+    detailText.textContent = confirmation.kind === 'archive'
+      ? confirmation.summary
+      : confirmation.kind === 'github-comment'
+        ? confirmation.body
+        : confirmation.input;
     copy.append(heading, detailText);
     const deny = document.createElement('button');
     deny.type = 'button';

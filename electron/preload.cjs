@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
   scroll: (id, amount) => ipcRenderer.send('terminal:scroll', { id, amount }),
+  armGithubPush: (id, details) => ipcRenderer.send('github:push-armed', { id, details }),
   close: (id) => ipcRenderer.send('terminal:close', id),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),

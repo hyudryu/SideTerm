@@ -8,6 +8,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
+const { discoverPullRequest, fetchPullRequest, postPullRequestComment } = require('./github/pr-monitor.cjs');
 
 // Desktop launchers may close their inherited output pipes after starting the
 // application. Electron logs rejected IPC handlers internally; without an
@@ -27,6 +28,8 @@ let mobileWorkspace = { groups: [], sessions: [] };
 let supervisorRuntime = null;
 let agentChatInFlight = false;
 let agentStatus = 'idle';
+let githubMonitorInFlight = false;
+let githubMonitorTimer = null;
 const pendingRendererActions = new Map();
 
 const DEFAULT_HOTKEYS = {
@@ -201,7 +204,9 @@ function emptyAgentState() {
     archivedSessions: [],
     confirmations: [],
     actionResults: [],
-    metrics: { terminalInputsApproved: 0, terminalWordsEntered: 0 }
+    metrics: { terminalInputsApproved: 0, terminalWordsEntered: 0 },
+    pullRequests: [],
+    customTools: []
   };
 }
 
@@ -240,10 +245,12 @@ function readAgentState() {
       })) : [],
       confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-40).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
-        kind: item?.kind === 'archive' ? 'archive' : 'terminal-input',
+        kind: ['archive', 'terminal-input', 'github-comment'].includes(item?.kind) ? item.kind : 'terminal-input',
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
+        pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
+        body: String(item?.body || '').slice(0, 20_000),
         reason: String(item?.reason || '').slice(0, 300),
         summary: String(item?.summary || '').slice(0, 500),
         outcome: String(item?.outcome || 'completed').slice(0, 24),
@@ -255,7 +262,35 @@ function readAgentState() {
       metrics: {
         terminalInputsApproved: Math.max(0, Math.floor(Number(parsed.metrics?.terminalInputsApproved) || 0)),
         terminalWordsEntered: Math.max(0, Math.floor(Number(parsed.metrics?.terminalWordsEntered) || 0))
-      }
+      },
+      pullRequests: Array.isArray(parsed.pullRequests) ? parsed.pullRequests.slice(-40).map((item) => ({
+        url: String(item?.url || '').slice(0, 1000),
+        number: Math.max(0, Number(item?.number) || 0),
+        sessionId: String(item?.sessionId || '').slice(0, 100),
+        title: String(item?.title || '').slice(0, 500),
+        body: String(item?.body || '').slice(0, 30_000),
+        author: String(item?.author || '').slice(0, 100),
+        state: String(item?.state || 'open').slice(0, 40),
+        draft: Boolean(item?.draft),
+        fingerprint: String(item?.fingerprint || '').slice(0, 100),
+        commentFingerprint: String(item?.commentFingerprint || '').slice(0, 100),
+        updatedAt: String(item?.updatedAt || '').slice(0, 100),
+        lastCheckedAt: Number(item?.lastCheckedAt) || 0,
+        reactions: Array.isArray(item?.reactions) ? item.reactions.slice(0, 20).map((reaction) => ({
+          name: String(reaction?.name || '').slice(0, 40), emoji: String(reaction?.emoji || '').slice(0, 10), count: Math.max(0, Number(reaction?.count) || 0)
+        })) : [],
+        comments: Array.isArray(item?.comments) ? item.comments.slice(-100).map((comment) => ({
+          id: String(comment?.id || '').slice(0, 200), kind: String(comment?.kind || '').slice(0, 40), author: String(comment?.author || '').slice(0, 100),
+          body: String(comment?.body || '').slice(0, 6000), url: String(comment?.url || '').slice(0, 1000), path: String(comment?.path || '').slice(0, 1000),
+          line: Number(comment?.line) || null, state: String(comment?.state || '').slice(0, 40), createdAt: String(comment?.createdAt || '').slice(0, 100), updatedAt: String(comment?.updatedAt || '').slice(0, 100)
+        })) : []
+      })).filter((item) => /^https:\/\/github\.com\//.test(item.url)) : [],
+      customTools: Array.isArray(parsed.customTools) ? parsed.customTools.slice(-30).map((item) => ({
+        name: String(item?.name || '').replace(/[^a-z0-9_-]/gi, '_').slice(0, 48),
+        description: String(item?.description || '').slice(0, 300),
+        instructions: String(item?.instructions || '').slice(0, 4000),
+        createdAt: Number(item?.createdAt) || Date.now()
+      })).filter((item) => item.name && item.description && item.instructions) : []
     };
   } catch {
     return emptyAgentState();
@@ -289,6 +324,8 @@ function publicAgentState() {
     notifications: state.notifications,
     archivedSessions: state.archivedSessions,
     confirmations: state.confirmations,
+    pullRequests: state.pullRequests,
+    customTools: state.customTools,
     pendingSessions,
     metrics: {
       activeSessions: mobileWorkspace.sessions.length,
@@ -304,6 +341,90 @@ function publicAgentState() {
 
 function countTerminalWords(input) {
   return String(input || '').trim().match(/\S+/gu)?.length || 0;
+}
+
+function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false } = {}) {
+  const state = readAgentState();
+  const index = state.pullRequests.findIndex((item) => item.url === snapshot.url);
+  const previous = index >= 0 ? state.pullRequests[index] : null;
+  const next = { ...snapshot, sessionId: sessionId || previous?.sessionId || '', lastCheckedAt: Date.now() };
+  if (notify && previous?.commentFingerprint && previous.commentFingerprint !== next.commentFingerprint) {
+    const previousComments = new Map(previous.comments.map((item) => [item.id, `${item.updatedAt}:${item.body}`]));
+    const changed = next.comments.filter((item) => previousComments.get(item.id) !== `${item.updatedAt}:${item.body}`);
+    const codexCount = changed.filter((item) => /codex|chatgpt/i.test(`${item.author} ${item.body}`)).length;
+    const summary = changed.length
+      ? `${changed.length} new or updated PR comment${changed.length === 1 ? '' : 's'}${codexCount ? `, including ${codexCount} from Codex` : ''}.`
+      : 'Pull request reactions or review status changed.';
+    state.notifications.push({
+      id: crypto.randomUUID(), cycleId: `github:${next.url}:${next.commentFingerprint}`, sessionId: next.sessionId,
+      title: `PR #${next.number || next.url.split('/').at(-1)} · ${next.title}`.slice(0, 100), summary,
+      context: changed.slice(-12).map((item) => `${item.author}: ${item.body}`).join('\n').slice(-12_000),
+      cwd: '', links: [next.url], createdAt: Date.now(), read: false
+    });
+  }
+  if (index >= 0) state.pullRequests[index] = next;
+  else state.pullRequests.push(next);
+  if (state.pullRequests.length > 40) state.pullRequests.splice(0, state.pullRequests.length - 40);
+  if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
+  writeAgentState(state);
+  return broadcastAgentState();
+}
+
+async function monitorPullRequest(url, sessionId = '', options = {}) {
+  const snapshot = await fetchPullRequest(url);
+  updateMonitoredPullRequest(snapshot, sessionId, options);
+  return snapshot;
+}
+
+async function pollMonitoredPullRequests() {
+  if (githubMonitorInFlight || !readSettingsRecord().agentEnabled) return;
+  githubMonitorInFlight = true;
+  try {
+    const pulls = readAgentState().pullRequests;
+    for (const pull of pulls) {
+      try {
+        await monitorPullRequest(pull.url, pull.sessionId, { notify: true });
+      } catch {
+        // A temporary GitHub/auth/network failure should not interrupt the user.
+      }
+    }
+  } finally {
+    githubMonitorInFlight = false;
+  }
+}
+
+async function beginPullRequestMonitoring(sessionId, details = {}) {
+  if (!readSettingsRecord().agentEnabled) return;
+  try {
+    const candidates = Array.isArray(details.links) ? details.links.filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(url)) : [];
+    const url = candidates.at(-1) || await discoverPullRequest(details.cwd || os.homedir());
+    await monitorPullRequest(url, sessionId, { notify: false });
+  } catch {
+    // A push can target a branch without an open PR. Monitoring starts once one can be discovered.
+  }
+}
+
+function observePotentialGitPush(sessionId, data) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.githubPushOutput = `${session.githubPushOutput || ''}${String(data || '')}`.slice(-5000);
+  const output = session.githubPushOutput.replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '');
+  if (/\[rejected\]/i.test(output) || /failed to push/i.test(output)) {
+    session.pendingGithubPush = null;
+    session.githubPushOutput = '';
+    return;
+  }
+  const success = output.match(/\bTo (?:https:\/\/github\.com\/|(?:git@)?github\.com:)[^\s]+[\s\S]{0,2000}(?:->|Everything up-to-date)/i);
+  if (success) {
+    const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
+    const details = session.pendingGithubPush || { cwd: metadata?.cwd, links: metadata?.links };
+    const fingerprint = crypto.createHash('sha256').update(success[0]).digest('hex');
+    session.pendingGithubPush = null;
+    session.githubPushOutput = '';
+    if (session.lastGithubPushFingerprint === fingerprint) return;
+    session.lastGithubPushFingerprint = fingerprint;
+    void beginPullRequestMonitoring(sessionId, details);
+  }
 }
 
 function broadcastAgentState() {
@@ -329,10 +450,10 @@ function requestRendererAction(type, payload, timeoutMs = 15_000) {
 function queueAgentConfirmation(input) {
   const state = readAgentState();
   const metadata = mobileWorkspace.sessions.find((item) => item.id === input.sessionId);
-  if (!metadata && !sessions.has(input.sessionId)) throw new Error('That terminal session is not active.');
+  if (input.kind !== 'github-comment' && !metadata && !sessions.has(input.sessionId)) throw new Error('That terminal session is not active.');
   const confirmation = {
     id: crypto.randomUUID(),
-    title: metadata?.title || input.sessionId,
+    title: metadata?.title || input.title || input.sessionId || 'GitHub pull request',
     createdAt: Date.now(),
     ...input
   };
@@ -342,7 +463,7 @@ function queueAgentConfirmation(input) {
   return {
     pendingConfirmation: true,
     confirmationId: confirmation.id,
-    message: `Waiting for the user to approve ${confirmation.kind === 'archive' ? 'archiving' : 'terminal input'} in SideTerm.`
+    message: `Waiting for the user to approve ${confirmation.kind === 'archive' ? 'archiving' : confirmation.kind === 'github-comment' ? 'posting the GitHub comment' : 'terminal input'} in SideTerm.`
   };
 }
 
@@ -382,6 +503,36 @@ const supervisorActions = {
   },
   requestTerminalInput(input) {
     return queueAgentConfirmation({ kind: 'terminal-input', ...input });
+  },
+  async getPullRequest({ url }) {
+    const snapshot = await fetchPullRequest(url);
+    updateMonitoredPullRequest(snapshot, '', { notify: false });
+    return snapshot;
+  },
+  requestGithubComment(input) {
+    return queueAgentConfirmation({ kind: 'github-comment', title: input.pullRequestUrl, ...input });
+  },
+  listCustomTools() {
+    return readAgentState().customTools;
+  },
+  createCustomTool(input) {
+    const state = readAgentState();
+    const name = String(input.name || '').toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
+    if (!name) throw new Error('Custom tool name must contain a letter or number.');
+    const definition = {
+      name,
+      description: String(input.description || '').trim().slice(0, 300),
+      instructions: String(input.instructions || '').trim().slice(0, 4000),
+      createdAt: Date.now()
+    };
+    if (!definition.description || !definition.instructions) throw new Error('Custom tools require a description and instructions.');
+    const existing = state.customTools.findIndex((item) => item.name === name);
+    if (existing >= 0) state.customTools[existing] = definition;
+    else state.customTools.push(definition);
+    writeAgentState(state);
+    supervisorRuntime = null;
+    broadcastAgentState();
+    return { created: true, tool: definition, available: 'next supervisor turn' };
   }
 };
 
@@ -481,8 +632,17 @@ async function resolveAgentConfirmation(id, approved) {
   if (index < 0) throw new Error('That confirmation is no longer pending.');
   const [confirmation] = state.confirmations.splice(index, 1);
   let resultText;
+  let refreshPullRequestUrl = '';
   if (!approved) {
-    resultText = `The user denied ${confirmation.kind === 'archive' ? `archiving ${confirmation.title}` : `terminal input for ${confirmation.title}`}.`;
+    resultText = `The user denied ${confirmation.kind === 'archive'
+      ? `archiving ${confirmation.title}`
+      : confirmation.kind === 'github-comment'
+        ? `posting a comment to ${confirmation.pullRequestUrl}`
+        : `terminal input for ${confirmation.title}`}.`;
+  } else if (confirmation.kind === 'github-comment') {
+    const posted = await postPullRequestComment(confirmation.pullRequestUrl, confirmation.body);
+    refreshPullRequestUrl = confirmation.pullRequestUrl;
+    resultText = `The user approved the GitHub comment and SideTerm posted it: ${posted.url}`;
   } else if (confirmation.kind === 'terminal-input') {
     const session = sessions.get(confirmation.sessionId);
     if (!session) throw new Error('The target terminal session is no longer active.');
@@ -509,6 +669,9 @@ async function resolveAgentConfirmation(id, approved) {
   state.actionResults.push({ text: resultText, createdAt: Date.now() });
   addAgentMessage(state, 'event', resultText);
   writeAgentState(state);
+  if (refreshPullRequestUrl) {
+    await monitorPullRequest(refreshPullRequestUrl, '', { notify: false }).catch(() => {});
+  }
   return broadcastAgentState();
 }
 
@@ -864,6 +1027,8 @@ function sanitizeMobileWorkspace(value) {
     groupId: String(session?.groupId || '').slice(0, 100),
     title: String(session?.title || 'Terminal').slice(0, 100),
     subtitle: String(session?.subtitle || '').slice(0, 160),
+    cwd: String(session?.cwd || '').slice(0, 4096),
+    links: Array.isArray(session?.links) ? session.links.map(String).filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(url)).slice(-20) : [],
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
@@ -1166,9 +1331,10 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     }
   });
 
-  const session = { processHandle, tmux, tmuxSession };
+  const session = { processHandle, tmux, tmuxSession, pendingGithubPush: null, githubPushOutput: '', lastGithubPushFingerprint: '' };
   sessions.set(id, session);
   processHandle.onData((data) => {
+    observePotentialGitPush(id, data);
     send('terminal:data', { id, data });
     broadcastMobile({ type: 'data', id, data });
   });
@@ -1258,6 +1424,15 @@ function registerIpc() {
     }
   });
   ipcMain.on('terminal:scroll', (_event, { id, amount }) => scrollSession(id, amount));
+  ipcMain.on('github:push-armed', (_event, { id, details }) => {
+    const session = sessions.get(String(id || ''));
+    if (!session) return;
+    session.pendingGithubPush = {
+      cwd: String(details?.cwd || '').slice(0, 4096),
+      links: Array.isArray(details?.links) ? details.links.map(String).slice(-20) : []
+    };
+    session.githubPushOutput = '';
+  });
   ipcMain.on('terminal:close', (_event, id) => closeSession(id));
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);
@@ -1390,6 +1565,8 @@ app.setAppUserModelId('io.github.hyudryu.sideterm');
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  githubMonitorTimer = setInterval(() => void pollMonitoredPullRequests(), 60_000);
+  void pollMonitoredPullRequests();
   if (readSettingsRecord().mobileEnabled) void startMobileServer({ persist: false }).catch(() => {});
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1397,6 +1574,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  if (githubMonitorTimer) clearInterval(githubMonitorTimer);
+  githubMonitorTimer = null;
   detachAllSessions();
   if (process.platform !== 'darwin') app.quit();
 });
