@@ -39,7 +39,11 @@ contextBridge.exposeInMainWorld('sideTerm', {
   onAgentAction: (callback) => subscribe('agent:action', callback),
   resolveAgentAction: (requestId, value, error = '') => ipcRenderer.send('agent:action-result', { requestId, value, error }),
   getSpeechStatus: () => ipcRenderer.invoke('voice:get-status'),
-  installSpeech: (kind) => ipcRenderer.invoke('voice:install', kind),
+  installSpeech: async (kind) => {
+    const result = await ipcRenderer.invoke('voice:install', kind);
+    if (!result?.ok) throw new Error(result?.error || 'Speech installation failed.');
+    return result.status;
+  },
   previewVoice: (voice) => ipcRenderer.invoke('voice:preview', voice),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
   transcribeSpeech: (bytes, mimeType) => ipcRenderer.invoke('voice:transcribe', { bytes, mimeType }),

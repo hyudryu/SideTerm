@@ -956,8 +956,16 @@ function reportSessionCompletion(session) {
 function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
-  if (stt) stt.textContent = status.sttInstalled ? 'Installed' : 'Not installed';
-  if (tts) tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
+  if (stt) {
+    stt.textContent = status.sttInstalled ? 'Installed' : 'Not installed';
+    stt.classList.remove('install-error');
+    stt.removeAttribute('title');
+  }
+  if (tts) {
+    tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
+    tts.classList.remove('install-error');
+    tts.removeAttribute('title');
+  }
   const installStt = document.querySelector('#install-stt');
   const installTts = document.querySelector('#install-tts');
   if (installStt) installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
@@ -980,14 +988,19 @@ async function installSpeech(kind) {
   const button = document.querySelector(kind === 'stt' ? '#install-stt' : '#install-tts');
   const status = document.querySelector(kind === 'stt' ? '#stt-status' : '#tts-status');
   button.disabled = true;
+  status.classList.remove('install-error');
+  status.removeAttribute('title');
   status.textContent = 'Installing…';
-  await saveSettingsFromPanel({ close: false });
   try {
+    if (!await saveSettingsFromPanel({ close: false })) throw new Error('Could not save the speech settings.');
     renderSpeechStatus(await api.installSpeech(kind));
     showToast(`${kind === 'stt' ? 'Speech to text' : 'Pocket TTS'} installed`);
   } catch (error) {
-    status.textContent = 'Install failed';
-    showToast(error.message);
+    const message = String(error?.message || error || 'Unknown installer error.');
+    status.textContent = `Install failed: ${message}`;
+    status.classList.add('install-error');
+    status.title = message;
+    showToast(message);
   } finally {
     button.disabled = false;
   }
