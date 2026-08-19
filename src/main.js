@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -26,7 +26,9 @@ const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
-const AI_SUMMARY_SETTLE_MS = 1_200;
+const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
+const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
+const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const MAX_CONTEXT_CHARS = 16_000;
 const GROUP_SORT_OPTIONS = [
   { value: 'default', label: 'Default', initialDirection: 'asc' },
@@ -35,7 +37,8 @@ const GROUP_SORT_OPTIONS = [
   { value: 'name', label: 'Name', initialDirection: 'asc' }
 ];
 const sessions = new Map();
-const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
+const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
+  ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -49,6 +52,9 @@ let dropTarget = null;
 let clearApiKeyRequested = false;
 let settings = {
   llmEnabled: false,
+  aiInitialContextEnabled: true,
+  aiContinuousContextEnabled: true,
+  aiContextIntervalMinutes: 30,
   hasApiKey: false,
   apiUrl: '',
   model: '',
@@ -66,12 +72,16 @@ let settings = {
 let linkPopoverTimer = null;
 let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
 let agentCatchUpInFlight = false;
+let supervisorDashboardActive = false;
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
 let voiceMonitorFrame = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
+let activeVoicePlayer = null;
+let voiceBargeInStartedAt = 0;
+let providerValidationInFlight = false;
 
 document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
@@ -109,7 +119,7 @@ document.querySelector('#app').innerHTML = `
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.55.72 1 .9.35.15.73.2 1.1.1h.1v4h-.09a1.7 1.7 0 0 0-1.51.6c-.28.28-.48.62-.6 1Z"/></svg>
           <span class="action-label">Settings</span>
         </button>
-        <button id="agent-button" class="agent-button" type="button" title="Open supervisor" aria-label="Open supervisor">
+        <button id="agent-button" class="agent-button" type="button" title="Open supervisor dashboard" aria-label="Open supervisor dashboard">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v2a4 4 0 0 0 2 3.46V17h3l1 2 1-2h3v-2.54A4 4 0 0 0 18 11V9a6 6 0 0 0-6-6Z"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="10" r="1"/></svg>
           <span class="agent-unread-badge" hidden>0</span>
         </button>
@@ -143,6 +153,31 @@ document.querySelector('#app').innerHTML = `
         </div>
       </header>
       <div id="terminal-stack" class="terminal-stack"></div>
+      <section id="supervisor-dashboard" class="supervisor-dashboard" aria-labelledby="agent-panel-title" hidden>
+        <header class="supervisor-dashboard-header">
+          <div>
+            <span class="supervisor-kicker">SUPERVISOR</span>
+            <strong id="agent-panel-title">Session command center</strong>
+            <small>Persistent Strands agent across every terminal session</small>
+          </div>
+          <button id="agent-close" class="secondary-button" type="button">Back to terminal</button>
+        </header>
+        <div class="agent-panel-body">
+          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
+          <section class="agent-metrics" aria-label="Supervisor metrics">
+            <article><span>Pending sessions</span><strong id="agent-metric-pending">0</strong></article>
+            <article><span>Running now</span><strong id="agent-metric-running">0</strong></article>
+            <article><span>Agent inputs</span><strong id="agent-metric-inputs">0</strong></article>
+            <article><span>Words saved typing</span><strong id="agent-metric-words">0</strong></article>
+          </section>
+          <section class="agent-pending-section"><header><strong>Pending sessions</strong><span>Running or awaiting attention</span></header><div id="agent-pending-sessions" class="agent-pending-sessions"></div></section>
+          <section class="agent-pull-section"><header><strong>GitHub pull requests</strong><span>Checked every minute after a push</span></header><div id="agent-pull-requests" class="agent-pull-requests"></div></section>
+          <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
+          <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
+          <div id="agent-confirmations" class="agent-confirmations"></div>
+          <form id="agent-chat-form" class="agent-chat-form"><textarea id="agent-chat-input" rows="2" placeholder="Ask about a session, create work, or request terminal input…"></textarea><button class="primary-button" type="submit">Send</button></form>
+        </div>
+      </section>
       <div id="toast-region" class="toast-region" aria-live="polite"></div>
     </section>
     <div id="settings-backdrop" class="settings-backdrop" hidden>
@@ -154,11 +189,7 @@ document.querySelector('#app').innerHTML = `
         <form id="settings-form">
           <div class="settings-scroll">
             <section class="settings-section">
-              <div class="settings-section-title"><strong>AI session context</strong><span>Optional · compatible provider</span></div>
-              <label class="toggle-row">
-                <span><strong>Automatic session naming</strong><small>Summarize recent terminal context after activity settles.</small></span>
-                <input id="ai-enabled" type="checkbox"><i></i>
-              </label>
+              <div class="settings-section-title"><strong>LLM Provider</strong><span>OpenAI-compatible</span></div>
               <label class="field-row"><span>API URL</span><input id="ai-api-url" type="url" autocomplete="off" placeholder="http://localhost:11434/v1" spellcheck="false"></label>
               <label class="field-row"><span>API key <small>(optional)</small></span><input id="api-key" type="password" autocomplete="off" placeholder="Provider key"></label>
               <div class="credential-actions"><span id="api-key-state">No key configured</span><button id="clear-api-key" type="button">Clear key</button></div>
@@ -166,10 +197,27 @@ document.querySelector('#app').innerHTML = `
               <p class="settings-note">Uses the OpenAI-compatible Chat Completions format. Enter a base URL such as <code>http://localhost:11434/v1</code>, or the full <code>/chat/completions</code> URL. Provider keys are encrypted by Electron and never exposed to the terminal renderer.</p>
               <div class="test-row"><button id="test-ai" class="secondary-button" type="button">Test connection</button><span id="ai-test-status"></span></div>
             </section>
-            <section class="settings-section">
-              <div class="settings-section-title"><strong>Strands supervisor</strong><span>Persistent human assistant</span></div>
+            <section class="settings-section settings-toggle-section">
               <label class="toggle-row">
-                <span><strong>Enable supervisor agent</strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
+                <span><strong>AI session context <em class="llm-required-label">LLM required</em></strong><small>Use the configured provider to name and summarize terminal sessions.</small></span>
+                <input id="ai-enabled" type="checkbox"><i></i>
+              </label>
+              <div class="ai-context-options">
+                <label class="toggle-row compact-toggle-row">
+                  <span><strong>Initial context</strong><small>Label a new session once, 30 seconds after its first meaningful prompt.</small></span>
+                  <input id="ai-initial-context-enabled" type="checkbox"><i></i>
+                </label>
+                <label class="toggle-row compact-toggle-row">
+                  <span><strong>Continuous context update</strong><small>Refresh the label from the latest terminal context.</small></span>
+                  <input id="ai-continuous-context-enabled" type="checkbox"><i></i>
+                </label>
+                <label class="context-interval-row"><span>Update every</span><input id="ai-context-interval-minutes" type="number" min="1" max="1440" step="1"><span>minutes</span></label>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="settings-section-title"><strong>Supervisor</strong><span>Persistent human assistant</span></div>
+              <label class="toggle-row">
+                <span><strong>Enable Supervisor <em class="llm-required-label">LLM required</em></strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
                 <input id="agent-enabled" type="checkbox"><i></i>
               </label>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
@@ -222,21 +270,6 @@ document.querySelector('#app').innerHTML = `
         </div>
       </section>
     </div>
-    <div id="agent-backdrop" class="settings-backdrop" hidden>
-      <section class="agent-panel" role="dialog" aria-modal="true" aria-labelledby="agent-panel-title">
-        <header class="settings-header">
-          <div><strong id="agent-panel-title">SideTerm supervisor</strong><span>Persistent Strands agent across every terminal session</span></div>
-          <button id="agent-close" class="settings-close" type="button" aria-label="Close supervisor">×</button>
-        </header>
-        <div class="agent-panel-body">
-          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
-          <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
-          <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
-          <div id="agent-confirmations" class="agent-confirmations"></div>
-          <form id="agent-chat-form" class="agent-chat-form"><textarea id="agent-chat-input" rows="2" placeholder="Ask about a session, create work, or request terminal input…"></textarea><button class="primary-button" type="submit">Send</button></form>
-        </div>
-      </section>
-    </div>
     <aside id="link-popover" class="link-popover" hidden></aside>
   </main>
 `;
@@ -252,7 +285,7 @@ const newSessionButton = document.querySelector('#new-session');
 const toastRegion = document.querySelector('#toast-region');
 const settingsBackdrop = document.querySelector('#settings-backdrop');
 const mobileBackdrop = document.querySelector('#mobile-backdrop');
-const agentBackdrop = document.querySelector('#agent-backdrop');
+const supervisorDashboard = document.querySelector('#supervisor-dashboard');
 const settingsForm = document.querySelector('#settings-form');
 const linkPopover = document.querySelector('#link-popover');
 const sidebarResizer = document.querySelector('#sidebar-resizer');
@@ -318,6 +351,7 @@ function applySettings() {
   } else {
     updateVisualState();
   }
+  syncAiContextSchedules();
 }
 
 function renderHotkeyInputs() {
@@ -347,6 +381,9 @@ function renderHotkeyInputs() {
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
+  document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
+  document.querySelector('#ai-continuous-context-enabled').checked = settings.aiContinuousContextEnabled;
+  document.querySelector('#ai-context-interval-minutes').value = String(settings.aiContextIntervalMinutes || 30);
   document.querySelector('#api-key').value = '';
   document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'Provider key';
   document.querySelector('#api-key-state').textContent = settings.hasApiKey ? 'Encrypted key configured' : 'No key configured';
@@ -367,10 +404,12 @@ function populateSettingsPanel() {
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
+  syncProviderFeatureAvailability();
   void refreshSpeechStatus();
 }
 
-function openSettingsPanel() {
+async function openSettingsPanel() {
+  settings = await api.getSettings().catch(() => settings);
   populateSettingsPanel();
   settingsBackdrop.hidden = false;
   requestAnimationFrame(() => settingsBackdrop.classList.add('visible'));
@@ -390,6 +429,9 @@ function settingsPayload() {
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
   return {
     llmEnabled: document.querySelector('#ai-enabled').checked,
+    aiInitialContextEnabled: document.querySelector('#ai-initial-context-enabled').checked,
+    aiContinuousContextEnabled: document.querySelector('#ai-continuous-context-enabled').checked,
+    aiContextIntervalMinutes: Number(document.querySelector('#ai-context-interval-minutes').value),
     apiKey: document.querySelector('#api-key').value,
     clearApiKey: clearApiKeyRequested,
     apiUrl: document.querySelector('#ai-api-url').value,
@@ -405,6 +447,144 @@ function settingsPayload() {
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
   };
+}
+
+function providerDraftConfigured() {
+  return Boolean(
+    document.querySelector('#ai-api-url').value.trim()
+    && document.querySelector('#ai-model').value.trim()
+  );
+}
+
+function providerDraftPayload() {
+  return {
+    apiKey: document.querySelector('#api-key').value,
+    clearApiKey: clearApiKeyRequested,
+    apiUrl: document.querySelector('#ai-api-url').value.trim(),
+    model: document.querySelector('#ai-model').value.trim()
+  };
+}
+
+function providerDraftFingerprint() {
+  return JSON.stringify(providerDraftPayload());
+}
+
+function providerDraftMatchesSavedSettings() {
+  const draft = providerDraftPayload();
+  return !draft.apiKey
+    && !draft.clearApiKey
+    && draft.apiUrl === String(settings.apiUrl || '').trim()
+    && draft.model === String(settings.model || '').trim();
+}
+
+function setProviderStatus(message = '', isError = false) {
+  const status = document.querySelector('#ai-test-status');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
+  status.classList.toggle('success', !isError && message.startsWith('Connected ·'));
+}
+
+function syncProviderFeatureAvailability() {
+  const configured = providerDraftConfigured();
+  for (const id of ['#api-key', '#clear-api-key', '#ai-api-url', '#ai-model']) {
+    document.querySelector(id).disabled = providerValidationInFlight;
+  }
+  document.querySelector('#test-ai').disabled = providerValidationInFlight;
+  for (const id of ['#ai-enabled', '#agent-enabled']) {
+    const input = document.querySelector(id);
+    input.disabled = !configured || providerValidationInFlight;
+    input.closest('.toggle-row').title = configured
+      ? ''
+      : 'Set up the LLM Provider API URL and model first.';
+  }
+  const aiContextAvailable = configured && !providerValidationInFlight && document.querySelector('#ai-enabled').checked;
+  document.querySelector('#ai-initial-context-enabled').disabled = !aiContextAvailable;
+  document.querySelector('#ai-continuous-context-enabled').disabled = !aiContextAvailable;
+  document.querySelector('#ai-context-interval-minutes').disabled = !aiContextAvailable
+    || !document.querySelector('#ai-continuous-context-enabled').checked;
+}
+
+function invalidateProviderFeatures() {
+  document.querySelector('#ai-enabled').checked = false;
+  document.querySelector('#agent-enabled').checked = false;
+  setProviderStatus(providerDraftConfigured()
+    ? 'Provider changed · enable a feature to verify the connection.'
+    : 'Set up the LLM Provider before enabling AI features.', !providerDraftConfigured());
+  syncProviderFeatureAvailability();
+}
+
+async function persistDisabledProviderFeatures() {
+  document.querySelector('#ai-enabled').checked = false;
+  document.querySelector('#agent-enabled').checked = false;
+  settings = await api.saveSettings({ llmEnabled: false, agentEnabled: false });
+  applySettings();
+}
+
+async function handleProviderFeatureToggle(input, featureName, settingKey) {
+  if (!input.checked) {
+    try {
+      settings = await api.saveSettings({ [settingKey]: false });
+      applySettings();
+    } catch (error) {
+      input.checked = true;
+      setProviderStatus(error.message, true);
+    }
+    syncProviderFeatureAvailability();
+    return;
+  }
+  if (!providerDraftConfigured()) {
+    input.checked = false;
+    setProviderStatus('Set up the LLM Provider API URL and model before enabling this feature.', true);
+    syncProviderFeatureAvailability();
+    return;
+  }
+
+  // Persist the provider while the requested feature remains off. It is only
+  // enabled after a successful live request to that exact saved configuration.
+  const otherSettingKey = settingKey === 'llmEnabled' ? 'agentEnabled' : 'llmEnabled';
+  const retainedOtherFeature = providerDraftMatchesSavedSettings() && Boolean(settings[otherSettingKey]);
+  const validationFeatureState = {
+    [settingKey]: false,
+    [otherSettingKey]: retainedOtherFeature
+  };
+  input.checked = false;
+  const providerFingerprint = providerDraftFingerprint();
+  providerValidationInFlight = true;
+  syncProviderFeatureAvailability();
+  setProviderStatus(`Checking the LLM Provider before enabling ${featureName}…`);
+  try {
+    settings = await api.saveSettings({
+      ...providerDraftPayload(),
+      ...validationFeatureState
+    });
+    applySettings();
+    const result = await api.testAiSettings();
+    if (providerDraftFingerprint() !== providerFingerprint) {
+      throw new Error('The provider changed during validation. Enable the feature again to test the current settings.');
+    }
+    input.checked = true;
+    settings = await api.saveSettings({ [settingKey]: true });
+    document.querySelector('#api-key').value = '';
+    clearApiKeyRequested = false;
+    document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'Provider key';
+    document.querySelector('#api-key-state').textContent = settings.hasApiKey ? 'Encrypted key configured' : 'No key configured';
+    document.querySelector('#clear-api-key').hidden = !settings.hasApiKey;
+    applySettings();
+    setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
+  } catch (error) {
+    try {
+      settings = await api.saveSettings(validationFeatureState);
+      document.querySelector('#ai-enabled').checked = settings.llmEnabled;
+      document.querySelector('#agent-enabled').checked = settings.agentEnabled;
+      applySettings();
+      setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    } catch (rollbackError) {
+      setProviderStatus(`Provider validation failed and the previous feature state could not be restored: ${rollbackError.message}`, true);
+    }
+  } finally {
+    providerValidationInFlight = false;
+    syncProviderFeatureAvailability();
+  }
 }
 
 async function saveSettingsFromPanel({ close = true } = {}) {
@@ -495,6 +675,7 @@ function appendSessionContext(session, text) {
   const plain = terminalText.trim();
   if (!plain) return;
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
+  session.contextRevision += 1;
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
 }
@@ -510,6 +691,9 @@ function trackTerminalInput(session, data) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
       if (command) {
+        if (/(?:^|\s)git\s+push(?:\s|$)/i.test(command)) {
+          api.armGithubPush(session.id, { cwd: session.cwd, links: session.links.map((link) => link.url) });
+        }
         const agent = detectedAgent(command);
         if (agent) session.agent = agent;
         appendSessionContext(session, `$ ${command}`);
@@ -531,21 +715,104 @@ function trackTerminalInput(session, data) {
   }
 }
 
-function scheduleAiSummary(session) {
-  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || session.summary || session.aiSummaryInFlight) return;
-  window.clearTimeout(session.aiSummaryTimer);
-  session.aiSummaryTimer = window.setTimeout(() => void requestAiSummary(session), AI_SUMMARY_SETTLE_MS);
+function aiContextIntervalMs() {
+  return Math.max(1, Math.min(1440, Number(settings.aiContextIntervalMinutes) || 30)) * 60_000;
 }
 
-async function requestAiSummary(session) {
-  if (session.aiSummaryInFlight || session.summary || session.context.length - session.lastSummarizedLength < 4) return;
+function clearAiSummaryTimer(session) {
+  window.clearTimeout(session.aiSummaryTimer);
+  session.aiSummaryTimer = null;
+  session.aiSummaryMode = '';
+  session.aiSummaryDueAt = 0;
+}
+
+function armAiSummaryTimer(session, mode, delayMs) {
+  if (session.aiSummaryTimer && session.aiSummaryMode === mode) return;
+  clearAiSummaryTimer(session);
+  session.aiSummaryMode = mode;
+  session.aiSummaryDueAt = Date.now() + delayMs;
+  session.aiSummaryTimer = window.setTimeout(() => {
+    session.aiSummaryTimer = null;
+    session.aiSummaryMode = '';
+    session.aiSummaryDueAt = 0;
+    void requestAiSummary(session, mode);
+  }, delayMs);
+}
+
+function scheduleAiSummary(session) {
+  if (sessions.get(session.id) !== session || !settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
+  if (!session.aiInitialSummaryDone) {
+    if (settings.aiInitialContextEnabled) {
+      armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
+      return;
+    }
+    session.aiInitialSummaryDone = true;
+  }
+  if (settings.aiContinuousContextEnabled) {
+    const elapsed = session.lastAiSummaryAt ? Date.now() - session.lastAiSummaryAt : 0;
+    armAiSummaryTimer(session, 'continuous', Math.max(1_000, aiContextIntervalMs() - elapsed));
+  }
+}
+
+function syncAiContextSchedules() {
+  for (const session of sessions.values()) {
+    const preserveInitialDeadline = session.aiSummaryTimer
+      && session.aiSummaryMode === 'initial'
+      && settings.llmEnabled
+      && settings.apiUrl
+      && settings.model
+      && settings.aiInitialContextEnabled
+      && !session.exited;
+    if (preserveInitialDeadline) continue;
+    clearAiSummaryTimer(session);
+    scheduleAiSummary(session);
+  }
+}
+
+function aiSummaryModeEnabled(mode) {
+  return Boolean(
+    settings.llmEnabled
+    && settings.apiUrl
+    && settings.model
+    && (mode === 'initial' ? settings.aiInitialContextEnabled : settings.aiContinuousContextEnabled)
+  );
+}
+
+async function requestAiSummary(session, mode) {
+  if (session.aiSummaryInFlight) {
+    armAiSummaryTimer(session, mode, 1_000);
+    return;
+  }
+  if (sessions.get(session.id) !== session || !settings.llmEnabled || session.exited) return;
+  if (mode === 'initial' && !settings.aiInitialContextEnabled) {
+    session.aiInitialSummaryDone = true;
+    scheduleAiSummary(session);
+    return;
+  }
+  if (mode === 'continuous' && !settings.aiContinuousContextEnabled) return;
+  if (session.contextRevision === session.lastSummarizedRevision) {
+    if (mode === 'initial') session.aiInitialSummaryDone = true;
+    session.lastAiSummaryAt = Date.now();
+    scheduleAiSummary(session);
+    return;
+  }
   session.aiSummaryInFlight = true;
+  const summarizedContext = session.context;
+  const summarizedRevision = session.contextRevision;
+  let completed = false;
   try {
-    const result = await api.summarizeSession({ context: session.context, agent: session.agent || 'Terminal' });
+    const result = await api.summarizeSession({
+      context: summarizedContext,
+      agent: session.agent || 'Terminal',
+      requestTimeoutMs: AI_SUMMARY_REQUEST_TIMEOUT_MS
+    });
+    if (sessions.get(session.id) !== session || session.exited || !aiSummaryModeEnabled(mode)) return;
     if (!result) return;
     session.displayName = session.agent || result.name;
     session.summary = result.summary;
-    session.lastSummarizedLength = session.context.length;
+    session.lastSummarizedRevision = summarizedRevision;
+    session.aiErrorShown = false;
+    completed = true;
     updateSessionItem(session);
     resortSessionGroupByName(session);
     schedulePersist();
@@ -556,6 +823,15 @@ async function requestAiSummary(session) {
     }
   } finally {
     session.aiSummaryInFlight = false;
+    if (sessions.get(session.id) !== session || session.exited) return;
+    if (!aiSummaryModeEnabled(mode)) return;
+    if (!completed) {
+      armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
+      return;
+    }
+    if (mode === 'initial') session.aiInitialSummaryDone = true;
+    session.lastAiSummaryAt = Date.now();
+    scheduleAiSummary(session);
   }
 }
 
@@ -617,6 +893,8 @@ function persistWorkspaceNow() {
         summary: session.summary,
         agent: session.agent,
         hasUserActivity: session.hasUserActivity,
+        aiInitialSummaryDone: session.aiInitialSummaryDone,
+        lastAiSummaryAt: session.lastAiSummaryAt,
         createdAt: session.createdAt,
         lastResponseAt: session.lastResponseAt,
         links: session.links
@@ -624,44 +902,52 @@ function persistWorkspaceNow() {
     }
   }
 
+  const savedGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sortBy: group.sortBy,
+    sortDirection: group.sortDirection,
+    sessionIds: group.sessionIds.filter((id) => sessions.has(id))
+  }));
+  const mobileGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sessionIds: sortedSessionIds(group, sessions)
+  }));
+  const serializedWorkspace = JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: savedGroups,
+    sessions: savedSessions,
+    activeId,
+    activeGroupId
+  });
+  let localStorageSaved = false;
   try {
-    const savedGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sortBy: group.sortBy,
-      sortDirection: group.sortDirection,
-      sessionIds: group.sessionIds.filter((id) => sessions.has(id))
-    }));
-    const mobileGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sessionIds: sortedSessionIds(group, sessions)
-    }));
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({
-      version: WORKSPACE_VERSION,
-      groups: savedGroups,
-      sessions: savedSessions,
-      activeId,
-      activeGroupId
-    }));
-    api.updateMobileWorkspace({
-      groups: mobileGroups,
-      sessions: savedSessions.map((session) => ({
-        id: session.id,
-        groupId: session.groupId,
-        title: session.title,
-        subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
-        notified: session.notified,
-        busy: sessions.get(session.id)?.busy
-      }))
-    });
+    localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
+    localStorageSaved = true;
   } catch {
-    showToast('Workspace storage is full; older scrollback was not saved');
+    // The main-process file backup remains available when Chromium storage is full.
   }
+  void api.saveWorkspace(serializedWorkspace).catch(() => {
+    if (!localStorageSaved) showToast('Workspace could not be saved to browser storage or the file backup');
+  });
+  api.updateMobileWorkspace({
+    groups: mobileGroups,
+    sessions: savedSessions.map((session) => ({
+      id: session.id,
+      groupId: session.groupId,
+      title: session.title,
+      subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
+      cwd: session.cwd,
+      links: session.links.map((link) => link.url),
+      notified: session.notified,
+      busy: sessions.get(session.id)?.busy
+    }))
+  });
 }
 
 function schedulePersist() {
@@ -822,6 +1108,73 @@ function renderAgentState(nextState) {
   label.textContent = !agentState.enabled ? 'Supervisor disabled' : agentState.status === 'thinking' ? 'Thinking…' : agentState.status === 'error' ? 'Needs attention' : 'Ready';
   detail.textContent = !agentState.enabled ? 'Enable it in Settings to start tracking sessions' : agentState.configured ? 'Watching all SideTerm sessions' : 'Configure an API URL and model';
 
+  const metrics = agentState.metrics || {};
+  document.querySelector('#agent-metric-pending').textContent = String(metrics.pendingSessions || 0);
+  document.querySelector('#agent-metric-running').textContent = String(metrics.runningSessions || 0);
+  document.querySelector('#agent-metric-inputs').textContent = Number(metrics.terminalInputsApproved || 0).toLocaleString();
+  document.querySelector('#agent-metric-words').textContent = Number(metrics.terminalWordsEntered || 0).toLocaleString();
+  const pendingSessions = document.querySelector('#agent-pending-sessions');
+  pendingSessions.replaceChildren();
+  if (!(agentState.pendingSessions || []).length) {
+    const empty = document.createElement('span');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = 'Nothing pending. All sessions are idle and acknowledged.';
+    pendingSessions.append(empty);
+  }
+  for (const session of agentState.pendingSessions || []) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'agent-pending-session';
+    const stateLabel = session.busy ? 'Running' : 'Needs attention';
+    card.innerHTML = '<span class="agent-pending-state"></span><span class="agent-pending-copy"><strong></strong><small></small></span><span class="agent-pending-arrow">›</span>';
+    card.classList.toggle('running', Boolean(session.busy));
+    card.querySelector('.agent-pending-state').textContent = stateLabel;
+    card.querySelector('strong').textContent = session.title || 'Terminal';
+    card.querySelector('small').textContent = session.subtitle || session.group || '';
+    card.addEventListener('click', () => activateSession(session.id));
+    pendingSessions.append(card);
+  }
+
+  const pullRequests = document.querySelector('#agent-pull-requests');
+  pullRequests.replaceChildren();
+  if (!(agentState.pullRequests || []).length) {
+    const empty = document.createElement('span');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = 'No pull requests monitored yet. SideTerm starts after a successful git push.';
+    pullRequests.append(empty);
+  }
+  for (const pull of [...(agentState.pullRequests || [])].reverse()) {
+    const card = document.createElement('article');
+    card.className = 'agent-pull-card';
+    const heading = document.createElement('button');
+    heading.type = 'button';
+    heading.className = 'agent-pull-heading';
+    const title = document.createElement('strong');
+    title.textContent = pull.title || pull.url;
+    const status = document.createElement('span');
+    status.textContent = `${pull.state || 'open'} · ${pull.comments?.length || 0} comments`;
+    heading.append(title, status);
+    heading.addEventListener('click', () => void api.openExternal(pull.url));
+    const body = document.createElement('p');
+    body.textContent = pull.body || 'No pull request description.';
+    const reactions = document.createElement('div');
+    reactions.className = 'agent-pull-reactions';
+    for (const reaction of pull.reactions || []) {
+      const chip = document.createElement('span');
+      chip.textContent = `${reaction.emoji} ${reaction.count}`;
+      reactions.append(chip);
+    }
+    const latest = document.createElement('div');
+    latest.className = 'agent-pull-comments';
+    for (const comment of (pull.comments || []).slice(-3).reverse()) {
+      const row = document.createElement('span');
+      row.textContent = `${comment.author}: ${comment.body || comment.state}`;
+      latest.append(row);
+    }
+    card.append(heading, body, reactions, latest);
+    pullRequests.append(card);
+  }
+
   const unread = (agentState.notifications || []).filter((item) => !item.read);
   document.querySelector('#agent-notification-count').textContent = String(unread.length);
   const notifications = document.querySelector('#agent-notifications');
@@ -867,10 +1220,19 @@ function renderAgentState(nextState) {
     row.className = 'agent-confirmation';
     const copy = document.createElement('div');
     const heading = document.createElement('strong');
-    heading.textContent = confirmation.kind === 'archive' ? `Archive ${confirmation.title}?` : `Send input to ${confirmation.title}?`;
+    heading.textContent = confirmation.kind === 'archive'
+      ? `Archive ${confirmation.title}?`
+      : confirmation.kind === 'github-comment'
+        ? `Post comment to ${confirmation.pullRequestUrl}?`
+        : `Send input to ${confirmation.title}?`;
     const detailText = document.createElement('code');
-    detailText.textContent = confirmation.kind === 'archive' ? confirmation.summary : confirmation.input;
+    detailText.textContent = confirmation.kind === 'archive'
+      ? confirmation.summary
+      : confirmation.kind === 'github-comment'
+        ? confirmation.body
+        : confirmation.input;
     copy.append(heading, detailText);
+    if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
     const deny = document.createElement('button');
     deny.type = 'button';
     deny.className = 'secondary-button';
@@ -895,8 +1257,12 @@ async function respondToAgentConfirmation(id, approved) {
 }
 
 async function openAgentPanel() {
-  agentBackdrop.hidden = false;
-  requestAnimationFrame(() => agentBackdrop.classList.add('visible'));
+  const foreground = sessions.get(activeId);
+  if (foreground?.busy && foreground.activityArmed) foreground.notifyWhenIdle = true;
+  supervisorDashboardActive = true;
+  shellElement.classList.add('supervisor-active');
+  supervisorDashboard.hidden = false;
+  document.querySelector('#agent-button').classList.add('active');
   try {
     renderAgentState(await api.getAgentState());
     if (agentState.enabled && agentState.notifications.some((item) => !item.read) && !agentCatchUpInFlight) {
@@ -915,11 +1281,16 @@ async function openAgentPanel() {
 
 function closeAgentPanel() {
   if (desktopVoiceMode) stopDesktopVoiceMode();
-  agentBackdrop.classList.remove('visible');
-  window.setTimeout(() => {
-    agentBackdrop.hidden = true;
+  const foreground = sessions.get(activeId);
+  if (foreground) foreground.notifyWhenIdle = false;
+  supervisorDashboardActive = false;
+  shellElement.classList.remove('supervisor-active');
+  supervisorDashboard.hidden = true;
+  document.querySelector('#agent-button').classList.remove('active');
+  requestAnimationFrame(() => {
+    fitActive();
     sessions.get(activeId)?.terminal.focus();
-  }, 140);
+  });
 }
 
 async function submitAgentChat(text) {
@@ -1044,22 +1415,37 @@ async function playSpeechAudio(audio) {
   await api.pauseDesktopMedia().catch(() => {});
   try {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    activeVoicePlayer = player;
+    voiceBargeInStartedAt = 0;
     player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
     await new Promise((resolve, reject) => {
       player.addEventListener('ended', resolve, { once: true });
+      player.addEventListener('sideterm-interrupted', resolve, { once: true });
       player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
     });
   } finally {
+    activeVoicePlayer = null;
+    voiceBargeInStartedAt = 0;
     await api.resumeDesktopMedia().catch(() => {});
     voiceCaptureMuted = false;
   }
 }
 
+function interruptVoicePlayback() {
+  const player = activeVoicePlayer;
+  if (!player) return false;
+  activeVoicePlayer = null;
+  player.pause();
+  player.dispatchEvent(new Event('sideterm-interrupted'));
+  voiceCaptureMuted = false;
+  return true;
+}
+
 async function speakAgentResponse(text) {
   if (!desktopVoiceMode) return;
   try {
-    await playSpeechAudio(await api.synthesizeSpeech(text, settings.ttsVoice));
+    await playSpeechAudio(await api.synthesizeSpeech(text));
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   }
@@ -1122,7 +1508,21 @@ async function startDesktopVoiceMode() {
     analyser.getFloatTimeDomainData(samples);
     const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
     const now = performance.now();
-    if (!voiceCaptureMuted && rms > 0.035) {
+    if (activeVoicePlayer) {
+      if (rms > 0.075) {
+        voiceBargeInStartedAt ||= now;
+        if (now - voiceBargeInStartedAt >= 280) {
+          interruptVoicePlayback();
+          speaking = true;
+          startedAt = now;
+          silenceAt = 0;
+          utterance = [];
+          preRoll = [];
+        }
+      } else {
+        voiceBargeInStartedAt = 0;
+      }
+    } else if (rms > 0.035) {
       if (!speaking) {
         speaking = true;
         startedAt = now;
@@ -1152,6 +1552,7 @@ async function startDesktopVoiceMode() {
 }
 
 function stopDesktopVoiceMode() {
+  interruptVoicePlayback();
   desktopVoiceMode = false;
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -1461,6 +1862,7 @@ function renderSessionItem(session) {
 function activateSession(id) {
   const next = sessions.get(id);
   if (!next) return;
+  if (supervisorDashboardActive) closeAgentPanel();
   if (activeTitle.isContentEditable) activeTitle.blur();
   const previous = sessions.get(activeId);
   if (previous && previous.id !== id && previous.busy && previous.activityArmed) {
@@ -1535,8 +1937,12 @@ function cycleSession(direction) {
   activateSession(ids[(index + direction + ids.length) % ids.length]);
 }
 
+function isSessionForeground(session) {
+  return !supervisorDashboardActive && session?.id === activeId;
+}
+
 function markSessionNotification(session) {
-  if (!session || session.id === activeId || session.notified) return;
+  if (!session || isSessionForeground(session) || session.notified) return;
   session.notified = true;
   session.activityArmed = false;
   session.notifyWhenIdle = false;
@@ -1553,6 +1959,7 @@ function noteSessionBusy(session, data) {
   if (!session.busy) {
     session.busy = true;
     updateSessionItem(session);
+    schedulePersist();
   }
   session.busyTimer = window.setTimeout(() => {
     session.busy = false;
@@ -1560,8 +1967,8 @@ function noteSessionBusy(session, data) {
     reportSessionCompletion(session);
     if (session.notifyWhenIdle) {
       session.notifyWhenIdle = false;
-      if (session.id !== activeId) markSessionNotification(session);
-    } else if (session.id === activeId) {
+      if (!isSessionForeground(session)) markSessionNotification(session);
+    } else if (isSessionForeground(session)) {
       session.activityArmed = false;
       schedulePersist();
     }
@@ -1589,11 +1996,10 @@ function recordSessionResponse(session, data) {
 }
 
 function noteBackgroundActivity(session, data) {
-  if (!session || session.id === activeId || restoringWorkspace) return;
+  if (!session || isSessionForeground(session) || restoringWorkspace) return;
   if (!session.activityArmed) return;
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
-  window.clearTimeout(session.aiSummaryTimer);
   if (data.includes('\x07')) {
     session.notifyWhenIdle = false;
     markSessionNotification(session);
@@ -1637,6 +2043,7 @@ async function addSession(cwd, options = {}) {
   terminal.loadAddon(fit);
   terminal.open(pane);
 
+  const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
   const session = {
     id,
     title: options.title || `Terminal ${sessions.size + 1}`,
@@ -1668,14 +2075,21 @@ async function addSession(cwd, options = {}) {
     lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
     responseSortTimer: null,
     linkScanBuffer: '',
-    context: '',
+    context: restoredContext.context,
     commandBuffer: '',
     expectedInputEcho: '',
     expectedInputEchoAt: 0,
     aiSummaryTimer: null,
+    aiSummaryMode: '',
+    aiSummaryDueAt: 0,
     aiSummaryInFlight: false,
     aiErrorShown: false,
-    lastSummarizedLength: 0,
+    aiInitialSummaryDone: typeof options.aiInitialSummaryDone === 'boolean'
+      ? options.aiInitialSummaryDone
+      : Boolean(options.summary || restoringWorkspace),
+    lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
+    contextRevision: restoredContext.contextRevision,
+    lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
     activityCycleId: '',
     lastReportedCycleId: '',
@@ -1755,6 +2169,7 @@ async function addSession(cwd, options = {}) {
   }
 
   if (options.activate !== false) activateSession(id);
+  scheduleAiSummary(session);
   schedulePersist();
   return session;
 }
@@ -1765,7 +2180,9 @@ function closeSession(id) {
   const ids = orderedSessionIds();
   const index = ids.indexOf(id);
   if (!session.exited) api.close(id);
+  session.exited = true;
   window.clearTimeout(session.busyTimer);
+  clearAiSummaryTimer(session);
   window.clearTimeout(session.responseSortTimer);
   session.terminal.dispose();
   session.pane.remove();
@@ -1822,9 +2239,10 @@ function deleteGroup(groupId) {
     const session = sessions.get(sessionId);
     if (!session) continue;
     if (!session.exited) api.close(sessionId);
+    session.exited = true;
     window.clearTimeout(session.busyTimer);
+    clearAiSummaryTimer(session);
     window.clearTimeout(session.responseSortTimer);
-    window.clearTimeout(session.aiSummaryTimer);
     session.terminal.dispose();
     session.pane.remove();
     session.item.remove();
@@ -1989,7 +2407,7 @@ api.onExit(({ id, exitCode }) => {
   window.clearTimeout(session.responseSortTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
-  if (id === activeId) {
+  if (isSessionForeground(session)) {
     activeSubtitle.textContent = `${session.shell} · stopped · ${session.cwd}`;
     statusDot.classList.add('stopped');
   } else {
@@ -2017,9 +2435,6 @@ activeTitle.addEventListener('click', () => startSessionRename(sessions.get(acti
 document.querySelector('#settings-button').addEventListener('click', openSettingsPanel);
 document.querySelector('#agent-button').addEventListener('click', () => void openAgentPanel());
 document.querySelector('#agent-close').addEventListener('click', closeAgentPanel);
-agentBackdrop.addEventListener('mousedown', (event) => {
-  if (event.target === agentBackdrop) closeAgentPanel();
-});
 document.querySelector('#agent-chat-form').addEventListener('submit', (event) => {
   event.preventDefault();
   void submitAgentChat();
@@ -2088,23 +2503,50 @@ document.querySelector('#clear-api-key').addEventListener('click', () => {
   document.querySelector('#api-key').value = '';
   document.querySelector('#api-key-state').textContent = 'Key will be removed when saved';
   document.querySelector('#clear-api-key').hidden = true;
-  document.querySelector('#ai-enabled').checked = false;
+  invalidateProviderFeatures();
 });
 document.querySelector('#api-key').addEventListener('input', (event) => {
   if (event.target.value) clearApiKeyRequested = false;
+  invalidateProviderFeatures();
 });
-document.querySelector('#test-ai').addEventListener('click', async () => {
-  const status = document.querySelector('#ai-test-status');
-  status.textContent = 'Testing…';
-  if (!await saveSettingsFromPanel({ close: false })) {
-    status.textContent = 'Save failed';
+document.querySelector('#ai-api-url').addEventListener('input', invalidateProviderFeatures);
+document.querySelector('#ai-model').addEventListener('input', invalidateProviderFeatures);
+document.querySelector('#ai-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'AI session context', 'llmEnabled'));
+document.querySelector('#agent-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'Supervisor', 'agentEnabled'));
+document.querySelector('#ai-continuous-context-enabled').addEventListener('change', syncProviderFeatureAvailability);
+document.querySelector('#test-ai').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (!providerDraftConfigured()) {
+    setProviderStatus('Set up the LLM Provider API URL and model before testing.', true);
+    syncProviderFeatureAvailability();
     return;
   }
+  const providerFingerprint = providerDraftFingerprint();
+  providerValidationInFlight = true;
+  syncProviderFeatureAvailability();
+  setProviderStatus('Testing…');
   try {
+    settings = await api.saveSettings({
+      ...providerDraftPayload(),
+      llmEnabled: document.querySelector('#ai-enabled').checked,
+      agentEnabled: document.querySelector('#agent-enabled').checked
+    });
+    applySettings();
     const result = await api.testAiSettings();
-    status.textContent = `Connected · ${result.name}: ${result.summary}`;
+    if (providerDraftFingerprint() !== providerFingerprint) {
+      throw new Error('The provider changed during validation. Test the current settings again.');
+    }
+    setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
-    status.textContent = error.message;
+    try {
+      await persistDisabledProviderFeatures();
+      setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    } catch (rollbackError) {
+      setProviderStatus(`Provider test failed and AI features could not be disabled: ${rollbackError.message}`, true);
+    }
+  } finally {
+    providerValidationInFlight = false;
+    syncProviderFeatureAvailability();
   }
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
@@ -2152,7 +2594,7 @@ window.addEventListener('keydown', (event) => {
     closeGroupSortMenus();
     return;
   }
-  if (!agentBackdrop.hidden && event.key === 'Escape') {
+  if (supervisorDashboardActive && event.key === 'Escape') {
     event.preventDefault();
     closeAgentPanel();
     return;
@@ -2167,7 +2609,7 @@ window.addEventListener('keydown', (event) => {
     closeSettingsPanel();
     return;
   }
-  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel, .agent-panel')) return;
+  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel, .supervisor-dashboard')) return;
   if (event.target instanceof Element && event.target.closest('.xterm')) return;
   const action = resolveTerminalShortcut(event, sessions.get(activeId)?.terminal.hasSelection() ?? false, settings.hotkeys);
   if (!action || action === 'terminal-input') return;
@@ -2205,6 +2647,8 @@ async function restoreSavedWorkspace() {
       summary: saved.summary,
       agent: saved.agent,
       hasUserActivity: saved.hasUserActivity,
+      aiInitialSummaryDone: saved.aiInitialSummaryDone,
+      lastAiSummaryAt: saved.lastAiSummaryAt,
       createdAt: saved.createdAt,
       lastResponseAt: saved.lastResponseAt,
       links: saved.links,

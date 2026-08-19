@@ -116,6 +116,8 @@ export function parseSavedWorkspace(raw) {
         summary: typeof session.summary === 'string' ? session.summary : '',
         agent: typeof session.agent === 'string' ? session.agent : '',
         hasUserActivity: Boolean(session.hasUserActivity),
+        aiInitialSummaryDone: typeof session.aiInitialSummaryDone === 'boolean' ? session.aiInitialSummaryDone : null,
+        lastAiSummaryAt: Number.isFinite(session.lastAiSummaryAt) && session.lastAiSummaryAt > 0 ? session.lastAiSummaryAt : 0,
         createdAt: Number.isFinite(session.createdAt) && session.createdAt > 0 ? session.createdAt : 0,
         lastResponseAt: Number.isFinite(session.lastResponseAt) && session.lastResponseAt > 0 ? session.lastResponseAt : 0,
         links: Array.isArray(session.links)
