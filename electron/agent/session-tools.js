@@ -41,10 +41,11 @@ export function createSessionTools(actions) {
     }),
     tool({
       name: 'request_terminal_input',
-      description: 'Propose exact text to type into a terminal. The user must approve it in SideTerm before anything is written.',
+      description: 'Send exact text to a terminal. After approval (or immediately in voice mode) it is typed and submitted with Enter unless submit is false.',
       inputSchema: z.object({
         sessionId,
-        input: z.string().min(1).max(65536).describe('The exact terminal input, including a final newline only if it should be submitted.'),
+        input: z.string().min(1).max(65536).describe('The exact terminal input without a trailing newline; Enter is added automatically when submitting.'),
+        submit: z.boolean().optional().default(true).describe('Whether to press Enter and submit the input. Set false only to pre-type text without running it.'),
         reason: z.string().trim().min(1).max(300).describe('A concise explanation of why this input is appropriate.')
       }),
       callback: (input) => actions.requestTerminalInput(input)

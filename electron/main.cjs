@@ -12,6 +12,7 @@ const { discoverPullRequest, fetchPullRequest, postPullRequestComment } = requir
 const { reconcileAttentionNotifications } = require('./agent/attention.cjs');
 const { ProactiveCatchUpScheduler } = require('./agent/proactive.cjs');
 const { VoicePingScheduler } = require('./agent/voice-ping.cjs');
+const { composeSubmittedInput } = require('./agent/terminal-input.cjs');
 const { VOICE_MODE_INSTRUCTION, VOICE_EXECUTION_INSTRUCTION, speechSummary } = require('./agent/voice.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -301,6 +302,7 @@ function readAgentState() {
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
+        submit: item?.submit !== false,
         pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
         body: String(item?.body || '').slice(0, 20_000),
         reason: String(item?.reason || '').slice(0, 300),
@@ -541,8 +543,9 @@ function executeVoiceTerminalInput(input) {
   const session = sessions.get(input.sessionId);
   if (!metadata && !session) throw new Error('That terminal session is not active.');
   if (!session) return { executed: false, message: 'That session has no live terminal attached right now.' };
-  send('terminal:remote-input', { id: input.sessionId, data: input.input });
-  session.processHandle.write(input.input);
+  const data = composeSubmittedInput(input);
+  send('terminal:remote-input', { id: input.sessionId, data });
+  session.processHandle.write(data);
   const state = readAgentState();
   state.metrics.terminalInputsApproved += 1;
   state.metrics.terminalWordsEntered += countTerminalWords(input.input);
@@ -810,8 +813,9 @@ async function resolveAgentConfirmation(id, approved) {
   } else if (confirmation.kind === 'terminal-input') {
     const session = sessions.get(confirmation.sessionId);
     if (!session) throw new Error('The target terminal session is no longer active.');
-    send('terminal:remote-input', { id: confirmation.sessionId, data: confirmation.input });
-    session.processHandle.write(confirmation.input);
+    const data = composeSubmittedInput(confirmation);
+    send('terminal:remote-input', { id: confirmation.sessionId, data });
+    session.processHandle.write(data);
     state.metrics.terminalInputsApproved += 1;
     state.metrics.terminalWordsEntered += countTerminalWords(confirmation.input);
     resultText = `The user approved and SideTerm sent the proposed input to ${confirmation.title}.`;
