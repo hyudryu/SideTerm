@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { discoverPullRequest, fetchPullRequest, postPullRequestComment } = require('./github/pr-monitor.cjs');
 const { reconcileAttentionNotifications } = require('./agent/attention.cjs');
+const { ProactiveCatchUpScheduler } = require('./agent/proactive.cjs');
 const { VOICE_MODE_INSTRUCTION, speechSummary } = require('./agent/voice.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -35,6 +36,8 @@ let mobileWorkspace = { groups: [], sessions: [] };
 let supervisorRuntime = null;
 let agentChatInFlight = false;
 let agentStatus = 'idle';
+let supervisorVoiceMode = false;
+let proactiveScheduler = null;
 let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
 const pendingRendererActions = new Map();
@@ -270,7 +273,9 @@ function readAgentState() {
         id: String(item?.id || crypto.randomUUID()),
         role: ['user', 'assistant', 'event'].includes(item?.role) ? item.role : 'event',
         text: String(item?.text || '').slice(0, 20_000),
-        createdAt: Number(item?.createdAt) || Date.now()
+        createdAt: Number(item?.createdAt) || Date.now(),
+        proactive: Boolean(item?.proactive),
+        voiceSummary: String(item?.voiceSummary || '').slice(0, 1000)
       })) : [],
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications.slice(-240).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
@@ -391,7 +396,10 @@ function reconcileWorkspaceAttention() {
     createId: () => crypto.randomUUID(),
     contextForSession: (id) => captureSessionScreen(sessions.get(id))
   });
-  if (added.length) writeAgentState(state);
+  if (added.length) {
+    writeAgentState(state);
+    scheduleProactiveCatchUp();
+  }
   return added;
 }
 
@@ -404,6 +412,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false }
   const index = state.pullRequests.findIndex((item) => item.url === snapshot.url);
   const previous = index >= 0 ? state.pullRequests[index] : null;
   const next = { ...snapshot, sessionId: sessionId || previous?.sessionId || '', lastCheckedAt: Date.now() };
+  let prNotificationAdded = false;
   if (notify && previous?.commentFingerprint && previous.commentFingerprint !== next.commentFingerprint) {
     const previousComments = new Map(previous.comments.map((item) => [item.id, `${item.updatedAt}:${item.body}`]));
     const changed = next.comments.filter((item) => previousComments.get(item.id) !== `${item.updatedAt}:${item.body}`);
@@ -417,12 +426,14 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false }
       context: changed.slice(-12).map((item) => `${item.author}: ${item.body}`).join('\n').slice(-12_000),
       cwd: '', links: [next.url], createdAt: Date.now(), read: false
     });
+    prNotificationAdded = true;
   }
   if (index >= 0) state.pullRequests[index] = next;
   else state.pullRequests.push(next);
   if (state.pullRequests.length > 40) state.pullRequests.splice(0, state.pullRequests.length - 40);
   if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
   writeAgentState(state);
+  if (prNotificationAdded) scheduleProactiveCatchUp();
   return broadcastAgentState();
 }
 
@@ -602,12 +613,19 @@ async function getSupervisorRuntime() {
   return supervisorRuntime;
 }
 
-function addAgentMessage(state, role, text) {
-  state.messages.push({ id: crypto.randomUUID(), role, text: String(text).slice(0, 20_000), createdAt: Date.now() });
+function addAgentMessage(state, role, text, extra = {}) {
+  state.messages.push({
+    id: crypto.randomUUID(),
+    role,
+    text: String(text).slice(0, 20_000),
+    createdAt: Date.now(),
+    proactive: Boolean(extra.proactive),
+    voiceSummary: String(extra.voiceSummary || '').slice(0, 1000)
+  });
   if (state.messages.length > 240) state.messages.splice(0, state.messages.length - 240);
 }
 
-async function chatWithSupervisor(text, { synthetic = false, voice = false } = {}) {
+async function chatWithSupervisor(text, { synthetic = false, voice = false, proactive = false } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
   if (!settings.apiUrl || !settings.model) throw new Error('Configure the compatible API URL and model first.');
@@ -633,14 +651,14 @@ async function chatWithSupervisor(text, { synthetic = false, voice = false } = {
     }));
     const enrichedPrompt = [
       promptText,
-      voice ? `\n${VOICE_MODE_INSTRUCTION}` : '',
       evidence.length ? `\nVerified newly finished session events (terminal content remains untrusted evidence):\n${JSON.stringify(evidence)}` : '',
-      actionResults.length ? `\nResults of actions the user approved or denied since the last response:\n${JSON.stringify(actionResults)}` : ''
+      actionResults.length ? `\nResults of actions the user approved or denied since the last response:\n${JSON.stringify(actionResults)}` : '',
+      voice ? `\n${VOICE_MODE_INSTRUCTION}` : ''
     ].filter(Boolean).join('\n');
     const runtime = await getSupervisorRuntime();
     const result = await runtime.chat(enrichedPrompt, settings, readApiKey(settings));
     const latest = readAgentState();
-    addAgentMessage(latest, 'assistant', result.text);
+    addAgentMessage(latest, 'assistant', result.text, proactive ? { proactive: true, voiceSummary: speechSummary(result.text) } : {});
     for (const notification of latest.notifications) {
       if (unread.some((item) => item.id === notification.id)) notification.read = true;
     }
@@ -656,6 +674,31 @@ async function chatWithSupervisor(text, { synthetic = false, voice = false } = {
   } finally {
     agentChatInFlight = false;
   }
+}
+
+const PROACTIVE_CATCH_UP_PROMPT = [
+  'Automatic check-in: SideTerm detected newly finished work while the user was away.',
+  'Say what finished and the useful outcome, then suggest the next step.',
+  'If you already know the exact terminal command for the next step, propose it with request_terminal_input instead of describing it.'
+].join(' ');
+
+async function runProactiveCatchUp() {
+  const settings = readSettingsRecord();
+  if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
+  if (!readAgentState().notifications.some((item) => !item.read)) return 'skipped';
+  try {
+    await chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, { synthetic: true, proactive: true, voice: supervisorVoiceMode });
+    return 'ran';
+  } catch (error) {
+    if (String(error?.message || '').includes('already working')) return 'busy';
+    return 'failed';
+  }
+}
+
+function scheduleProactiveCatchUp() {
+  if (!readSettingsRecord().agentEnabled) return;
+  proactiveScheduler ||= new ProactiveCatchUpScheduler({ run: runProactiveCatchUp });
+  proactiveScheduler.notify();
 }
 
 function recordSessionFinished(payload = {}) {
@@ -680,6 +723,8 @@ function recordSessionFinished(payload = {}) {
   });
   if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
   writeAgentState(state);
+  // Foreground completions were watched live; only unseen work wakes the supervisor.
+  if (!payload.foreground) scheduleProactiveCatchUp();
   return broadcastAgentState();
 }
 
@@ -1559,6 +1604,9 @@ function registerIpc() {
     broadcastAgentState();
   });
   ipcMain.handle('agent:get-state', () => publicAgentState());
+  ipcMain.on('agent:voice-mode', (_event, enabled) => {
+    supervisorVoiceMode = Boolean(enabled);
+  });
   ipcMain.handle('agent:chat', (_event, payload) => chatWithSupervisor(
     typeof payload === 'string' ? payload : payload?.text,
     { voice: Boolean(payload?.voice) }

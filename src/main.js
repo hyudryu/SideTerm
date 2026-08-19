@@ -1090,8 +1090,28 @@ function updateAgentBadge() {
   badge.hidden = unread === 0;
 }
 
+const spokenProactiveMessageIds = new Set();
+let proactiveMessagesSynced = false;
+
+function handleProactiveMessages() {
+  const proactiveMessages = (agentState.messages || []).filter((message) => message.role === 'assistant' && message.proactive);
+  if (!proactiveMessagesSynced) {
+    proactiveMessagesSynced = true;
+    for (const message of proactiveMessages) spokenProactiveMessageIds.add(message.id);
+    return;
+  }
+  for (const message of proactiveMessages) {
+    if (spokenProactiveMessageIds.has(message.id)) continue;
+    spokenProactiveMessageIds.add(message.id);
+    const brief = message.voiceSummary || message.text;
+    if (desktopVoiceMode) void speakAgentResponse(brief);
+    else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
+  }
+}
+
 function renderAgentState(nextState) {
   agentState = { ...agentState, ...(nextState || {}) };
+  handleProactiveMessages();
   updateAgentBadge();
   const dot = document.querySelector('#agent-status-dot');
   const label = document.querySelector('#agent-status-label');
@@ -1260,8 +1280,7 @@ async function openAgentPanel() {
   document.querySelector('#agent-button').classList.add('active');
   try {
     renderAgentState(await api.getAgentState());
-    const hasUnreadWork = agentState.notifications.some((item) => !item.read)
-      || agentState.pendingSessions?.some((item) => item.notified);
+    const hasUnreadWork = agentState.notifications.some((item) => !item.read);
     if (agentState.enabled && hasUnreadWork && !agentCatchUpInFlight) {
       agentCatchUpInFlight = true;
       try {
@@ -1273,7 +1292,7 @@ async function openAgentPanel() {
       }
     }
   } catch (error) {
-    showToast(`Supervisor: ${error.message}`);
+    if (!String(error?.message || '').includes('already working')) showToast(`Supervisor: ${error.message}`);
   }
 }
 
@@ -1348,7 +1367,8 @@ function reportSessionCompletion(session) {
     summary: session.summary,
     context: session.context || terminalHistory(session.terminal),
     cwd: session.cwd,
-    links: session.links
+    links: session.links,
+    foreground: isSessionForeground(session)
   });
 }
 
@@ -1512,6 +1532,7 @@ async function startDesktopVoiceMode() {
   };
   voiceMonitorFrame = requestAnimationFrame(monitor);
   desktopVoiceMode = true;
+  api.setAgentVoiceMode(true);
   document.querySelector('#desktop-voice-toggle').textContent = 'Voice on';
   document.querySelector('#desktop-voice-toggle').classList.add('voice-active');
   document.querySelector('#agent-status-detail').textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
@@ -1519,6 +1540,7 @@ async function startDesktopVoiceMode() {
 
 function stopDesktopVoiceMode() {
   desktopVoiceMode = false;
+  api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
   if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();

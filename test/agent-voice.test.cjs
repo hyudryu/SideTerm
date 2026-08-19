@@ -5,6 +5,8 @@ const { VOICE_MODE_INSTRUCTION, speechSummary } = require('../electron/agent/voi
 test('voice mode requests a short conversational response', () => {
   assert.match(VOICE_MODE_INSTRUCTION, /one or two short sentences/);
   assert.match(VOICE_MODE_INSTRUCTION, /Do not use Markdown/);
+  assert.match(VOICE_MODE_INSTRUCTION, /casual, conversational/);
+  assert.match(VOICE_MODE_INSTRUCTION, /contractions/);
 });
 
 test('spoken responses remove Markdown and bound long output', () => {

@@ -1,8 +1,9 @@
 const VOICE_MODE_INSTRUCTION = [
-  'Voice mode is enabled.',
+  'Voice mode is enabled and your reply will be spoken out loud.',
+  'Talk the way a friendly person actually talks: casual, conversational, everyday words, and contractions like "it\'s", "that\'s", "you\'re".',
   'Answer as natural spoken dialogue in one or two short sentences and no more than 35 words.',
   'Give only the basic assistant summary and the most useful next step or question.',
-  'Do not use Markdown, bullets, headings, commit hashes, exhaustive change lists, or parenthetical detail unless the user explicitly asks for them.'
+  'Do not use Markdown, bullets, headings, code, commit hashes, exhaustive change lists, or parenthetical detail unless the user explicitly asks for them.'
 ].join(' ');
 
 function speechSummary(value, maxWords = 40) {

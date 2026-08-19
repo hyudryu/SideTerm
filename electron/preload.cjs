@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   catchUpAgent: (options = {}) => ipcRenderer.invoke('agent:catch-up', options),
   confirmAgentAction: (id, approved) => ipcRenderer.invoke('agent:confirm', { id, approved }),
   reportSessionFinished: (payload) => ipcRenderer.send('agent:session-finished', payload),
+  setAgentVoiceMode: (enabled) => ipcRenderer.send('agent:voice-mode', Boolean(enabled)),
   onAgentState: (callback) => subscribe('agent:state', callback),
   onAgentAction: (callback) => subscribe('agent:action', callback),
   resolveAgentAction: (requestId, value, error = '') => ipcRenderer.send('agent:action-result', { requestId, value, error }),
