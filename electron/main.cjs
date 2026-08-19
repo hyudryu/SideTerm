@@ -9,6 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
+const { catchUpPrompt, nextCatchUp, pendingNotifications } = require('./agent/catch-up.cjs');
 const {
   discoverPullRequest,
   fetchPullRequest,
@@ -639,7 +640,7 @@ function addAgentMessage(state, role, text) {
   if (state.messages.length > 240) state.messages.splice(0, state.messages.length - 240);
 }
 
-async function chatWithSupervisor(text, { synthetic = false } = {}) {
+async function chatWithSupervisor(text, { synthetic = false, notificationIds = null } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
   if (!settings.apiUrl || !settings.model) throw new Error('Configure the compatible API URL and model first.');
@@ -653,7 +654,10 @@ async function chatWithSupervisor(text, { synthetic = false } = {}) {
   agentStatus = 'thinking';
   broadcastAgentState();
   try {
-    const unread = state.notifications.filter((item) => !item.read).slice(-8);
+    const selectedNotificationIds = Array.isArray(notificationIds) ? new Set(notificationIds) : null;
+    const unread = selectedNotificationIds
+      ? state.notifications.filter((item) => !item.read && selectedNotificationIds.has(item.id))
+      : [];
     const actionResults = state.actionResults.slice(-12);
     const evidence = unread.map((item) => ({
       sessionId: item.sessionId,
@@ -687,6 +691,31 @@ async function chatWithSupervisor(text, { synthetic = false } = {}) {
   } finally {
     agentChatInFlight = false;
   }
+}
+
+async function catchUpWithSupervisor() {
+  const state = readAgentState();
+  const { notification, remainingCount } = nextCatchUp(state.notifications);
+  if (!notification) {
+    return {
+      response: '',
+      state: publicAgentState(),
+      processedNotificationId: null,
+      remainingCount: 0,
+      hasMore: false
+    };
+  }
+  const result = await chatWithSupervisor(catchUpPrompt(notification, remainingCount), {
+    synthetic: true,
+    notificationIds: [notification.id]
+  });
+  const remaining = pendingNotifications(readAgentState().notifications).length;
+  return {
+    ...result,
+    processedNotificationId: notification.id,
+    remainingCount: remaining,
+    hasMore: remaining > 0
+  };
 }
 
 function recordSessionFinished(payload = {}) {
@@ -1353,15 +1382,25 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, { type: 'mobile:settings:error', message: error.message });
         }
       }
-      if (message.type === 'agent:chat' || message.type === 'agent:catch-up') {
+      if (message.type === 'agent:chat') {
         try {
-          const result = await chatWithSupervisor(
-            message.type === 'agent:catch-up' ? 'Tell me what finished since my last check-in, summarize it briefly, and ask what I want to do next.' : message.text,
-            { synthetic: message.type === 'agent:catch-up' }
-          );
+          const result = await chatWithSupervisor(message.text);
           sendMobile(client, { type: 'agent:response', response: result.response });
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
+        }
+      }
+      if (message.type === 'agent:catch-up') {
+        try {
+          const result = await catchUpWithSupervisor();
+          sendMobile(client, {
+            type: 'agent:catch-up-result',
+            response: result.response,
+            hasMore: result.hasMore,
+            remainingCount: result.remainingCount
+          });
+        } catch (error) {
+          sendMobile(client, { type: 'agent:catch-up-result', error: error.message, hasMore: true });
         }
       }
       if (message.type === 'agent:confirm') {
@@ -1389,9 +1428,19 @@ async function startMobileServer({ persist = true } = {}) {
       }
       if (message.type === 'voice:synthesize') {
         try {
-          sendMobile(client, { type: 'voice:audio', audio: await synthesizeSpeech(message.text) });
+          sendMobile(client, {
+            type: 'voice:audio',
+            audio: await synthesizeSpeech(message.text),
+            continueCatchUp: Boolean(message.continueCatchUp),
+            catchUpHasMore: Boolean(message.catchUpHasMore)
+          });
         } catch (error) {
-          sendMobile(client, { type: 'agent:error', message: error.message });
+          sendMobile(client, {
+            type: 'voice:error',
+            message: error.message,
+            continueCatchUp: Boolean(message.continueCatchUp),
+            catchUpHasMore: Boolean(message.catchUpHasMore)
+          });
         }
       }
     });
@@ -1626,10 +1675,7 @@ function registerIpc() {
   });
   ipcMain.handle('agent:get-state', () => publicAgentState());
   ipcMain.handle('agent:chat', (_event, text) => chatWithSupervisor(text));
-  ipcMain.handle('agent:catch-up', () => chatWithSupervisor(
-    'Tell me what finished since my last check-in, summarize it briefly, and ask what I want to do next.',
-    { synthetic: true }
-  ));
+  ipcMain.handle('agent:catch-up', () => catchUpWithSupervisor());
   ipcMain.handle('agent:confirm', (_event, { id, approved }) => resolveAgentConfirmation(String(id || ''), Boolean(approved)));
   ipcMain.on('agent:session-finished', (_event, payload) => recordSessionFinished(payload));
   ipcMain.on('agent:action-result', (_event, result) => {
