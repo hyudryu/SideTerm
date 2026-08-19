@@ -1,5 +1,16 @@
+import { normalizeGithubPullRequestUrl } from './activity.js';
+
 export const WORKSPACE_VERSION = 1;
 export const DEFAULT_GROUP_COLOR = '#60cdff';
+export const GROUP_SORTS = ['default', 'created', 'response', 'name'];
+
+export function normalizeGroupSort(value) {
+  return GROUP_SORTS.includes(value) ? value : 'default';
+}
+
+export function normalizeSortDirection(value) {
+  return value === 'desc' ? 'desc' : 'asc';
+}
 
 export function normalizeGroupColor(color) {
   return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)
@@ -8,7 +19,39 @@ export function normalizeGroupColor(color) {
 }
 
 export function createGroup(id, title, collapsed = false, color = DEFAULT_GROUP_COLOR) {
-  return { id, title, collapsed, color: normalizeGroupColor(color), sessionIds: [] };
+  return {
+    id,
+    title,
+    collapsed,
+    color: normalizeGroupColor(color),
+    sortBy: 'default',
+    sortDirection: 'asc',
+    sessionIds: []
+  };
+}
+
+export function sortedSessionIds(group, sessionLookup) {
+  const ids = group.sessionIds.filter((id) => sessionLookup.has(id));
+  const sortBy = normalizeGroupSort(group.sortBy);
+  const direction = normalizeSortDirection(group.sortDirection) === 'desc' ? -1 : 1;
+  if (sortBy === 'default') return direction === 1 ? ids : [...ids].reverse();
+
+  const manualOrder = new Map(ids.map((id, index) => [id, index]));
+  return [...ids].sort((leftId, rightId) => {
+    const left = sessionLookup.get(leftId) || {};
+    const right = sessionLookup.get(rightId) || {};
+    let comparison = 0;
+    if (sortBy === 'created') comparison = (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0);
+    if (sortBy === 'response') comparison = (Number(left.lastResponseAt) || 0) - (Number(right.lastResponseAt) || 0);
+    if (sortBy === 'name') {
+      const leftName = String(left.displayName || left.title || '').trim();
+      const rightName = String(right.displayName || right.title || '').trim();
+      comparison = leftName.localeCompare(rightName, undefined, { numeric: true, sensitivity: 'base' });
+    }
+    return comparison === 0
+      ? manualOrder.get(leftId) - manualOrder.get(rightId)
+      : comparison * direction;
+  });
 }
 
 export function reorderGroup(groups, sourceId, targetId, position) {
@@ -68,9 +111,15 @@ export function parseSavedWorkspace(raw) {
         hasUserActivity: Boolean(session.hasUserActivity),
         aiInitialSummaryDone: Boolean(session.aiInitialSummaryDone),
         lastAiSummaryAt: Number.isFinite(session.lastAiSummaryAt) && session.lastAiSummaryAt > 0 ? session.lastAiSummaryAt : 0,
+        createdAt: Number.isFinite(session.createdAt) && session.createdAt > 0 ? session.createdAt : 0,
+        lastResponseAt: Number.isFinite(session.lastResponseAt) && session.lastResponseAt > 0 ? session.lastResponseAt : 0,
         links: Array.isArray(session.links)
           ? session.links
-            .filter((link) => link && typeof link.url === 'string' && /^https?:\/\//.test(link.url))
+            .map((link) => ({
+              url: normalizeGithubPullRequestUrl(link?.url),
+              seenAt: Number.isFinite(link?.seenAt) ? link.seenAt : 0
+            }))
+            .filter((link) => link.url)
             .slice(-100)
           : []
       }));
@@ -85,6 +134,8 @@ export function parseSavedWorkspace(raw) {
           title: typeof group.title === 'string' && group.title.trim() ? group.title.trim() : 'Group',
           color: normalizeGroupColor(group.color),
           collapsed: Boolean(group.collapsed),
+          sortBy: normalizeGroupSort(group.sortBy),
+          sortDirection: normalizeSortDirection(group.sortDirection),
           sessionIds: Array.isArray(group.sessionIds)
             ? [...new Set(group.sessionIds.filter((id) => validSessionIds.has(id)))]
             : []

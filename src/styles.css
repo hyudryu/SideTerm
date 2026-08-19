@@ -151,19 +151,19 @@ button { font: inherit; }
   position: relative;
   flex: 0 0 auto;
   padding: 3px;
-  background: rgba(255,255,255,.012);
-  border: 1px solid rgba(255,255,255,.045);
+  background: color-mix(in srgb, var(--group-color) 8%, #181818);
+  border: 1px solid color-mix(in srgb, var(--group-color) 20%, rgba(255,255,255,.045));
   border-radius: 8px;
   transition: opacity 140ms ease, filter 140ms ease, border-color 140ms ease, background 140ms ease, transform 120ms ease;
 }
 .session-group.active-group {
-  background: color-mix(in srgb, var(--group-color) 3%, transparent);
-  border-color: color-mix(in srgb, var(--group-color) 24%, transparent);
+  background: color-mix(in srgb, var(--group-color) 14%, #181818);
+  border-color: color-mix(in srgb, var(--group-color) 42%, transparent);
 }
 
 .group-header {
   display: grid;
-  grid-template-columns: 20px 14px 24px minmax(0, 1fr) 18px auto auto 22px 22px;
+  grid-template-columns: 20px 14px 24px minmax(0, 1fr) 18px auto auto 22px 22px 22px;
   align-items: center;
   min-height: 34px;
   gap: 4px;
@@ -175,7 +175,7 @@ button { font: inherit; }
 }
 .group-header:active { cursor: grabbing; }
 .group-header:hover { color: #efefef; background: rgba(255,255,255,.045); }
-.group-toggle, .group-add, .group-delete {
+.group-toggle, .group-sort, .group-add, .group-delete {
   display: grid;
   place-items: center;
   width: 20px;
@@ -187,7 +187,7 @@ button { font: inherit; }
   border-radius: 4px;
   cursor: pointer;
 }
-.group-toggle:hover, .group-add:hover, .group-delete:hover { color: #fff; background: rgba(255,255,255,.1); }
+.group-toggle:hover, .group-sort:hover, .group-add:hover, .group-delete:hover { color: #fff; background: rgba(255,255,255,.1); }
 .group-toggle svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; transition: transform 130ms ease; }
 .session-group:not(.group-collapsed) .group-toggle svg { transform: rotate(90deg); }
 .group-grip { color: #646464; font-size: 14px; line-height: 1; }
@@ -232,6 +232,29 @@ button { font: inherit; }
   text-align: center;
 }
 .group-notification-badge[hidden] { display: none; }
+.group-sort-wrap { position: relative; width: 20px; height: 20px; }
+.group-sort svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.group-sort[aria-expanded="true"] { color: #fff; background: rgba(255,255,255,.11); }
+.group-sort-menu {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  width: 154px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  background: #252525;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.55);
+}
+.group-sort-menu[hidden] { display: none; }
+.group-sort-menu button { display: grid; grid-template-columns: minmax(0, 1fr) 18px; align-items: center; min-height: 29px; padding: 0 8px; color: #aaa; text-align: left; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-size: 10px; }
+.group-sort-menu button:hover { color: #fff; background: rgba(255,255,255,.08); }
+.group-sort-menu button.active { color: color-mix(in srgb, var(--group-color) 70%, white); }
+.group-sort-menu i { color: currentColor; text-align: center; font-size: 13px; font-style: normal; }
 .group-add, .group-delete { font-size: 16px; opacity: .62; transform: translateX(2px); }
 .group-header:hover .group-add, .group-header:hover .group-delete { opacity: 1; }
 .group-sessions { display: flex; min-height: 5px; flex-direction: column; gap: 3px; }
@@ -418,6 +441,7 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .sidebar-collapsed .group-title,
 .sidebar-collapsed .group-color,
 .sidebar-collapsed .group-session-count,
+.sidebar-collapsed .group-sort-wrap,
 .sidebar-collapsed .group-add,
 .sidebar-collapsed .group-delete,
 .sidebar-collapsed .session-details,
