@@ -16,6 +16,8 @@ const mobileAgentChat = document.querySelector('#mobile-agent-chat');
 const mobileAgentForm = document.querySelector('#mobile-agent-form');
 const mobileAgentInput = document.querySelector('#mobile-agent-input');
 const mobileVoiceToggle = document.querySelector('#mobile-voice-toggle');
+const mobileSettingsBackdrop = document.querySelector('#mobile-settings-backdrop');
+const mobileSettingsForm = document.querySelector('#mobile-settings-sheet');
 const basePath = location.pathname.endsWith('/') ? location.pathname : `${location.pathname}/`;
 const socketUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${basePath}socket`;
 const unread = new Set();
@@ -34,6 +36,8 @@ let voiceStream = null;
 let voiceContext = null;
 let voiceRecorder = null;
 let voiceFrame = null;
+let activeMobileVoicePlayer = null;
+let mobileBargeInStartedAt = 0;
 
 const terminal = new Terminal({
   cursorBlink: true,
@@ -154,15 +158,33 @@ function renderAgentState(state) {
   for (const confirmation of agentState.confirmations || []) {
     const row = document.createElement('div');
     row.className = 'mobile-confirmation';
-    const text = document.createElement('span');
-    text.textContent = confirmation.kind === 'archive' ? `Archive ${confirmation.title}?` : `Send to ${confirmation.title}: ${confirmation.input}`;
+    const copy = document.createElement('div');
+    const heading = document.createElement('strong');
+    heading.textContent = confirmation.kind === 'archive'
+      ? `Archive ${confirmation.title}?`
+      : confirmation.kind === 'github-comment'
+        ? `Post comment to ${confirmation.pullRequestUrl}?`
+        : `Send input to ${confirmation.title}?`;
+    const detail = document.createElement('code');
+    detail.textContent = confirmation.kind === 'archive'
+      ? confirmation.summary
+      : confirmation.kind === 'github-comment'
+        ? confirmation.body
+        : confirmation.input;
+    copy.append(heading, detail);
+    if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
     const deny = document.createElement('button');
     deny.textContent = 'Deny';
     const approve = document.createElement('button');
     approve.textContent = 'Approve';
-    deny.addEventListener('click', () => send({ type: 'agent:confirm', id: confirmation.id, approved: false }));
-    approve.addEventListener('click', () => send({ type: 'agent:confirm', id: confirmation.id, approved: true }));
-    row.append(text, deny, approve);
+    const respond = (approved) => {
+      deny.disabled = true;
+      approve.disabled = true;
+      send({ type: 'agent:confirm', id: confirmation.id, approved });
+    };
+    deny.addEventListener('click', () => respond(false));
+    approve.addEventListener('click', () => respond(true));
+    row.append(copy, deny, approve);
     confirmations.append(row);
   }
   if (agentState.enabled && unreadNotifications.length && !catchupRequested) {
@@ -233,6 +255,14 @@ function connect() {
     }
     if (message.type === 'exit' && message.id === activeId) terminal.write(`\r\n\x1b[31m[Process exited with code ${message.exitCode}]\x1b[0m\r\n`);
     if (message.type === 'agent:state') renderAgentState(message.state);
+    if (message.type === 'mobile:settings') {
+      document.querySelector('#mobile-wake-word').value = message.settings?.wakeWord || 'Hey Agent';
+      document.querySelector('#mobile-tts-voice').value = message.settings?.ttsVoice || 'alba';
+      document.querySelector('#mobile-settings-status').textContent = message.saved ? 'Saved' : '';
+    }
+    if (message.type === 'mobile:settings:error') {
+      document.querySelector('#mobile-settings-status').textContent = message.message;
+    }
     if (message.type === 'agent:error') {
       document.querySelector('#agent-mobile-detail').textContent = message.message;
       document.querySelector('#agent-mobile-dot').className = 'error';
@@ -265,13 +295,29 @@ async function playMobileAudio(audio) {
   try {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    activeMobileVoicePlayer = player;
+    mobileBargeInStartedAt = 0;
     await player.play();
-    await new Promise((resolve) => player.addEventListener('ended', resolve, { once: true }));
+    await new Promise((resolve) => {
+      player.addEventListener('ended', resolve, { once: true });
+      player.addEventListener('sideterm-interrupted', resolve, { once: true });
+    });
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
   } finally {
+    activeMobileVoicePlayer = null;
+    mobileBargeInStartedAt = 0;
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
   }
+}
+
+function interruptMobileVoicePlayback() {
+  const player = activeMobileVoicePlayer;
+  if (!player) return false;
+  activeMobileVoicePlayer = null;
+  player.pause();
+  player.dispatchEvent(new Event('sideterm-interrupted'));
+  return true;
 }
 
 async function submitVoiceBlob(blob, duration) {
@@ -320,7 +366,21 @@ async function startMobileVoice() {
     analyser.getFloatTimeDomainData(samples);
     const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
     const now = performance.now();
-    if (rms > 0.04) {
+    if (activeMobileVoicePlayer) {
+      if (rms > 0.08) {
+        mobileBargeInStartedAt ||= now;
+        if (now - mobileBargeInStartedAt >= 280) {
+          interruptMobileVoicePlayback();
+          speaking = true;
+          startedAt = now;
+          silenceAt = 0;
+          utterance = [];
+          preRoll = [];
+        }
+      } else {
+        mobileBargeInStartedAt = 0;
+      }
+    } else if (rms > 0.04) {
       if (!speaking) { speaking = true; startedAt = now; utterance = [...preRoll]; }
       silenceAt = 0;
     } else if (speaking) {
@@ -341,6 +401,7 @@ async function startMobileVoice() {
 }
 
 function stopMobileVoice() {
+  interruptMobileVoicePlayback();
   mobileVoiceMode = false;
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
@@ -392,6 +453,25 @@ document.querySelector('#menu-button').addEventListener('click', () => setDrawer
 modeToggle.addEventListener('click', () => setView(viewMode === 'agent' ? 'terminal' : 'agent'));
 document.querySelector('#drawer-close').addEventListener('click', () => setDrawer(false));
 shade.addEventListener('click', () => setDrawer(false));
+document.querySelector('#mobile-settings-button').addEventListener('click', () => {
+  setDrawer(false);
+  mobileSettingsBackdrop.hidden = false;
+});
+document.querySelector('#mobile-settings-close').addEventListener('click', () => { mobileSettingsBackdrop.hidden = true; });
+mobileSettingsBackdrop.addEventListener('click', (event) => {
+  if (event.target === mobileSettingsBackdrop) mobileSettingsBackdrop.hidden = true;
+});
+mobileSettingsForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  document.querySelector('#mobile-settings-status').textContent = 'Saving…';
+  send({
+    type: 'mobile:settings:update',
+    settings: {
+      wakeWord: document.querySelector('#mobile-wake-word').value,
+      ttsVoice: document.querySelector('#mobile-tts-voice').value
+    }
+  });
+});
 inputBar.addEventListener('input', () => {
   inputBar.style.height = 'auto';
   inputBar.style.height = `${Math.min(86, inputBar.scrollHeight)}px`;

@@ -1,4 +1,4 @@
-const cacheName = 'sideterm-mobile-v1';
+const cacheName = 'sideterm-mobile-v2';
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(['./', './mobile.css', './mobile.js', './xterm.css', './xterm.js', './icon.png'])));
   self.skipWaiting();

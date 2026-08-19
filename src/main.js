@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -78,6 +78,8 @@ let voiceAudioContext = null;
 let voiceMonitorFrame = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
+let activeVoicePlayer = null;
+let voiceBargeInStartedAt = 0;
 let providerValidationInFlight = false;
 
 document.querySelector('#app').innerHTML = `
@@ -402,7 +404,8 @@ function populateSettingsPanel() {
   void refreshSpeechStatus();
 }
 
-function openSettingsPanel() {
+async function openSettingsPanel() {
+  settings = await api.getSettings().catch(() => settings);
   populateSettingsPanel();
   settingsBackdrop.hidden = false;
   requestAnimationFrame(() => settingsBackdrop.classList.add('visible'));
@@ -894,48 +897,52 @@ function persistWorkspaceNow() {
     }
   }
 
+  const savedGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sortBy: group.sortBy,
+    sortDirection: group.sortDirection,
+    sessionIds: group.sessionIds.filter((id) => sessions.has(id))
+  }));
+  const mobileGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sessionIds: sortedSessionIds(group, sessions)
+  }));
+  const serializedWorkspace = JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: savedGroups,
+    sessions: savedSessions,
+    activeId,
+    activeGroupId
+  });
+  let localStorageSaved = false;
   try {
-    const savedGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sortBy: group.sortBy,
-      sortDirection: group.sortDirection,
-      sessionIds: group.sessionIds.filter((id) => sessions.has(id))
-    }));
-    const mobileGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sessionIds: sortedSessionIds(group, sessions)
-    }));
-    const serializedWorkspace = JSON.stringify({
-      version: WORKSPACE_VERSION,
-      groups: savedGroups,
-      sessions: savedSessions,
-      activeId,
-      activeGroupId
-    });
     localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
-    api.saveWorkspace(serializedWorkspace);
-    api.updateMobileWorkspace({
-      groups: mobileGroups,
-      sessions: savedSessions.map((session) => ({
-        id: session.id,
-        groupId: session.groupId,
-        title: session.title,
-        subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
-        cwd: session.cwd,
-        links: session.links.map((link) => link.url),
-        notified: session.notified,
-        busy: sessions.get(session.id)?.busy
-      }))
-    });
+    localStorageSaved = true;
   } catch {
-    showToast('Workspace storage is full; older scrollback was not saved');
+    // The main-process file backup remains available when Chromium storage is full.
   }
+  void api.saveWorkspace(serializedWorkspace).catch(() => {
+    if (!localStorageSaved) showToast('Workspace could not be saved to browser storage or the file backup');
+  });
+  api.updateMobileWorkspace({
+    groups: mobileGroups,
+    sessions: savedSessions.map((session) => ({
+      id: session.id,
+      groupId: session.groupId,
+      title: session.title,
+      subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
+      cwd: session.cwd,
+      links: session.links.map((link) => link.url),
+      notified: session.notified,
+      busy: sessions.get(session.id)?.busy
+    }))
+  });
 }
 
 function schedulePersist() {
@@ -1220,6 +1227,7 @@ function renderAgentState(nextState) {
         ? confirmation.body
         : confirmation.input;
     copy.append(heading, detailText);
+    if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
     const deny = document.createElement('button');
     deny.type = 'button';
     deny.className = 'secondary-button';
@@ -1268,6 +1276,8 @@ async function openAgentPanel() {
 
 function closeAgentPanel() {
   if (desktopVoiceMode) stopDesktopVoiceMode();
+  const foreground = sessions.get(activeId);
+  if (foreground) foreground.notifyWhenIdle = false;
   supervisorDashboardActive = false;
   shellElement.classList.remove('supervisor-active');
   supervisorDashboard.hidden = true;
@@ -1400,21 +1410,36 @@ async function playSpeechAudio(audio) {
   await api.pauseDesktopMedia().catch(() => {});
   try {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    activeVoicePlayer = player;
+    voiceBargeInStartedAt = 0;
     await player.play();
     await new Promise((resolve, reject) => {
       player.addEventListener('ended', resolve, { once: true });
+      player.addEventListener('sideterm-interrupted', resolve, { once: true });
       player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
     });
   } finally {
+    activeVoicePlayer = null;
+    voiceBargeInStartedAt = 0;
     await api.resumeDesktopMedia().catch(() => {});
     voiceCaptureMuted = false;
   }
 }
 
+function interruptVoicePlayback() {
+  const player = activeVoicePlayer;
+  if (!player) return false;
+  activeVoicePlayer = null;
+  player.pause();
+  player.dispatchEvent(new Event('sideterm-interrupted'));
+  voiceCaptureMuted = false;
+  return true;
+}
+
 async function speakAgentResponse(text) {
   if (!desktopVoiceMode) return;
   try {
-    await playSpeechAudio(await api.synthesizeSpeech(text, settings.ttsVoice));
+    await playSpeechAudio(await api.synthesizeSpeech(text));
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   }
@@ -1477,7 +1502,21 @@ async function startDesktopVoiceMode() {
     analyser.getFloatTimeDomainData(samples);
     const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
     const now = performance.now();
-    if (!voiceCaptureMuted && rms > 0.035) {
+    if (activeVoicePlayer) {
+      if (rms > 0.075) {
+        voiceBargeInStartedAt ||= now;
+        if (now - voiceBargeInStartedAt >= 280) {
+          interruptVoicePlayback();
+          speaking = true;
+          startedAt = now;
+          silenceAt = 0;
+          utterance = [];
+          preRoll = [];
+        }
+      } else {
+        voiceBargeInStartedAt = 0;
+      }
+    } else if (rms > 0.035) {
       if (!speaking) {
         speaking = true;
         startedAt = now;
@@ -1507,6 +1546,7 @@ async function startDesktopVoiceMode() {
 }
 
 function stopDesktopVoiceMode() {
+  interruptVoicePlayback();
   desktopVoiceMode = false;
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -1997,6 +2037,7 @@ async function addSession(cwd, options = {}) {
   terminal.loadAddon(fit);
   terminal.open(pane);
 
+  const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
   const session = {
     id,
     title: options.title || `Terminal ${sessions.size + 1}`,
@@ -2028,7 +2069,7 @@ async function addSession(cwd, options = {}) {
     lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
     responseSortTimer: null,
     linkScanBuffer: '',
-    context: '',
+    context: restoredContext.context,
     commandBuffer: '',
     expectedInputEcho: '',
     expectedInputEchoAt: 0,
@@ -2041,8 +2082,8 @@ async function addSession(cwd, options = {}) {
       ? options.aiInitialSummaryDone
       : Boolean(options.summary || restoringWorkspace),
     lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
-    contextRevision: 0,
-    lastSummarizedRevision: 0,
+    contextRevision: restoredContext.contextRevision,
+    lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
     activityCycleId: '',
     lastReportedCycleId: '',

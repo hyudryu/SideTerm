@@ -8,7 +8,7 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('sideTerm', {
   getWorkspaceSync: () => ipcRenderer.sendSync('workspace:get-sync'),
-  saveWorkspace: (raw) => ipcRenderer.send('workspace:save', raw),
+  saveWorkspace: (raw) => ipcRenderer.invoke('workspace:save', raw),
   createSession: (options) => ipcRenderer.invoke('terminal:create', options),
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
