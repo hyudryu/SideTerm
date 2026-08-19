@@ -64,6 +64,7 @@ let voiceAudioContext = null;
 let voiceMonitorFrame = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
+let providerValidationInFlight = false;
 
 document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
@@ -353,6 +354,7 @@ function populateSettingsPanel() {
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
+  syncProviderFeatureAvailability();
   void refreshSpeechStatus();
 }
 
@@ -390,6 +392,78 @@ function settingsPayload() {
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
   };
+}
+
+function providerDraftConfigured() {
+  return Boolean(
+    document.querySelector('#ai-api-url').value.trim()
+    && document.querySelector('#ai-model').value.trim()
+  );
+}
+
+function setProviderStatus(message = '', isError = false) {
+  const status = document.querySelector('#ai-test-status');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
+}
+
+function syncProviderFeatureAvailability() {
+  const configured = providerDraftConfigured();
+  for (const id of ['#ai-enabled', '#agent-enabled']) {
+    const input = document.querySelector(id);
+    input.disabled = !configured || providerValidationInFlight;
+    input.closest('.toggle-row').title = configured
+      ? ''
+      : 'Set up the LLM Provider API URL and model first.';
+  }
+}
+
+function invalidateProviderFeatures() {
+  document.querySelector('#ai-enabled').checked = false;
+  document.querySelector('#agent-enabled').checked = false;
+  setProviderStatus(providerDraftConfigured()
+    ? 'Provider changed · enable a feature to verify the connection.'
+    : 'Set up the LLM Provider before enabling AI features.', !providerDraftConfigured());
+  syncProviderFeatureAvailability();
+}
+
+async function persistDisabledProviderFeatures() {
+  document.querySelector('#ai-enabled').checked = false;
+  document.querySelector('#agent-enabled').checked = false;
+  await saveSettingsFromPanel({ close: false });
+}
+
+async function handleProviderFeatureToggle(input, featureName) {
+  if (!input.checked) {
+    await saveSettingsFromPanel({ close: false });
+    return;
+  }
+  if (!providerDraftConfigured()) {
+    input.checked = false;
+    setProviderStatus('Set up the LLM Provider API URL and model before enabling this feature.', true);
+    syncProviderFeatureAvailability();
+    return;
+  }
+
+  // Persist the provider while the requested feature remains off. It is only
+  // enabled after a successful live request to that exact saved configuration.
+  input.checked = false;
+  providerValidationInFlight = true;
+  syncProviderFeatureAvailability();
+  setProviderStatus(`Checking the LLM Provider before enabling ${featureName}…`);
+  try {
+    if (!await saveSettingsFromPanel({ close: false })) throw new Error('The provider settings could not be saved.');
+    const result = await api.testAiSettings();
+    input.checked = true;
+    if (!await saveSettingsFromPanel({ close: false })) throw new Error(`${featureName} could not be enabled.`);
+    setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
+  } catch (error) {
+    await persistDisabledProviderFeatures();
+    setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+  } finally {
+    providerValidationInFlight = false;
+    syncProviderFeatureAvailability();
+  }
 }
 
 async function saveSettingsFromPanel({ close = true } = {}) {
@@ -1955,23 +2029,39 @@ document.querySelector('#clear-api-key').addEventListener('click', () => {
   document.querySelector('#api-key').value = '';
   document.querySelector('#api-key-state').textContent = 'Key will be removed when saved';
   document.querySelector('#clear-api-key').hidden = true;
-  document.querySelector('#ai-enabled').checked = false;
+  invalidateProviderFeatures();
 });
 document.querySelector('#api-key').addEventListener('input', (event) => {
   if (event.target.value) clearApiKeyRequested = false;
+  invalidateProviderFeatures();
 });
-document.querySelector('#test-ai').addEventListener('click', async () => {
-  const status = document.querySelector('#ai-test-status');
-  status.textContent = 'Testing…';
+document.querySelector('#ai-api-url').addEventListener('input', invalidateProviderFeatures);
+document.querySelector('#ai-model').addEventListener('input', invalidateProviderFeatures);
+document.querySelector('#ai-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'AI session context'));
+document.querySelector('#agent-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'Strands supervisor'));
+document.querySelector('#test-ai').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (!providerDraftConfigured()) {
+    setProviderStatus('Set up the LLM Provider API URL and model before testing.', true);
+    syncProviderFeatureAvailability();
+    return;
+  }
+  button.disabled = true;
+  setProviderStatus('Testing…');
   if (!await saveSettingsFromPanel({ close: false })) {
-    status.textContent = 'Save failed';
+    setProviderStatus('Set up the LLM Provider: the provider settings could not be saved.', true);
+    button.disabled = false;
     return;
   }
   try {
     const result = await api.testAiSettings();
-    status.textContent = `Connected · ${result.name}: ${result.summary}`;
+    setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
-    status.textContent = error.message;
+    await persistDisabledProviderFeatures();
+    setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    syncProviderFeatureAvailability();
   }
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));

@@ -69,16 +69,20 @@ function readSettingsRecord() {
   try {
     const parsed = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
     const hasCompatibleProvider = typeof parsed.apiUrl === 'string';
+    const providerConfigured = hasCompatibleProvider
+      && Boolean(parsed.apiUrl.trim())
+      && typeof parsed.model === 'string'
+      && Boolean(parsed.model.trim());
     const mobilePort = Number.isInteger(requestedMobilePort) && requestedMobilePort >= 1024 && requestedMobilePort <= 65535
       ? requestedMobilePort
       : parsed.mobilePort;
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
-      llmEnabled: hasCompatibleProvider && Boolean(parsed.llmEnabled),
+      llmEnabled: providerConfigured && Boolean(parsed.llmEnabled),
       apiUrl: hasCompatibleProvider ? parsed.apiUrl : '',
       model: hasCompatibleProvider && typeof parsed.model === 'string' ? parsed.model : '',
-      agentEnabled: hasCompatibleProvider && Boolean(parsed.agentEnabled),
+      agentEnabled: providerConfigured && Boolean(parsed.agentEnabled),
       personality: typeof parsed.personality === 'string' ? parsed.personality.slice(0, 2000) : DEFAULT_SETTINGS.personality,
       agentInstructions: typeof parsed.agentInstructions === 'string' ? parsed.agentInstructions.slice(0, 8000) : DEFAULT_SETTINGS.agentInstructions,
       wakeWord: typeof parsed.wakeWord === 'string' ? parsed.wakeWord.slice(0, 80) : DEFAULT_SETTINGS.wakeWord,
@@ -113,10 +117,10 @@ function saveSettings(update = {}) {
   if (apiUrl) compatibleCompletionsUrl(apiUrl);
   if (model.length > 160) throw new Error('Model name must be 160 characters or fewer.');
   if (update.llmEnabled && (!apiUrl || !model)) {
-    throw new Error('API URL and model name are required for automatic naming.');
+    throw new Error('Set up the LLM Provider before enabling AI session context.');
   }
   if (update.agentEnabled && (!apiUrl || !model)) {
-    throw new Error('API URL and model name are required for the Strands supervisor.');
+    throw new Error('Set up the LLM Provider before enabling the Strands supervisor.');
   }
   const personality = typeof update.personality === 'string' ? update.personality.trim() : current.personality;
   const agentInstructions = typeof update.agentInstructions === 'string' ? update.agentInstructions.trim() : current.agentInstructions;
