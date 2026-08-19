@@ -258,6 +258,8 @@ function connect() {
     if (message.type === 'mobile:settings') {
       document.querySelector('#mobile-wake-word').value = message.settings?.wakeWord || 'Hey Agent';
       document.querySelector('#mobile-tts-voice').value = message.settings?.ttsVoice || 'alba';
+      document.querySelector('#mobile-tts-speed').value = String(message.settings?.ttsSpeed || 1);
+      document.querySelector('#mobile-tts-speed-value').textContent = `${Number(message.settings?.ttsSpeed || 1).toFixed(2)}×`;
       document.querySelector('#mobile-settings-status').textContent = message.saved ? 'Saved' : '';
     }
     if (message.type === 'mobile:settings:error') {
@@ -297,6 +299,7 @@ async function playMobileAudio(audio) {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
     activeMobileVoicePlayer = player;
     mobileBargeInStartedAt = 0;
+    player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
     await new Promise((resolve) => {
       player.addEventListener('ended', resolve, { once: true });
@@ -458,6 +461,9 @@ document.querySelector('#mobile-settings-button').addEventListener('click', () =
   mobileSettingsBackdrop.hidden = false;
 });
 document.querySelector('#mobile-settings-close').addEventListener('click', () => { mobileSettingsBackdrop.hidden = true; });
+document.querySelector('#mobile-tts-speed').addEventListener('input', (event) => {
+  document.querySelector('#mobile-tts-speed-value').textContent = `${Number(event.target.value).toFixed(2)}×`;
+});
 mobileSettingsBackdrop.addEventListener('click', (event) => {
   if (event.target === mobileSettingsBackdrop) mobileSettingsBackdrop.hidden = true;
 });
@@ -468,7 +474,8 @@ mobileSettingsForm.addEventListener('submit', (event) => {
     type: 'mobile:settings:update',
     settings: {
       wakeWord: document.querySelector('#mobile-wake-word').value,
-      ttsVoice: document.querySelector('#mobile-tts-voice').value
+      ttsVoice: document.querySelector('#mobile-tts-voice').value,
+      ttsSpeed: Number(document.querySelector('#mobile-tts-speed').value)
     }
   });
 });

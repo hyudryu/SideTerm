@@ -112,6 +112,8 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 #mobile-settings-close { width: 36px; height: 36px; background: transparent; border: 0; border-radius: 7px; font-size: 24px; }
 #mobile-settings-sheet label { display: flex; flex-direction: column; gap: 6px; color: #bbb; font-size: 11px; }
 #mobile-settings-sheet input, #mobile-settings-sheet select { height: 40px; padding: 0 10px; color: #eee; background: #111; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; font: 13px system-ui, sans-serif; }
+#mobile-settings-sheet input[type="range"] { height: 26px; padding: 0; accent-color: #60cdff; }
+#mobile-tts-speed-value { float: right; color: #eee; font-family: ui-monospace, monospace; }
 #mobile-settings-sheet > footer button { height: 38px; padding: 0 16px; color: #071319; background: #60cdff; border: 0; border-radius: 8px; font-weight: 700; }
 @media (min-width: 760px) { #mobile-app { grid-template-columns: 280px minmax(0, 1fr); } #drawer { position: static; width: 280px; transform: none; box-shadow: none; } #drawer-close, #menu-button, #drawer-shade { display: none !important; } main { grid-column: 2; } }
 @media (orientation: landscape) and (max-height: 520px) { main { grid-template-rows: calc(44px + var(--safe-top)) minmax(0, 1fr); } #terminal-view { grid-template-rows: minmax(0, 1fr) auto calc(42px + var(--safe-bottom)); } .mobile-topbar { padding-left: max(8px, env(safe-area-inset-left)); } #quick-keys, #mobile-input-bar { padding-left: max(6px, env(safe-area-inset-left)); } }

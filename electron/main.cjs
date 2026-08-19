@@ -18,6 +18,7 @@ const {
   pullRequestChanged,
   shouldPollPullRequest
 } = require('./github/pr-monitor.cjs');
+const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -83,6 +84,7 @@ const DEFAULT_SETTINGS = {
   sttModel: 'turbo',
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
+  ttsSpeed: DEFAULT_VOICE_SPEED,
   mobileEnabled: false,
   mobilePort: 43110,
   sidebarWidth: 282,
@@ -154,6 +156,7 @@ function readSettingsRecord() {
       sttModel: ['turbo', 'distil-large-v3', 'small.en'].includes(parsed.sttModel) ? parsed.sttModel : DEFAULT_SETTINGS.sttModel,
       ttsModel: DEFAULT_SETTINGS.ttsModel,
       ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(parsed.ttsVoice) ? parsed.ttsVoice : DEFAULT_SETTINGS.ttsVoice,
+      ttsSpeed: normalizeVoiceSpeed(parsed.ttsSpeed),
       mobileEnabled: Boolean(parsed.mobileEnabled),
       mobilePort: Number.isInteger(mobilePort) && mobilePort >= 1024 && mobilePort <= 65535 ? mobilePort : DEFAULT_SETTINGS.mobilePort,
       mobileToken: typeof parsed.mobileToken === 'string' && /^[a-f0-9]{32}$/.test(parsed.mobileToken) ? parsed.mobileToken : '',
@@ -219,6 +222,7 @@ function saveSettings(update = {}) {
     sttModel: ['turbo', 'distil-large-v3', 'small.en'].includes(update.sttModel) ? update.sttModel : current.sttModel,
     ttsModel: DEFAULT_SETTINGS.ttsModel,
     ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(update.ttsVoice) ? update.ttsVoice : current.ttsVoice,
+    ttsSpeed: normalizeVoiceSpeed(update.ttsSpeed, current.ttsSpeed),
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
@@ -862,8 +866,9 @@ async function installSpeechComponent(kind) {
   return status;
 }
 
-async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice) {
+async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed) {
   if (!speechStatus().ttsInstalled) throw new Error('Install Pocket TTS in Settings first.');
+  const playbackRate = normalizeVoiceSpeed(requestedSpeed, readSettingsRecord().ttsSpeed);
   const safeText = String(text || '').replace(/[`*_#>]/g, '').trim().slice(0, 4000);
   if (!safeText) throw new Error('There is no text to speak.');
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
@@ -875,7 +880,7 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice) {
       '--root', voiceRuntimeDirectory(), '--model', DEFAULT_SETTINGS.ttsModel,
       '--voice', String(voice), '--text', safeText, '--output', outputPath
     ]);
-    return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64') };
+    return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64'), playbackRate };
   } finally {
     try { fs.unlinkSync(outputPath); } catch {}
   }
@@ -1168,7 +1173,7 @@ function mobileVoiceSettings(saved = false) {
   return {
     type: 'mobile:settings',
     saved,
-    settings: { wakeWord: settings.wakeWord, ttsVoice: settings.ttsVoice }
+    settings: { wakeWord: settings.wakeWord, ttsVoice: settings.ttsVoice, ttsSpeed: settings.ttsSpeed }
   };
 }
 
@@ -1341,7 +1346,7 @@ async function startMobileServer({ persist = true } = {}) {
       if (message.type === 'mobile:settings:update') {
         try {
           const update = message.settings || {};
-          saveSettings({ wakeWord: update.wakeWord, ttsVoice: update.ttsVoice });
+          saveSettings({ wakeWord: update.wakeWord, ttsVoice: update.ttsVoice, ttsSpeed: update.ttsSpeed });
           broadcastMobile(mobileVoiceSettings(true));
           broadcastAgentState();
         } catch (error) {
@@ -1643,7 +1648,7 @@ function registerIpc() {
       return { ok: false, error: String(error?.message || error || 'Speech installation failed.') };
     }
   });
-  ipcMain.handle('voice:preview', (_event, voice) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice));
+  ipcMain.handle('voice:preview', (_event, { voice, speed }) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice, speed));
   ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
   ipcMain.handle('voice:transcribe', (_event, { bytes, mimeType }) => transcribeSpeech(bytes, mimeType));
   ipcMain.handle('voice:pause-media', () => pauseDesktopMedia());
