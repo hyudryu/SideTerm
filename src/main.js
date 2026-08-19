@@ -701,7 +701,7 @@ function armAiSummaryTimer(session, mode, delayMs) {
 }
 
 function scheduleAiSummary(session) {
-  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
+  if (sessions.get(session.id) !== session || !settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
   if (!session.aiInitialSummaryDone) {
     if (settings.aiInitialContextEnabled) {
       armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
@@ -717,6 +717,14 @@ function scheduleAiSummary(session) {
 
 function syncAiContextSchedules() {
   for (const session of sessions.values()) {
+    const preserveInitialDeadline = session.aiSummaryTimer
+      && session.aiSummaryMode === 'initial'
+      && settings.llmEnabled
+      && settings.apiUrl
+      && settings.model
+      && settings.aiInitialContextEnabled
+      && !session.exited;
+    if (preserveInitialDeadline) continue;
     clearAiSummaryTimer(session);
     scheduleAiSummary(session);
   }
@@ -727,7 +735,7 @@ async function requestAiSummary(session, mode) {
     armAiSummaryTimer(session, mode, 1_000);
     return;
   }
-  if (!settings.llmEnabled || session.exited) return;
+  if (sessions.get(session.id) !== session || !settings.llmEnabled || session.exited) return;
   if (mode === 'initial' && !settings.aiInitialContextEnabled) {
     session.aiInitialSummaryDone = true;
     scheduleAiSummary(session);
@@ -741,12 +749,15 @@ async function requestAiSummary(session, mode) {
     return;
   }
   session.aiSummaryInFlight = true;
+  const summarizedContext = session.context;
+  const summarizedRevision = session.contextRevision;
   try {
-    const result = await api.summarizeSession({ context: session.context, agent: session.agent || 'Terminal' });
+    const result = await api.summarizeSession({ context: summarizedContext, agent: session.agent || 'Terminal' });
+    if (sessions.get(session.id) !== session || session.exited) return;
     if (!result) return;
     session.displayName = session.agent || result.name;
     session.summary = result.summary;
-    session.lastSummarizedRevision = session.contextRevision;
+    session.lastSummarizedRevision = summarizedRevision;
     updateSessionItem(session);
     schedulePersist();
   } catch (error) {
@@ -756,6 +767,7 @@ async function requestAiSummary(session, mode) {
     }
   } finally {
     session.aiSummaryInFlight = false;
+    if (sessions.get(session.id) !== session || session.exited) return;
     if (mode === 'initial') session.aiInitialSummaryDone = true;
     session.lastAiSummaryAt = Date.now();
     scheduleAiSummary(session);
@@ -1945,8 +1957,10 @@ function closeSession(id) {
   const ids = orderedSessionIds();
   const index = ids.indexOf(id);
   if (!session.exited) api.close(id);
+  session.exited = true;
   window.clearTimeout(session.busyTimer);
   window.clearTimeout(session.responseSortTimer);
+  clearAiSummaryTimer(session);
   session.terminal.dispose();
   session.pane.remove();
   session.item.remove();
@@ -2002,9 +2016,10 @@ function deleteGroup(groupId) {
     const session = sessions.get(sessionId);
     if (!session) continue;
     if (!session.exited) api.close(sessionId);
+    session.exited = true;
     window.clearTimeout(session.busyTimer);
     window.clearTimeout(session.responseSortTimer);
-    window.clearTimeout(session.aiSummaryTimer);
+    clearAiSummaryTimer(session);
     session.terminal.dispose();
     session.pane.remove();
     session.item.remove();
