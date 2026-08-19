@@ -84,7 +84,9 @@ function readSettingsRecord() {
       ...parsed,
       llmEnabled: providerConfigured && Boolean(parsed.llmEnabled),
       aiInitialContextEnabled: typeof parsed.aiInitialContextEnabled === 'boolean' ? parsed.aiInitialContextEnabled : DEFAULT_SETTINGS.aiInitialContextEnabled,
-      aiContinuousContextEnabled: typeof parsed.aiContinuousContextEnabled === 'boolean' ? parsed.aiContinuousContextEnabled : DEFAULT_SETTINGS.aiContinuousContextEnabled,
+      // Existing settings files predate continuous uploads. Keep those users
+      // opted out until they explicitly enable the new recurring context mode.
+      aiContinuousContextEnabled: typeof parsed.aiContinuousContextEnabled === 'boolean' ? parsed.aiContinuousContextEnabled : false,
       aiContextIntervalMinutes: Number.isFinite(parsed.aiContextIntervalMinutes)
         ? Math.max(1, Math.min(1440, Math.round(parsed.aiContextIntervalMinutes)))
         : DEFAULT_SETTINGS.aiContextIntervalMinutes,

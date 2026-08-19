@@ -26,6 +26,8 @@ const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
+const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
+const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
 const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
@@ -540,6 +542,11 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
     }
     input.checked = true;
     settings = await api.saveSettings({ [settingKey]: true });
+    document.querySelector('#api-key').value = '';
+    clearApiKeyRequested = false;
+    document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'Provider key';
+    document.querySelector('#api-key-state').textContent = settings.hasApiKey ? 'Encrypted key configured' : 'No key configured';
+    document.querySelector('#clear-api-key').hidden = !settings.hasApiKey;
     applySettings();
     setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
@@ -754,13 +761,19 @@ async function requestAiSummary(session, mode) {
   session.aiSummaryInFlight = true;
   const summarizedContext = session.context;
   const summarizedRevision = session.contextRevision;
+  let completed = false;
   try {
-    const result = await api.summarizeSession({ context: summarizedContext, agent: session.agent || 'Terminal' });
+    const result = await api.summarizeSession({
+      context: summarizedContext,
+      agent: session.agent || 'Terminal',
+      requestTimeoutMs: AI_SUMMARY_REQUEST_TIMEOUT_MS
+    });
     if (sessions.get(session.id) !== session || session.exited) return;
     if (!result) return;
     session.displayName = session.agent || result.name;
     session.summary = result.summary;
     session.lastSummarizedRevision = summarizedRevision;
+    completed = true;
     updateSessionItem(session);
     schedulePersist();
   } catch (error) {
@@ -771,6 +784,10 @@ async function requestAiSummary(session, mode) {
   } finally {
     session.aiSummaryInFlight = false;
     if (sessions.get(session.id) !== session || session.exited) return;
+    if (!completed) {
+      armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
+      return;
+    }
     if (mode === 'initial') session.aiInitialSummaryDone = true;
     session.lastAiSummaryAt = Date.now();
     scheduleAiSummary(session);
