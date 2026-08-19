@@ -265,6 +265,7 @@ async function playMobileAudio(audio) {
   try {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
     await new Promise((resolve) => player.addEventListener('ended', resolve, { once: true }));
   } catch (error) {

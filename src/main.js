@@ -59,6 +59,7 @@ let settings = {
   sttModel: 'turbo',
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
+  ttsSpeed: 1,
   sidebarWidth: 282,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
@@ -181,6 +182,7 @@ document.querySelector('#app').innerHTML = `
               <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
+              <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
               <p class="settings-note">Recommended: Whisper turbo for accurate multilingual coding terms on this GPU, or Distil-Whisper large-v3 for lighter English-only use. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
@@ -358,6 +360,8 @@ function populateSettingsPanel() {
   document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
+  document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
+  document.querySelector('#tts-speed-value').textContent = `${Number(settings.ttsSpeed || 1).toFixed(2)}×`;
   document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
   document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
   document.querySelector('#settings-status').textContent = '';
@@ -397,6 +401,7 @@ function settingsPayload() {
     sttModel: document.querySelector('#stt-model').value,
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
+    ttsSpeed: Number(document.querySelector('#tts-speed').value),
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
   };
@@ -1039,6 +1044,7 @@ async function playSpeechAudio(audio) {
   await api.pauseDesktopMedia().catch(() => {});
   try {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
     await new Promise((resolve, reject) => {
       player.addEventListener('ended', resolve, { once: true });
@@ -2071,6 +2077,9 @@ document.querySelector('#sidebar-width').addEventListener('input', (event) => {
   shellElement.style.setProperty('--sidebar-width', `${width}px`);
   window.setTimeout(fitActive, 0);
 });
+document.querySelector('#tts-speed').addEventListener('input', (event) => {
+  document.querySelector('#tts-speed-value').textContent = `${Number(event.target.value).toFixed(2)}×`;
+});
 document.querySelector('#reset-hotkeys').addEventListener('click', () => {
   for (const input of document.querySelectorAll('[data-hotkey-action]')) input.value = DEFAULT_HOTKEYS[input.dataset.hotkeyAction];
 });
@@ -2105,7 +2114,10 @@ document.querySelector('#preview-voice').addEventListener('click', async (event)
   button.disabled = true;
   button.textContent = 'Generating…';
   try {
-    await playSpeechAudio(await api.previewVoice(document.querySelector('#tts-voice').value));
+    await playSpeechAudio(await api.previewVoice(
+      document.querySelector('#tts-voice').value,
+      Number(document.querySelector('#tts-speed').value)
+    ));
   } catch (error) {
     showToast(`Voice preview: ${error.message}`);
   } finally {
