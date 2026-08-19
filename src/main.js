@@ -25,7 +25,7 @@ const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
-const AI_SUMMARY_SETTLE_MS = 1_200;
+const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
 const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
@@ -42,6 +42,9 @@ let dropTarget = null;
 let clearApiKeyRequested = false;
 let settings = {
   llmEnabled: false,
+  aiInitialContextEnabled: true,
+  aiContinuousContextEnabled: true,
+  aiContextIntervalMinutes: 30,
   hasApiKey: false,
   apiUrl: '',
   model: '',
@@ -160,6 +163,17 @@ document.querySelector('#app').innerHTML = `
                 <span><strong>AI session context <em class="llm-required-label">LLM required</em></strong><small>Use the configured provider to name and summarize terminal sessions.</small></span>
                 <input id="ai-enabled" type="checkbox"><i></i>
               </label>
+              <div class="ai-context-options">
+                <label class="toggle-row compact-toggle-row">
+                  <span><strong>Initial context</strong><small>Label a new session once, 30 seconds after its first meaningful prompt.</small></span>
+                  <input id="ai-initial-context-enabled" type="checkbox"><i></i>
+                </label>
+                <label class="toggle-row compact-toggle-row">
+                  <span><strong>Continuous context update</strong><small>Refresh the label from the latest terminal context.</small></span>
+                  <input id="ai-continuous-context-enabled" type="checkbox"><i></i>
+                </label>
+                <label class="context-interval-row"><span>Update every</span><input id="ai-context-interval-minutes" type="number" min="1" max="1440" step="1"><span>minutes</span></label>
+              </div>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Supervisor</strong><span>Persistent human assistant</span></div>
@@ -307,6 +321,7 @@ function applySettings() {
     : `Collapse sidebar (${settings.hotkeys.toggleSidebar})`;
   document.querySelector('#settings-button').title = `Settings (${settings.hotkeys.openSettings})`;
   updateVisualState();
+  syncAiContextSchedules();
 }
 
 function renderHotkeyInputs() {
@@ -336,6 +351,9 @@ function renderHotkeyInputs() {
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
+  document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
+  document.querySelector('#ai-continuous-context-enabled').checked = settings.aiContinuousContextEnabled;
+  document.querySelector('#ai-context-interval-minutes').value = String(settings.aiContextIntervalMinutes || 30);
   document.querySelector('#api-key').value = '';
   document.querySelector('#api-key').placeholder = settings.hasApiKey ? 'Encrypted key configured' : 'Provider key';
   document.querySelector('#api-key-state').textContent = settings.hasApiKey ? 'Encrypted key configured' : 'No key configured';
@@ -378,6 +396,9 @@ function settingsPayload() {
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
   return {
     llmEnabled: document.querySelector('#ai-enabled').checked,
+    aiInitialContextEnabled: document.querySelector('#ai-initial-context-enabled').checked,
+    aiContinuousContextEnabled: document.querySelector('#ai-continuous-context-enabled').checked,
+    aiContextIntervalMinutes: Number(document.querySelector('#ai-context-interval-minutes').value),
     apiKey: document.querySelector('#api-key').value,
     clearApiKey: clearApiKeyRequested,
     apiUrl: document.querySelector('#ai-api-url').value,
@@ -418,6 +439,7 @@ function setProviderStatus(message = '', isError = false) {
   const status = document.querySelector('#ai-test-status');
   status.textContent = message;
   status.classList.toggle('error', isError);
+  status.classList.toggle('success', !isError && message.startsWith('Connected ·'));
 }
 
 function syncProviderFeatureAvailability() {
@@ -425,6 +447,7 @@ function syncProviderFeatureAvailability() {
   for (const id of ['#api-key', '#clear-api-key', '#ai-api-url', '#ai-model']) {
     document.querySelector(id).disabled = providerValidationInFlight;
   }
+  document.querySelector('#test-ai').disabled = providerValidationInFlight;
   for (const id of ['#ai-enabled', '#agent-enabled']) {
     const input = document.querySelector(id);
     input.disabled = !configured || providerValidationInFlight;
@@ -432,6 +455,11 @@ function syncProviderFeatureAvailability() {
       ? ''
       : 'Set up the LLM Provider API URL and model first.';
   }
+  const aiContextAvailable = configured && !providerValidationInFlight && document.querySelector('#ai-enabled').checked;
+  document.querySelector('#ai-initial-context-enabled').disabled = !aiContextAvailable;
+  document.querySelector('#ai-continuous-context-enabled').disabled = !aiContextAvailable;
+  document.querySelector('#ai-context-interval-minutes').disabled = !aiContextAvailable
+    || !document.querySelector('#ai-continuous-context-enabled').checked;
 }
 
 function invalidateProviderFeatures() {
@@ -459,6 +487,7 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
       input.checked = true;
       setProviderStatus(error.message, true);
     }
+    syncProviderFeatureAvailability();
     return;
   }
   if (!providerDraftConfigured()) {
@@ -591,6 +620,7 @@ function appendSessionContext(session, text) {
   const plain = terminalText.trim();
   if (!plain) return;
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
+  session.contextRevision += 1;
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
 }
@@ -623,21 +653,77 @@ function trackTerminalInput(session, data) {
   }
 }
 
-function scheduleAiSummary(session) {
-  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || session.summary || session.aiSummaryInFlight) return;
-  window.clearTimeout(session.aiSummaryTimer);
-  session.aiSummaryTimer = window.setTimeout(() => void requestAiSummary(session), AI_SUMMARY_SETTLE_MS);
+function aiContextIntervalMs() {
+  return Math.max(1, Math.min(1440, Number(settings.aiContextIntervalMinutes) || 30)) * 60_000;
 }
 
-async function requestAiSummary(session) {
-  if (session.aiSummaryInFlight || session.summary || session.context.length - session.lastSummarizedLength < 4) return;
+function clearAiSummaryTimer(session) {
+  window.clearTimeout(session.aiSummaryTimer);
+  session.aiSummaryTimer = null;
+  session.aiSummaryMode = '';
+  session.aiSummaryDueAt = 0;
+}
+
+function armAiSummaryTimer(session, mode, delayMs) {
+  if (session.aiSummaryTimer && session.aiSummaryMode === mode) return;
+  clearAiSummaryTimer(session);
+  session.aiSummaryMode = mode;
+  session.aiSummaryDueAt = Date.now() + delayMs;
+  session.aiSummaryTimer = window.setTimeout(() => {
+    session.aiSummaryTimer = null;
+    session.aiSummaryMode = '';
+    session.aiSummaryDueAt = 0;
+    void requestAiSummary(session, mode);
+  }, delayMs);
+}
+
+function scheduleAiSummary(session) {
+  if (!settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
+  if (!session.aiInitialSummaryDone) {
+    if (settings.aiInitialContextEnabled) {
+      armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
+      return;
+    }
+    session.aiInitialSummaryDone = true;
+  }
+  if (settings.aiContinuousContextEnabled) {
+    const elapsed = session.lastAiSummaryAt ? Date.now() - session.lastAiSummaryAt : 0;
+    armAiSummaryTimer(session, 'continuous', Math.max(1_000, aiContextIntervalMs() - elapsed));
+  }
+}
+
+function syncAiContextSchedules() {
+  for (const session of sessions.values()) {
+    clearAiSummaryTimer(session);
+    scheduleAiSummary(session);
+  }
+}
+
+async function requestAiSummary(session, mode) {
+  if (session.aiSummaryInFlight) {
+    armAiSummaryTimer(session, mode, 1_000);
+    return;
+  }
+  if (!settings.llmEnabled || session.exited) return;
+  if (mode === 'initial' && !settings.aiInitialContextEnabled) {
+    session.aiInitialSummaryDone = true;
+    scheduleAiSummary(session);
+    return;
+  }
+  if (mode === 'continuous' && !settings.aiContinuousContextEnabled) return;
+  if (session.contextRevision === session.lastSummarizedRevision) {
+    if (mode === 'initial') session.aiInitialSummaryDone = true;
+    session.lastAiSummaryAt = Date.now();
+    scheduleAiSummary(session);
+    return;
+  }
   session.aiSummaryInFlight = true;
   try {
     const result = await api.summarizeSession({ context: session.context, agent: session.agent || 'Terminal' });
     if (!result) return;
     session.displayName = session.agent || result.name;
     session.summary = result.summary;
-    session.lastSummarizedLength = session.context.length;
+    session.lastSummarizedRevision = session.contextRevision;
     updateSessionItem(session);
     schedulePersist();
   } catch (error) {
@@ -647,6 +733,9 @@ async function requestAiSummary(session) {
     }
   } finally {
     session.aiSummaryInFlight = false;
+    if (mode === 'initial') session.aiInitialSummaryDone = true;
+    session.lastAiSummaryAt = Date.now();
+    scheduleAiSummary(session);
   }
 }
 
@@ -709,6 +798,8 @@ function persistWorkspaceNow() {
         summary: session.summary,
         agent: session.agent,
         hasUserActivity: session.hasUserActivity,
+        aiInitialSummaryDone: session.aiInitialSummaryDone,
+        lastAiSummaryAt: session.lastAiSummaryAt,
         links: session.links
       });
     }
@@ -1604,7 +1695,6 @@ function noteBackgroundActivity(session, data) {
   if (!session.activityArmed) return;
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
-  window.clearTimeout(session.aiSummaryTimer);
   if (data.includes('\x07')) {
     session.notifyWhenIdle = false;
     markSessionNotification(session);
@@ -1673,9 +1763,14 @@ async function addSession(cwd, options = {}) {
     context: '',
     commandBuffer: '',
     aiSummaryTimer: null,
+    aiSummaryMode: '',
+    aiSummaryDueAt: 0,
     aiSummaryInFlight: false,
     aiErrorShown: false,
-    lastSummarizedLength: 0,
+    aiInitialSummaryDone: Boolean(options.aiInitialSummaryDone || options.summary || restoringWorkspace),
+    lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
+    contextRevision: 0,
+    lastSummarizedRevision: 0,
     hasUserActivity: Boolean(options.hasUserActivity),
     activityCycleId: '',
     lastReportedCycleId: '',
@@ -1754,6 +1849,7 @@ async function addSession(cwd, options = {}) {
   }
 
   if (options.activate !== false) activateSession(id);
+  scheduleAiSummary(session);
   schedulePersist();
   return session;
 }
@@ -2076,6 +2172,7 @@ document.querySelector('#ai-api-url').addEventListener('input', invalidateProvid
 document.querySelector('#ai-model').addEventListener('input', invalidateProviderFeatures);
 document.querySelector('#ai-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'AI session context', 'llmEnabled'));
 document.querySelector('#agent-enabled').addEventListener('change', (event) => void handleProviderFeatureToggle(event.currentTarget, 'Supervisor', 'agentEnabled'));
+document.querySelector('#ai-continuous-context-enabled').addEventListener('change', syncProviderFeatureAvailability);
 document.querySelector('#test-ai').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   if (!providerDraftConfigured()) {
@@ -2083,21 +2180,31 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
     syncProviderFeatureAvailability();
     return;
   }
-  button.disabled = true;
+  const providerFingerprint = providerDraftFingerprint();
+  providerValidationInFlight = true;
+  syncProviderFeatureAvailability();
   setProviderStatus('Testing…');
-  if (!await saveSettingsFromPanel({ close: false })) {
-    setProviderStatus('Set up the LLM Provider: the provider settings could not be saved.', true);
-    button.disabled = false;
-    return;
-  }
   try {
+    settings = await api.saveSettings({
+      ...providerDraftPayload(),
+      llmEnabled: document.querySelector('#ai-enabled').checked,
+      agentEnabled: document.querySelector('#agent-enabled').checked
+    });
+    applySettings();
     const result = await api.testAiSettings();
+    if (providerDraftFingerprint() !== providerFingerprint) {
+      throw new Error('The provider changed during validation. Test the current settings again.');
+    }
     setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
-    await persistDisabledProviderFeatures();
-    setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    try {
+      await persistDisabledProviderFeatures();
+      setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
+    } catch (rollbackError) {
+      setProviderStatus(`Provider test failed and AI features could not be disabled: ${rollbackError.message}`, true);
+    }
   } finally {
-    button.disabled = false;
+    providerValidationInFlight = false;
     syncProviderFeatureAvailability();
   }
 });
@@ -2188,6 +2295,8 @@ async function restoreSavedWorkspace() {
       summary: saved.summary,
       agent: saved.agent,
       hasUserActivity: saved.hasUserActivity,
+      aiInitialSummaryDone: saved.aiInitialSummaryDone,
+      lastAiSummaryAt: saved.lastAiSummaryAt,
       links: saved.links,
       activate: false
     });

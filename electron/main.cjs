@@ -42,6 +42,9 @@ const DEFAULT_HOTKEYS = {
 
 const DEFAULT_SETTINGS = {
   llmEnabled: false,
+  aiInitialContextEnabled: true,
+  aiContinuousContextEnabled: true,
+  aiContextIntervalMinutes: 30,
   apiUrl: '',
   model: '',
   agentEnabled: false,
@@ -80,6 +83,11 @@ function readSettingsRecord() {
       ...DEFAULT_SETTINGS,
       ...parsed,
       llmEnabled: providerConfigured && Boolean(parsed.llmEnabled),
+      aiInitialContextEnabled: typeof parsed.aiInitialContextEnabled === 'boolean' ? parsed.aiInitialContextEnabled : DEFAULT_SETTINGS.aiInitialContextEnabled,
+      aiContinuousContextEnabled: typeof parsed.aiContinuousContextEnabled === 'boolean' ? parsed.aiContinuousContextEnabled : DEFAULT_SETTINGS.aiContinuousContextEnabled,
+      aiContextIntervalMinutes: Number.isFinite(parsed.aiContextIntervalMinutes)
+        ? Math.max(1, Math.min(1440, Math.round(parsed.aiContextIntervalMinutes)))
+        : DEFAULT_SETTINGS.aiContextIntervalMinutes,
       apiUrl: hasCompatibleProvider ? parsed.apiUrl : '',
       model: hasCompatibleProvider && typeof parsed.model === 'string' ? parsed.model : '',
       agentEnabled: providerConfigured && Boolean(parsed.agentEnabled),
@@ -116,6 +124,15 @@ function saveSettings(update = {}) {
   const model = typeof update.model === 'string' ? update.model.trim() : current.model;
   const llmEnabled = typeof update.llmEnabled === 'boolean' ? update.llmEnabled : current.llmEnabled;
   const agentEnabled = typeof update.agentEnabled === 'boolean' ? update.agentEnabled : current.agentEnabled;
+  const aiInitialContextEnabled = typeof update.aiInitialContextEnabled === 'boolean'
+    ? update.aiInitialContextEnabled
+    : current.aiInitialContextEnabled;
+  const aiContinuousContextEnabled = typeof update.aiContinuousContextEnabled === 'boolean'
+    ? update.aiContinuousContextEnabled
+    : current.aiContinuousContextEnabled;
+  const aiContextIntervalMinutes = Object.hasOwn(update, 'aiContextIntervalMinutes')
+    ? Math.max(1, Math.min(1440, Math.round(Number(update.aiContextIntervalMinutes) || DEFAULT_SETTINGS.aiContextIntervalMinutes)))
+    : current.aiContextIntervalMinutes;
   if (apiUrl) compatibleCompletionsUrl(apiUrl);
   if (model.length > 160) throw new Error('Model name must be 160 characters or fewer.');
   if (llmEnabled && (!apiUrl || !model)) {
@@ -133,6 +150,9 @@ function saveSettings(update = {}) {
   const next = {
     ...current,
     llmEnabled,
+    aiInitialContextEnabled,
+    aiContinuousContextEnabled,
+    aiContextIntervalMinutes,
     apiUrl,
     model,
     agentEnabled,
@@ -344,7 +364,7 @@ function addAgentMessage(state, role, text) {
 
 async function chatWithSupervisor(text, { synthetic = false } = {}) {
   const settings = readSettingsRecord();
-  if (!settings.agentEnabled) throw new Error('Enable the Strands supervisor in Settings first.');
+  if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
   if (!settings.apiUrl || !settings.model) throw new Error('Configure the compatible API URL and model first.');
   if (agentChatInFlight) throw new Error('The supervisor is already working on a response.');
   const promptText = String(text || '').trim().slice(0, 20_000);

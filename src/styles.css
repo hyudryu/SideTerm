@@ -498,6 +498,12 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .settings-section { display: flex; flex-direction: column; gap: 14px; padding: 18px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.07); border-radius: 9px; }
 .settings-section + .settings-section { margin-top: 16px; }
 .settings-toggle-section { padding-block: 14px; }
+.ai-context-options { display: flex; flex-direction: column; gap: 12px; margin-top: 2px; padding: 13px 0 0 14px; border-top: 1px solid rgba(255,255,255,.065); border-left: 2px solid rgba(96,205,255,.18); }
+.compact-toggle-row strong { font-size: 11px; }
+.compact-toggle-row i { transform: scale(.9); transform-origin: right center; }
+.context-interval-row { display: flex; align-items: center; gap: 7px; color: #888; font-size: 10px; }
+.context-interval-row input { width: 68px; height: 29px; text-align: right; }
+.context-interval-row:has(input:disabled) { opacity: .48; }
 .settings-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 4px; }
 .settings-section-title strong { font-size: 14px; font-weight: 600; }
 .settings-section-title span { color: #777; font-size: 10px; }
@@ -555,7 +561,8 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .voice-picker-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
 .field-row input:focus, .hotkey-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(96,205,255,.1); }
 .credential-actions, .test-row { display: flex; min-height: 20px; align-items: center; justify-content: space-between; gap: 10px; color: #777; font-size: 10px; }
-.test-row span.error { color: #ffb4ab; }
+.test-row span.error { color: #ff7b72; }
+.test-row span.success { color: #70d17b; }
 .credential-actions button, .text-button { padding: 0; color: #70cfff; background: transparent; border: 0; cursor: pointer; font-size: 10px; }
 .credential-actions button:hover, .text-button:hover { text-decoration: underline; }
 .settings-note { margin: 0; padding: 10px 12px; background: rgba(96,205,255,.04); border-left: 2px solid rgba(96,205,255,.45); }

@@ -47,7 +47,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', links: [{ url: 'https://github.com/a/b/pull/1', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, links: [{ url: 'https://github.com/a/b/pull/1', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
@@ -62,6 +62,8 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.sessions[0].displayName, 'API work');
   assert.equal(saved.sessions[0].manualTitle, true);
   assert.equal(saved.sessions[0].activityArmed, true);
+  assert.equal(saved.sessions[0].aiInitialSummaryDone, true);
+  assert.equal(saved.sessions[0].lastAiSummaryAt, 1234);
   assert.equal(saved.sessions[0].links[0].url, 'https://github.com/a/b/pull/1');
 });
 
