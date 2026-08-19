@@ -61,6 +61,7 @@ let settings = {
 let linkPopoverTimer = null;
 let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
 let agentCatchUpInFlight = false;
+let supervisorDashboardActive = false;
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
@@ -105,7 +106,7 @@ document.querySelector('#app').innerHTML = `
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.55.72 1 .9.35.15.73.2 1.1.1h.1v4h-.09a1.7 1.7 0 0 0-1.51.6c-.28.28-.48.62-.6 1Z"/></svg>
           <span class="action-label">Settings</span>
         </button>
-        <button id="agent-button" class="agent-button" type="button" title="Open supervisor" aria-label="Open supervisor">
+        <button id="agent-button" class="agent-button" type="button" title="Open supervisor dashboard" aria-label="Open supervisor dashboard">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v2a4 4 0 0 0 2 3.46V17h3l1 2 1-2h3v-2.54A4 4 0 0 0 18 11V9a6 6 0 0 0-6-6Z"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="10" r="1"/></svg>
           <span class="agent-unread-badge" hidden>0</span>
         </button>
@@ -139,6 +140,30 @@ document.querySelector('#app').innerHTML = `
         </div>
       </header>
       <div id="terminal-stack" class="terminal-stack"></div>
+      <section id="supervisor-dashboard" class="supervisor-dashboard" aria-labelledby="agent-panel-title" hidden>
+        <header class="supervisor-dashboard-header">
+          <div>
+            <span class="supervisor-kicker">SUPERVISOR</span>
+            <strong id="agent-panel-title">Session command center</strong>
+            <small>Persistent Strands agent across every terminal session</small>
+          </div>
+          <button id="agent-close" class="secondary-button" type="button">Back to terminal</button>
+        </header>
+        <div class="agent-panel-body">
+          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
+          <section class="agent-metrics" aria-label="Supervisor metrics">
+            <article><span>Pending sessions</span><strong id="agent-metric-pending">0</strong></article>
+            <article><span>Running now</span><strong id="agent-metric-running">0</strong></article>
+            <article><span>Agent inputs</span><strong id="agent-metric-inputs">0</strong></article>
+            <article><span>Words saved typing</span><strong id="agent-metric-words">0</strong></article>
+          </section>
+          <section class="agent-pending-section"><header><strong>Pending sessions</strong><span>Running or awaiting attention</span></header><div id="agent-pending-sessions" class="agent-pending-sessions"></div></section>
+          <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
+          <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
+          <div id="agent-confirmations" class="agent-confirmations"></div>
+          <form id="agent-chat-form" class="agent-chat-form"><textarea id="agent-chat-input" rows="2" placeholder="Ask about a session, create work, or request terminal input…"></textarea><button class="primary-button" type="submit">Send</button></form>
+        </div>
+      </section>
       <div id="toast-region" class="toast-region" aria-live="polite"></div>
     </section>
     <div id="settings-backdrop" class="settings-backdrop" hidden>
@@ -230,21 +255,6 @@ document.querySelector('#app').innerHTML = `
         </div>
       </section>
     </div>
-    <div id="agent-backdrop" class="settings-backdrop" hidden>
-      <section class="agent-panel" role="dialog" aria-modal="true" aria-labelledby="agent-panel-title">
-        <header class="settings-header">
-          <div><strong id="agent-panel-title">SideTerm supervisor</strong><span>Persistent Strands agent across every terminal session</span></div>
-          <button id="agent-close" class="settings-close" type="button" aria-label="Close supervisor">×</button>
-        </header>
-        <div class="agent-panel-body">
-          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
-          <section class="agent-notification-section"><header><strong>Notifications</strong><span id="agent-notification-count">0</span></header><div id="agent-notifications" class="agent-notifications"></div></section>
-          <div id="agent-chat" class="agent-chat" aria-live="polite"></div>
-          <div id="agent-confirmations" class="agent-confirmations"></div>
-          <form id="agent-chat-form" class="agent-chat-form"><textarea id="agent-chat-input" rows="2" placeholder="Ask about a session, create work, or request terminal input…"></textarea><button class="primary-button" type="submit">Send</button></form>
-        </div>
-      </section>
-    </div>
     <aside id="link-popover" class="link-popover" hidden></aside>
   </main>
 `;
@@ -260,7 +270,7 @@ const newSessionButton = document.querySelector('#new-session');
 const toastRegion = document.querySelector('#toast-region');
 const settingsBackdrop = document.querySelector('#settings-backdrop');
 const mobileBackdrop = document.querySelector('#mobile-backdrop');
-const agentBackdrop = document.querySelector('#agent-backdrop');
+const supervisorDashboard = document.querySelector('#supervisor-dashboard');
 const settingsForm = document.querySelector('#settings-form');
 const linkPopover = document.querySelector('#link-popover');
 const sidebarResizer = document.querySelector('#sidebar-resizer');
@@ -1022,6 +1032,33 @@ function renderAgentState(nextState) {
   label.textContent = !agentState.enabled ? 'Supervisor disabled' : agentState.status === 'thinking' ? 'Thinking…' : agentState.status === 'error' ? 'Needs attention' : 'Ready';
   detail.textContent = !agentState.enabled ? 'Enable it in Settings to start tracking sessions' : agentState.configured ? 'Watching all SideTerm sessions' : 'Configure an API URL and model';
 
+  const metrics = agentState.metrics || {};
+  document.querySelector('#agent-metric-pending').textContent = String(metrics.pendingSessions || 0);
+  document.querySelector('#agent-metric-running').textContent = String(metrics.runningSessions || 0);
+  document.querySelector('#agent-metric-inputs').textContent = Number(metrics.terminalInputsApproved || 0).toLocaleString();
+  document.querySelector('#agent-metric-words').textContent = Number(metrics.terminalWordsEntered || 0).toLocaleString();
+  const pendingSessions = document.querySelector('#agent-pending-sessions');
+  pendingSessions.replaceChildren();
+  if (!(agentState.pendingSessions || []).length) {
+    const empty = document.createElement('span');
+    empty.className = 'agent-chat-empty';
+    empty.textContent = 'Nothing pending. All sessions are idle and acknowledged.';
+    pendingSessions.append(empty);
+  }
+  for (const session of agentState.pendingSessions || []) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'agent-pending-session';
+    const stateLabel = session.busy ? 'Running' : 'Needs attention';
+    card.innerHTML = '<span class="agent-pending-state"></span><span class="agent-pending-copy"><strong></strong><small></small></span><span class="agent-pending-arrow">›</span>';
+    card.classList.toggle('running', Boolean(session.busy));
+    card.querySelector('.agent-pending-state').textContent = stateLabel;
+    card.querySelector('strong').textContent = session.title || 'Terminal';
+    card.querySelector('small').textContent = session.subtitle || session.group || '';
+    card.addEventListener('click', () => activateSession(session.id));
+    pendingSessions.append(card);
+  }
+
   const unread = (agentState.notifications || []).filter((item) => !item.read);
   document.querySelector('#agent-notification-count').textContent = String(unread.length);
   const notifications = document.querySelector('#agent-notifications');
@@ -1095,8 +1132,12 @@ async function respondToAgentConfirmation(id, approved) {
 }
 
 async function openAgentPanel() {
-  agentBackdrop.hidden = false;
-  requestAnimationFrame(() => agentBackdrop.classList.add('visible'));
+  const foreground = sessions.get(activeId);
+  if (foreground?.busy && foreground.activityArmed) foreground.notifyWhenIdle = true;
+  supervisorDashboardActive = true;
+  shellElement.classList.add('supervisor-active');
+  supervisorDashboard.hidden = false;
+  document.querySelector('#agent-button').classList.add('active');
   try {
     renderAgentState(await api.getAgentState());
     if (agentState.enabled && agentState.notifications.some((item) => !item.read) && !agentCatchUpInFlight) {
@@ -1115,11 +1156,14 @@ async function openAgentPanel() {
 
 function closeAgentPanel() {
   if (desktopVoiceMode) stopDesktopVoiceMode();
-  agentBackdrop.classList.remove('visible');
-  window.setTimeout(() => {
-    agentBackdrop.hidden = true;
+  supervisorDashboardActive = false;
+  shellElement.classList.remove('supervisor-active');
+  supervisorDashboard.hidden = true;
+  document.querySelector('#agent-button').classList.remove('active');
+  requestAnimationFrame(() => {
+    fitActive();
     sessions.get(activeId)?.terminal.focus();
-  }, 140);
+  });
 }
 
 async function submitAgentChat(text) {
@@ -1611,6 +1655,7 @@ function renderSessionItem(session) {
 function activateSession(id) {
   const next = sessions.get(id);
   if (!next) return;
+  if (supervisorDashboardActive) closeAgentPanel();
   if (activeTitle.isContentEditable) activeTitle.blur();
   const previous = sessions.get(activeId);
   if (previous && previous.id !== id && previous.busy && previous.activityArmed) {
@@ -1685,8 +1730,12 @@ function cycleSession(direction) {
   activateSession(ids[(index + direction + ids.length) % ids.length]);
 }
 
+function isSessionForeground(session) {
+  return !supervisorDashboardActive && session?.id === activeId;
+}
+
 function markSessionNotification(session) {
-  if (!session || session.id === activeId || session.notified) return;
+  if (!session || isSessionForeground(session) || session.notified) return;
   session.notified = true;
   session.activityArmed = false;
   session.notifyWhenIdle = false;
@@ -1703,6 +1752,7 @@ function noteSessionBusy(session, data) {
   if (!session.busy) {
     session.busy = true;
     updateSessionItem(session);
+    schedulePersist();
   }
   session.busyTimer = window.setTimeout(() => {
     session.busy = false;
@@ -1710,8 +1760,8 @@ function noteSessionBusy(session, data) {
     reportSessionCompletion(session);
     if (session.notifyWhenIdle) {
       session.notifyWhenIdle = false;
-      if (session.id !== activeId) markSessionNotification(session);
-    } else if (session.id === activeId) {
+      if (!isSessionForeground(session)) markSessionNotification(session);
+    } else if (isSessionForeground(session)) {
       session.activityArmed = false;
       schedulePersist();
     }
@@ -1719,7 +1769,7 @@ function noteSessionBusy(session, data) {
 }
 
 function noteBackgroundActivity(session, data) {
-  if (!session || session.id === activeId || restoringWorkspace) return;
+  if (!session || isSessionForeground(session) || restoringWorkspace) return;
   if (!session.activityArmed) return;
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
@@ -2098,7 +2148,7 @@ api.onExit(({ id, exitCode }) => {
   window.clearTimeout(session.busyTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
-  if (id === activeId) {
+  if (isSessionForeground(session)) {
     activeSubtitle.textContent = `${session.shell} · stopped · ${session.cwd}`;
     statusDot.classList.add('stopped');
   } else {
@@ -2125,9 +2175,6 @@ activeTitle.addEventListener('click', () => startSessionRename(sessions.get(acti
 document.querySelector('#settings-button').addEventListener('click', openSettingsPanel);
 document.querySelector('#agent-button').addEventListener('click', () => void openAgentPanel());
 document.querySelector('#agent-close').addEventListener('click', closeAgentPanel);
-agentBackdrop.addEventListener('mousedown', (event) => {
-  if (event.target === agentBackdrop) closeAgentPanel();
-});
 document.querySelector('#agent-chat-form').addEventListener('submit', (event) => {
   event.preventDefault();
   void submitAgentChat();
@@ -2273,7 +2320,7 @@ api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
-  if (!agentBackdrop.hidden && event.key === 'Escape') {
+  if (supervisorDashboardActive && event.key === 'Escape') {
     event.preventDefault();
     closeAgentPanel();
     return;
@@ -2288,7 +2335,7 @@ window.addEventListener('keydown', (event) => {
     closeSettingsPanel();
     return;
   }
-  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel, .agent-panel')) return;
+  if (event.target instanceof Element && event.target.closest('.settings-panel, .mobile-panel, .supervisor-dashboard')) return;
   if (event.target instanceof Element && event.target.closest('.xterm')) return;
   const action = resolveTerminalShortcut(event, sessions.get(activeId)?.terminal.hasSelection() ?? false, settings.hotkeys);
   if (!action || action === 'terminal-input') return;

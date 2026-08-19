@@ -192,7 +192,15 @@ function agentStateFile() {
 }
 
 function emptyAgentState() {
-  return { version: 1, messages: [], notifications: [], archivedSessions: [], confirmations: [], actionResults: [] };
+  return {
+    version: 1,
+    messages: [],
+    notifications: [],
+    archivedSessions: [],
+    confirmations: [],
+    actionResults: [],
+    metrics: { terminalInputsApproved: 0, terminalWordsEntered: 0 }
+  };
 }
 
 function cleanAgentEntry(value, limits = {}) {
@@ -241,7 +249,11 @@ function readAgentState() {
       })) : [],
       actionResults: Array.isArray(parsed.actionResults) ? parsed.actionResults.slice(-40).map((item) => ({
         text: String(item?.text || '').slice(0, 1000), createdAt: Number(item?.createdAt) || Date.now()
-      })) : []
+      })) : [],
+      metrics: {
+        terminalInputsApproved: Math.max(0, Math.floor(Number(parsed.metrics?.terminalInputsApproved) || 0)),
+        terminalWordsEntered: Math.max(0, Math.floor(Number(parsed.metrics?.terminalWordsEntered) || 0))
+      }
     };
   } catch {
     return emptyAgentState();
@@ -257,6 +269,16 @@ function writeAgentState(state) {
 function publicAgentState() {
   const state = readAgentState();
   const settings = readSettingsRecord();
+  const pendingSessions = mobileWorkspace.sessions
+    .filter((session) => session.busy || session.notified)
+    .map((session) => ({
+      id: session.id,
+      title: session.title,
+      subtitle: session.subtitle,
+      group: mobileWorkspace.groups.find((group) => group.id === session.groupId)?.title || 'Ungrouped',
+      busy: Boolean(session.busy),
+      notified: Boolean(session.notified)
+    }));
   return {
     enabled: Boolean(settings.agentEnabled),
     configured: Boolean(settings.apiUrl && settings.model),
@@ -264,8 +286,22 @@ function publicAgentState() {
     messages: state.messages,
     notifications: state.notifications,
     archivedSessions: state.archivedSessions,
-    confirmations: state.confirmations
+    confirmations: state.confirmations,
+    pendingSessions,
+    metrics: {
+      activeSessions: mobileWorkspace.sessions.length,
+      pendingSessions: pendingSessions.length,
+      runningSessions: mobileWorkspace.sessions.filter((session) => session.busy).length,
+      needsAttention: mobileWorkspace.sessions.filter((session) => session.notified).length,
+      archivedSessions: state.archivedSessions.length,
+      terminalInputsApproved: state.metrics.terminalInputsApproved,
+      terminalWordsEntered: state.metrics.terminalWordsEntered
+    }
   };
+}
+
+function countTerminalWords(input) {
+  return String(input || '').trim().match(/\S+/gu)?.length || 0;
 }
 
 function broadcastAgentState() {
@@ -450,6 +486,8 @@ async function resolveAgentConfirmation(id, approved) {
     if (!session) throw new Error('The target terminal session is no longer active.');
     send('terminal:remote-input', { id: confirmation.sessionId, data: confirmation.input });
     session.processHandle.write(confirmation.input);
+    state.metrics.terminalInputsApproved += 1;
+    state.metrics.terminalWordsEntered += countTerminalWords(confirmation.input);
     resultText = `The user approved and SideTerm sent the proposed input to ${confirmation.title}.`;
   } else {
     const session = sessions.get(confirmation.sessionId);
@@ -1274,6 +1312,7 @@ function registerIpc() {
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
     broadcastMobileSnapshot();
+    broadcastAgentState();
   });
   ipcMain.handle('agent:get-state', () => publicAgentState());
   ipcMain.handle('agent:chat', (_event, text) => chatWithSupervisor(text));
