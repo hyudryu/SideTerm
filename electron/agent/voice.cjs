@@ -21,4 +21,11 @@ function speechSummary(value, maxWords = 40) {
   return sentence || `${bounded.replace(/[,:;\s]+$/, '')}.`;
 }
 
-module.exports = { VOICE_MODE_INSTRUCTION, speechSummary };
+const VOICE_EXECUTION_INSTRUCTION = [
+  'Voice mode is active: the user\'s spoken request is the approval.',
+  'request_terminal_input executes immediately and reports back what happened, so act first, then say what you did in one short sentence.',
+  'Never tell the user to click Approve or wait for a confirmation card.',
+  'Only pause to double-check genuinely irreversible or destructive commands (deletes, force pushes, published writes).'
+].join(' ');
+
+module.exports = { VOICE_MODE_INSTRUCTION, VOICE_EXECUTION_INSTRUCTION, speechSummary };

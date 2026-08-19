@@ -2568,6 +2568,9 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
+api.onAgentVoicePing(({ text } = {}) => {
+  if (desktopVoiceMode) void speakAgentResponse(String(text || ''));
+});
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
