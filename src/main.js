@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -674,7 +674,11 @@ function appendSessionContext(session, text) {
 
 function trackTerminalInput(session, data) {
   const input = stripTerminalControlInput(data);
-  if (input) session.busySuppressedUntil = 0;
+  if (input) {
+    session.busySuppressedUntil = 0;
+    session.expectedInputEcho = `${session.expectedInputEcho}${input}`.slice(-4096);
+    session.expectedInputEchoAt = Date.now();
+  }
   for (const character of input) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
@@ -1926,7 +1930,16 @@ function noteSessionBusy(session, data) {
 }
 
 function recordSessionResponse(session, data) {
-  if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  if (!session || session.exited) return;
+  let output = plainTerminalText(data);
+  if (Date.now() - session.expectedInputEchoAt <= 1_500) {
+    const consumed = consumeTerminalInputEcho(session.expectedInputEcho, output);
+    session.expectedInputEcho = consumed.expected;
+    output = consumed.response;
+  } else {
+    session.expectedInputEcho = '';
+  }
+  if (!output.trim()) return;
   if (restoringWorkspace || Date.now() < session.busySuppressedUntil) return;
   session.lastResponseAt = Date.now();
   window.clearTimeout(session.responseSortTimer);
@@ -2017,6 +2030,8 @@ async function addSession(cwd, options = {}) {
     linkScanBuffer: '',
     context: '',
     commandBuffer: '',
+    expectedInputEcho: '',
+    expectedInputEchoAt: 0,
     aiSummaryTimer: null,
     aiSummaryMode: '',
     aiSummaryDueAt: 0,

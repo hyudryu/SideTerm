@@ -18,6 +18,23 @@ export function stripTerminalControlInput(value) {
     .replace(/\x1B./g, '');
 }
 
+function normalizeTerminalEcho(value) {
+  return String(value).replace(/\r\n|\r/g, '\n');
+}
+
+export function consumeTerminalInputEcho(expectedInput, output) {
+  const expected = normalizeTerminalEcho(expectedInput);
+  const received = normalizeTerminalEcho(output);
+  if (!expected || !received) return { expected, response: received };
+  if (expected.startsWith(received)) {
+    return { expected: expected.slice(received.length), response: '' };
+  }
+  if (received.startsWith(expected)) {
+    return { expected: '', response: received.slice(expected.length) };
+  }
+  return { expected: '', response: received };
+}
+
 export function normalizeGithubPullRequestUrl(value) {
   try {
     const parsed = new URL(String(value).replace(/[),.;:!?]+$/, ''));
