@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import { renderMarkdown } from './markdown.js';
 import {
   DEFAULT_HOTKEYS,
@@ -66,6 +66,7 @@ let settings = {
   sttModel: 'turbo',
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
+  ttsSpeed: 1,
   sidebarWidth: 282,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
@@ -79,6 +80,8 @@ let voiceAudioContext = null;
 let voiceMonitorFrame = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
+let activeVoicePlayer = null;
+let voiceBargeInStartedAt = 0;
 let providerValidationInFlight = false;
 
 document.querySelector('#app').innerHTML = `
@@ -228,6 +231,7 @@ document.querySelector('#app').innerHTML = `
               <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
+              <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
               <p class="settings-note">Recommended: Whisper turbo for accurate multilingual coding terms on this GPU, or Distil-Whisper large-v3 for lighter English-only use. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
@@ -394,6 +398,8 @@ function populateSettingsPanel() {
   document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
+  document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
+  document.querySelector('#tts-speed-value').textContent = `${Number(settings.ttsSpeed || 1).toFixed(2)}×`;
   document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
   document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
   document.querySelector('#settings-status').textContent = '';
@@ -403,7 +409,8 @@ function populateSettingsPanel() {
   void refreshSpeechStatus();
 }
 
-function openSettingsPanel() {
+async function openSettingsPanel() {
+  settings = await api.getSettings().catch(() => settings);
   populateSettingsPanel();
   settingsBackdrop.hidden = false;
   requestAnimationFrame(() => settingsBackdrop.classList.add('visible'));
@@ -437,6 +444,7 @@ function settingsPayload() {
     sttModel: document.querySelector('#stt-model').value,
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
+    ttsSpeed: Number(document.querySelector('#tts-speed').value),
     sidebarWidth: Number(document.querySelector('#sidebar-width').value),
     hotkeys
   };
@@ -896,50 +904,54 @@ function persistWorkspaceNow() {
     }
   }
 
+  const savedGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sortBy: group.sortBy,
+    sortDirection: group.sortDirection,
+    sessionIds: group.sessionIds.filter((id) => sessions.has(id))
+  }));
+  const mobileGroups = groups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    color: group.color,
+    collapsed: group.collapsed,
+    sessionIds: sortedSessionIds(group, sessions)
+  }));
+  const serializedWorkspace = JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: savedGroups,
+    sessions: savedSessions,
+    activeId,
+    activeGroupId
+  });
+  let localStorageSaved = false;
   try {
-    const savedGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sortBy: group.sortBy,
-      sortDirection: group.sortDirection,
-      sessionIds: group.sessionIds.filter((id) => sessions.has(id))
-    }));
-    const mobileGroups = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      sessionIds: sortedSessionIds(group, sessions)
-    }));
-    const serializedWorkspace = JSON.stringify({
-      version: WORKSPACE_VERSION,
-      groups: savedGroups,
-      sessions: savedSessions,
-      activeId,
-      activeGroupId
-    });
     localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
-    api.saveWorkspace(serializedWorkspace);
-    api.updateMobileWorkspace({
-      groups: mobileGroups,
-      sessions: savedSessions.map((session) => ({
-        id: session.id,
-        groupId: session.groupId,
-        title: session.title,
-        subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
-        cwd: session.cwd,
-        links: session.links.map((link) => link.url),
-        summary: session.summary,
-        attentionCycleId: session.attentionCycleId,
-        notified: session.notified,
-        busy: sessions.get(session.id)?.busy
-      }))
-    });
+    localStorageSaved = true;
   } catch {
-    showToast('Workspace storage is full; older scrollback was not saved');
+    // The main-process file backup remains available when Chromium storage is full.
   }
+  void api.saveWorkspace(serializedWorkspace).catch(() => {
+    if (!localStorageSaved) showToast('Workspace could not be saved to browser storage or the file backup');
+  });
+  api.updateMobileWorkspace({
+    groups: mobileGroups,
+    sessions: savedSessions.map((session) => ({
+      id: session.id,
+      groupId: session.groupId,
+      title: session.title,
+      subtitle: session.exited ? `${session.shell} · stopped` : `${session.shell} · ${session.cwd}`,
+       cwd: session.cwd,
+       links: session.links.map((link) => link.url),
+       summary: session.summary,
+       attentionCycleId: session.attentionCycleId,
+       notified: session.notified,
+      busy: sessions.get(session.id)?.busy
+    }))
+  });
 }
 
 function schedulePersist() {
@@ -1228,6 +1240,7 @@ function renderAgentState(nextState) {
         ? confirmation.body
         : confirmation.input;
     copy.append(heading, detailText);
+    if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
     const deny = document.createElement('button');
     deny.type = 'button';
     deny.className = 'secondary-button';
@@ -1279,6 +1292,8 @@ async function openAgentPanel() {
 
 function closeAgentPanel() {
   if (desktopVoiceMode) stopDesktopVoiceMode();
+  const foreground = sessions.get(activeId);
+  if (foreground) foreground.notifyWhenIdle = false;
   supervisorDashboardActive = false;
   shellElement.classList.remove('supervisor-active');
   supervisorDashboard.hidden = true;
@@ -1411,21 +1426,37 @@ async function playSpeechAudio(audio) {
   await api.pauseDesktopMedia().catch(() => {});
   try {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
+    activeVoicePlayer = player;
+    voiceBargeInStartedAt = 0;
+    player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
     await new Promise((resolve, reject) => {
       player.addEventListener('ended', resolve, { once: true });
+      player.addEventListener('sideterm-interrupted', resolve, { once: true });
       player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
     });
   } finally {
+    activeVoicePlayer = null;
+    voiceBargeInStartedAt = 0;
     await api.resumeDesktopMedia().catch(() => {});
     voiceCaptureMuted = false;
   }
 }
 
+function interruptVoicePlayback() {
+  const player = activeVoicePlayer;
+  if (!player) return false;
+  activeVoicePlayer = null;
+  player.pause();
+  player.dispatchEvent(new Event('sideterm-interrupted'));
+  voiceCaptureMuted = false;
+  return true;
+}
+
 async function speakAgentResponse(text) {
   if (!desktopVoiceMode) return;
   try {
-    await playSpeechAudio(await api.synthesizeSpeech(text, settings.ttsVoice));
+    await playSpeechAudio(await api.synthesizeSpeech(text));
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   }
@@ -1488,7 +1519,21 @@ async function startDesktopVoiceMode() {
     analyser.getFloatTimeDomainData(samples);
     const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
     const now = performance.now();
-    if (!voiceCaptureMuted && rms > 0.035) {
+    if (activeVoicePlayer) {
+      if (rms > 0.075) {
+        voiceBargeInStartedAt ||= now;
+        if (now - voiceBargeInStartedAt >= 280) {
+          interruptVoicePlayback();
+          speaking = true;
+          startedAt = now;
+          silenceAt = 0;
+          utterance = [];
+          preRoll = [];
+        }
+      } else {
+        voiceBargeInStartedAt = 0;
+      }
+    } else if (rms > 0.035) {
       if (!speaking) {
         speaking = true;
         startedAt = now;
@@ -1518,6 +1563,7 @@ async function startDesktopVoiceMode() {
 }
 
 function stopDesktopVoiceMode() {
+  interruptVoicePlayback();
   desktopVoiceMode = false;
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -2010,6 +2056,7 @@ async function addSession(cwd, options = {}) {
   terminal.loadAddon(fit);
   terminal.open(pane);
 
+  const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
   const session = {
     id,
     title: options.title || `Terminal ${sessions.size + 1}`,
@@ -2042,7 +2089,7 @@ async function addSession(cwd, options = {}) {
     lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
     responseSortTimer: null,
     linkScanBuffer: '',
-    context: '',
+    context: restoredContext.context,
     commandBuffer: '',
     expectedInputEcho: '',
     expectedInputEchoAt: 0,
@@ -2055,8 +2102,8 @@ async function addSession(cwd, options = {}) {
       ? options.aiInitialSummaryDone
       : Boolean(options.summary || restoringWorkspace),
     lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
-    contextRevision: 0,
-    lastSummarizedRevision: 0,
+    contextRevision: restoredContext.contextRevision,
+    lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
     activityCycleId: '',
     lastReportedCycleId: '',
@@ -2459,6 +2506,9 @@ document.querySelector('#sidebar-width').addEventListener('input', (event) => {
   shellElement.style.setProperty('--sidebar-width', `${width}px`);
   window.setTimeout(fitActive, 0);
 });
+document.querySelector('#tts-speed').addEventListener('input', (event) => {
+  document.querySelector('#tts-speed-value').textContent = `${Number(event.target.value).toFixed(2)}×`;
+});
 document.querySelector('#reset-hotkeys').addEventListener('click', () => {
   for (const input of document.querySelectorAll('[data-hotkey-action]')) input.value = DEFAULT_HOTKEYS[input.dataset.hotkeyAction];
 });
@@ -2520,7 +2570,10 @@ document.querySelector('#preview-voice').addEventListener('click', async (event)
   button.disabled = true;
   button.textContent = 'Generating…';
   try {
-    await playSpeechAudio(await api.previewVoice(document.querySelector('#tts-voice').value));
+    await playSpeechAudio(await api.previewVoice(
+      document.querySelector('#tts-voice').value,
+      Number(document.querySelector('#tts-speed').value)
+    ));
   } catch (error) {
     showToast(`Voice preview: ${error.message}`);
   } finally {

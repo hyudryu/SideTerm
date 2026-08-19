@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -51,4 +51,13 @@ test('URL capture keeps only canonical GitHub pull requests', () => {
   ].join(' '));
   assert.deepEqual(result.urls, ['https://github.com/hyudryu/SideTerm/pull/2']);
   assert.equal(normalizeGithubPullRequestUrl('https://example.com/a/b/pull/2'), null);
+});
+
+test('restored history remains pending AI context until summarized', () => {
+  assert.deepEqual(restoredContextState('old terminal context', false), {
+    context: 'old terminal context', contextRevision: 1, lastSummarizedRevision: 0
+  });
+  assert.deepEqual(restoredContextState('already summarized', true), {
+    context: 'already summarized', contextRevision: 1, lastSummarizedRevision: 1
+  });
 });

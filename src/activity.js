@@ -57,3 +57,13 @@ export function scanTerminalUrls(previousBuffer, chunk) {
   }
   return { buffer, urls: [...urls] };
 }
+
+export function restoredContextState(history, hasSummary, maxCharacters = 16_000) {
+  const context = String(history || '').slice(-Math.max(1, maxCharacters));
+  const contextRevision = context.trim() ? 1 : 0;
+  return {
+    context,
+    contextRevision,
+    lastSummarizedRevision: hasSummary ? contextRevision : 0
+  };
+}

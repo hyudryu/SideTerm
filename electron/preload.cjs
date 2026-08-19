@@ -8,7 +8,7 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('sideTerm', {
   getWorkspaceSync: () => ipcRenderer.sendSync('workspace:get-sync'),
-  saveWorkspace: (raw) => ipcRenderer.send('workspace:save', raw),
+  saveWorkspace: (raw) => ipcRenderer.invoke('workspace:save', raw),
   createSession: (options) => ipcRenderer.invoke('terminal:create', options),
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
     if (!result?.ok) throw new Error(result?.error || 'Speech installation failed.');
     return result.status;
   },
-  previewVoice: (voice) => ipcRenderer.invoke('voice:preview', voice),
+  previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
   transcribeSpeech: (bytes, mimeType) => ipcRenderer.invoke('voice:transcribe', { bytes, mimeType }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),
