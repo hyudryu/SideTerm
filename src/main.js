@@ -30,7 +30,8 @@ const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
 const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const MAX_CONTEXT_CHARS = 16_000;
 const sessions = new Map();
-const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
+const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
+  ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -872,13 +873,15 @@ function persistWorkspaceNow() {
       collapsed: group.collapsed,
       sessionIds: group.sessionIds.filter((id) => sessions.has(id))
     }));
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({
+    const serializedWorkspace = JSON.stringify({
       version: WORKSPACE_VERSION,
       groups: savedGroups,
       sessions: savedSessions,
       activeId,
       activeGroupId
-    }));
+    });
+    localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
+    api.saveWorkspace(serializedWorkspace);
     api.updateMobileWorkspace({
       groups: savedGroups,
       sessions: savedSessions.map((session) => ({

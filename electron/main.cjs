@@ -79,6 +79,32 @@ function settingsFile() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+function workspaceFile() {
+  return path.join(app.getPath('userData'), 'workspace.json');
+}
+
+function readWorkspaceBackup() {
+  try {
+    return fs.readFileSync(workspaceFile(), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function writeWorkspaceBackup(raw) {
+  const text = String(raw || '');
+  if (!text || Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('Workspace backup is empty or too large.');
+  const parsed = JSON.parse(text);
+  if (parsed?.version !== 1 || !Array.isArray(parsed.groups) || !Array.isArray(parsed.sessions)) {
+    throw new Error('Workspace backup has an invalid shape.');
+  }
+  fs.mkdirSync(path.dirname(workspaceFile()), { recursive: true });
+  const temporary = `${workspaceFile()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(parsed)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, workspaceFile());
+  fs.chmodSync(workspaceFile(), 0o600);
+}
+
 function readSettingsRecord() {
   const requestedMobilePort = Number(process.env.SIDETERM_MOBILE_PORT);
   const fallbackMobilePort = Number.isInteger(requestedMobilePort) && requestedMobilePort >= 1024 && requestedMobilePort <= 65535
@@ -1422,6 +1448,10 @@ function scrollSession(id, amount) {
 }
 
 function registerIpc() {
+  ipcMain.on('workspace:get-sync', (event) => { event.returnValue = readWorkspaceBackup(); });
+  ipcMain.on('workspace:save', (_event, raw) => {
+    try { writeWorkspaceBackup(raw); } catch { /* localStorage remains the renderer fallback */ }
+  });
   ipcMain.handle('terminal:create', (_event, options) => createSession(options));
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
