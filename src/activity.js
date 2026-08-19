@@ -67,3 +67,16 @@ export function restoredContextState(history, hasSummary, maxCharacters = 16_000
     lastSummarizedRevision: hasSummary ? contextRevision : 0
   };
 }
+
+export function isAgentWorkingText(value) {
+  const text = String(value);
+  const codexOrClaude = /(?:esc|ctrl\s*\+\s*c)\s+to\s+interrupt/i.test(text)
+    && /(?:working|thinking|running|processing)(?:\s|\()/i.test(text);
+  const hermes = /⏱\s*\d+(?:m|s|h)/iu.test(text)
+    && /(?:msg=interrupt|ctrl\s*\+\s*c\s+cancel)/i.test(text);
+  return codexOrClaude || hermes;
+}
+
+export function shouldKeepSessionBusy(activityArmed, visibleTerminalText) {
+  return Boolean(activityArmed && isAgentWorkingText(visibleTerminalText));
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
+import { consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -60,4 +60,24 @@ test('restored history remains pending AI context until summarized', () => {
   assert.deepEqual(restoredContextState('already summarized', true), {
     context: 'already summarized', contextRevision: 1, lastSummarizedRevision: 1
   });
+});
+
+test('coding-agent work indicators keep an armed session busy through quiet output gaps', () => {
+  const codex = '• Working (34s • esc to interrupt)';
+  const claude = 'Thinking (2m 4s · ctrl+c to interrupt)';
+  const hermes = '⚕ deepseek-v4-flash │ 135K/1M │ 23m │ ⏱ 4m 9s\n⚕ ❯ msg=interrupt · /queue · Ctrl+C cancel';
+
+  assert.equal(isAgentWorkingText(codex), true);
+  assert.equal(isAgentWorkingText(claude), true);
+  assert.equal(isAgentWorkingText(hermes), true);
+  assert.equal(shouldKeepSessionBusy(true, codex), true);
+  assert.equal(shouldKeepSessionBusy(false, codex), false);
+});
+
+test('an idle coding-agent prompt does not keep the spinner active', () => {
+  const idle = '› Write tests for @filename\n\ngpt-5.6-sol high · ~/Andorra-Labs-Alpha';
+  const idleHermes = '⚕ deepseek-v4-flash │ 104K/1M │ ⏲ 9m 27s │ ✓ 59s\n❯';
+  assert.equal(isAgentWorkingText(idle), false);
+  assert.equal(isAgentWorkingText(idleHermes), false);
+  assert.equal(shouldKeepSessionBusy(true, idle), false);
 });

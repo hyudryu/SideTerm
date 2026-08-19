@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import { renderMarkdown } from './markdown.js';
 import {
   DEFAULT_HOTKEYS,
@@ -1964,8 +1964,47 @@ function markSessionNotification(session) {
   schedulePersist();
 }
 
+function visibleTerminalText(terminal) {
+  const buffer = terminal?.buffer?.active;
+  if (!buffer) return '';
+  const screenRows = Math.max(1, terminal.rows || 1);
+  const end = Math.min(buffer.length, Math.max(0, buffer.baseY) + screenRows);
+  const start = Math.max(0, end - Math.min(12, screenRows));
+  const lines = [];
+  for (let index = start; index < end; index += 1) {
+    lines.push(buffer.getLine(index)?.translateToString(true) || '');
+  }
+  return lines.join('\n');
+}
+
+function settleSessionBusy(session) {
+  if (!session?.busy) return;
+  if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal))) {
+    session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
+    return;
+  }
+  session.busy = false;
+  updateSessionItem(session);
+  reportSessionCompletion(session);
+  if (session.notifyWhenIdle) {
+    session.notifyWhenIdle = false;
+    if (!isSessionForeground(session)) markSessionNotification(session);
+  } else if (isSessionForeground(session)) {
+    session.activityArmed = false;
+    schedulePersist();
+  }
+}
+
 function noteSessionBusy(session, data) {
-  if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  if (!session || session.exited) return;
+  const output = plainTerminalText(data);
+  const agentIsWorking = isAgentWorkingText(output) || isAgentWorkingText(visibleTerminalText(session.terminal));
+  if (!output.trim() && !agentIsWorking) return;
+  if (!session.activityArmed && agentIsWorking) {
+    session.activityArmed = true;
+    session.activityCycleId = crypto.randomUUID();
+    session.notifyWhenIdle = !isSessionForeground(session);
+  }
   if (!session.activityArmed) return;
   if (!session.busy && Date.now() < session.busySuppressedUntil) return;
   window.clearTimeout(session.busyTimer);
@@ -1974,18 +2013,7 @@ function noteSessionBusy(session, data) {
     updateSessionItem(session);
     schedulePersist();
   }
-  session.busyTimer = window.setTimeout(() => {
-    session.busy = false;
-    updateSessionItem(session);
-    reportSessionCompletion(session);
-    if (session.notifyWhenIdle) {
-      session.notifyWhenIdle = false;
-      if (!isSessionForeground(session)) markSessionNotification(session);
-    } else if (isSessionForeground(session)) {
-      session.activityArmed = false;
-      schedulePersist();
-    }
-  }, SESSION_BUSY_SETTLE_MS);
+  session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
 }
 
 function recordSessionResponse(session, data) {
@@ -2397,9 +2425,8 @@ sessionList.addEventListener('dragend', cleanupDrag);
 api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
-  session.terminal.write(data);
+  session.terminal.write(data, () => noteSessionBusy(session, data));
   recordSessionResponse(session, data);
-  noteSessionBusy(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
 });
