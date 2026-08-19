@@ -1,11 +1,11 @@
 const VOICE_MODE_INSTRUCTION = [
   'Voice mode is enabled.',
-  'Answer as natural spoken dialogue in no more than two short sentences and 45 words.',
+  'Answer as natural spoken dialogue in one or two short sentences and no more than 35 words.',
   'Give only the basic assistant summary and the most useful next step or question.',
   'Do not use Markdown, bullets, headings, commit hashes, exhaustive change lists, or parenthetical detail unless the user explicitly asks for them.'
 ].join(' ');
 
-function speechSummary(value, maxWords = 55) {
+function speechSummary(value, maxWords = 40) {
   const plain = String(value || '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/\[([^\]]+)]\(https?:\/\/[^)]+\)/gi, '$1')
