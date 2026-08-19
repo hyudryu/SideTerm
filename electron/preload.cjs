@@ -44,7 +44,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
     if (!result?.ok) throw new Error(result?.error || 'Speech installation failed.');
     return result.status;
   },
-  previewVoice: (voice) => ipcRenderer.invoke('voice:preview', voice),
+  previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
   transcribeSpeech: (bytes, mimeType) => ipcRenderer.invoke('voice:transcribe', { bytes, mimeType }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),
