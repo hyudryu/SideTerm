@@ -37,7 +37,8 @@ const GROUP_SORT_OPTIONS = [
   { value: 'name', label: 'Name', initialDirection: 'asc' }
 ];
 const sessions = new Map();
-const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
+const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
+  ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -895,13 +896,15 @@ function persistWorkspaceNow() {
       collapsed: group.collapsed,
       sessionIds: sortedSessionIds(group, sessions)
     }));
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({
+    const serializedWorkspace = JSON.stringify({
       version: WORKSPACE_VERSION,
       groups: savedGroups,
       sessions: savedSessions,
       activeId,
       activeGroupId
-    }));
+    });
+    localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
+    api.saveWorkspace(serializedWorkspace);
     api.updateMobileWorkspace({
       groups: mobileGroups,
       sessions: savedSessions.map((session) => ({
