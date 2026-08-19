@@ -61,7 +61,10 @@ def transcribe(args) -> None:
 
 def load_tts():
     from pocket_tts import TTSModel
-    return TTSModel.load_model("kyutai/pocket-tts")
+    # Pocket TTS resolves its current English weights through the bundled
+    # default language config. The Hugging Face repository ID is not a config
+    # argument; passing it makes the library look for config/kyutai/pocket-tts.yaml.
+    return TTSModel.load_model()
 
 
 def download_tts(args) -> None:
