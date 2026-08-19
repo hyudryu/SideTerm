@@ -71,3 +71,16 @@ test('invalid saved workspace data is ignored', () => {
   assert.equal(parseSavedWorkspace('{oops'), null);
   assert.equal(parseSavedWorkspace(JSON.stringify({ version: 999, groups: [], sessions: [] })), null);
 });
+
+test('pending initial AI context survives workspace restoration', () => {
+  const parsed = parseSavedWorkspace(JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: [{ id: 'first', title: 'First', sessionIds: ['pending', 'legacy'] }],
+    sessions: [
+      { id: 'pending', groupId: 'first', aiInitialSummaryDone: false },
+      { id: 'legacy', groupId: 'first' }
+    ]
+  }));
+  assert.equal(parsed.sessions[0].aiInitialSummaryDone, false);
+  assert.equal(parsed.sessions[1].aiInitialSummaryDone, null);
+});
