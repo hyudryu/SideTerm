@@ -687,6 +687,7 @@ async function summarizeSession({ context, agent, allowDisabled = false, request
     ? setTimeout(() => abortController.abort(), requestTimeoutMs)
     : null;
   let response;
+  let payload;
   try {
     response = await fetch(compatibleCompletionsUrl(settings.apiUrl), {
       method: 'POST',
@@ -712,6 +713,15 @@ async function summarizeSession({ context, agent, allowDisabled = false, request
         ]
       })
     });
+    const rawBody = await response.text();
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      payload = {};
+    }
+    if (!response.ok) {
+      throw new Error(payload.error?.message || payload.message || `Provider request failed (${response.status})`);
+    }
   } catch (error) {
     if (abortController.signal.aborted) {
       throw new Error(`Provider connection timed out after ${Math.ceil(requestTimeoutMs / 1000)} seconds.`);
@@ -720,12 +730,7 @@ async function summarizeSession({ context, agent, allowDisabled = false, request
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-
-  if (!response.ok) {
-    const failure = await response.json().catch(() => ({}));
-    throw new Error(failure.error?.message || failure.message || `Provider request failed (${response.status})`);
-  }
-  const text = responseText(await response.json()).trim();
+  const text = responseText(payload).trim();
   const name = text.match(/^NAME:\s*(.+)$/im)?.[1]?.trim().slice(0, 42);
   const summary = text.match(/^CONTEXT:\s*(.+)$/im)?.[1]?.trim().slice(0, 90);
   if (!name && !summary) throw new Error('The model returned an invalid session label.');
