@@ -435,6 +435,14 @@ function providerDraftFingerprint() {
   return JSON.stringify(providerDraftPayload());
 }
 
+function providerDraftMatchesSavedSettings() {
+  const draft = providerDraftPayload();
+  return !draft.apiKey
+    && !draft.clearApiKey
+    && draft.apiUrl === String(settings.apiUrl || '').trim()
+    && draft.model === String(settings.model || '').trim();
+}
+
 function setProviderStatus(message = '', isError = false) {
   const status = document.querySelector('#ai-test-status');
   status.textContent = message;
@@ -499,6 +507,12 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
 
   // Persist the provider while the requested feature remains off. It is only
   // enabled after a successful live request to that exact saved configuration.
+  const otherSettingKey = settingKey === 'llmEnabled' ? 'agentEnabled' : 'llmEnabled';
+  const retainedOtherFeature = providerDraftMatchesSavedSettings() && Boolean(settings[otherSettingKey]);
+  const validationFeatureState = {
+    [settingKey]: false,
+    [otherSettingKey]: retainedOtherFeature
+  };
   input.checked = false;
   const providerFingerprint = providerDraftFingerprint();
   providerValidationInFlight = true;
@@ -507,8 +521,7 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
   try {
     settings = await api.saveSettings({
       ...providerDraftPayload(),
-      llmEnabled: false,
-      agentEnabled: false
+      ...validationFeatureState
     });
     applySettings();
     const result = await api.testAiSettings();
@@ -521,10 +534,13 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
     setProviderStatus(`Connected · ${result.name}: ${result.summary}`);
   } catch (error) {
     try {
-      await persistDisabledProviderFeatures();
+      settings = await api.saveSettings(validationFeatureState);
+      document.querySelector('#ai-enabled').checked = settings.llmEnabled;
+      document.querySelector('#agent-enabled').checked = settings.agentEnabled;
+      applySettings();
       setProviderStatus(`Set up the LLM Provider: ${error.message}`, true);
     } catch (rollbackError) {
-      setProviderStatus(`Provider validation failed and AI features could not be disabled: ${rollbackError.message}`, true);
+      setProviderStatus(`Provider validation failed and the previous feature state could not be restored: ${rollbackError.message}`, true);
     }
   } finally {
     providerValidationInFlight = false;
