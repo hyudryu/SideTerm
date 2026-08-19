@@ -39,10 +39,15 @@ let voiceFrame = null;
 let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 
+function releaseCatchUpQueue() {
+  if (catchupRequested) send({ type: 'agent:catch-up-release' });
+  catchupRequested = false;
+}
+
 function requestNextCatchUp(hasMore = true) {
   const unreadRemain = agentState.notifications.some((item) => !item.read);
   if ((!hasMore && !unreadRemain) || viewMode !== 'agent' || !agentState.enabled) {
-    catchupRequested = false;
+    releaseCatchUpQueue();
     return;
   }
   if (!send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode })) catchupRequested = false;
@@ -50,13 +55,13 @@ function requestNextCatchUp(hasMore = true) {
 
 async function handleCatchUpResult(message) {
   if (message.error) {
-    catchupRequested = false;
+    releaseCatchUpQueue();
     document.querySelector('#agent-mobile-detail').textContent = message.error;
     document.querySelector('#agent-mobile-dot').className = 'error';
     return;
   }
   if (!message.response) {
-    catchupRequested = false;
+    releaseCatchUpQueue();
     return;
   }
   if (mobileVoiceMode) {
@@ -66,7 +71,7 @@ async function handleCatchUpResult(message) {
       continueCatchUp: true,
       catchUpHasMore: Boolean(message.hasMore)
     });
-    if (!sent) catchupRequested = false;
+    if (!sent) releaseCatchUpQueue();
     return;
   }
   requestNextCatchUp(message.hasMore);
@@ -308,18 +313,19 @@ function connect() {
         : message.transcript.text;
     }
     if (message.type === 'agent:catch-up-result') void handleCatchUpResult(message);
+    if (message.type === 'agent:catch-up-busy') catchupRequested = false;
     if (message.type === 'voice:audio') {
       if (message.continueCatchUp && !mobileVoiceMode) {
-        requestNextCatchUp(message.catchUpHasMore);
+        releaseCatchUpQueue();
       } else void playMobileAudio(message.audio).then((speechCompleted) => {
         if (!message.continueCatchUp) return;
-        if (!speechCompleted && mobileVoiceMode) catchupRequested = false;
+        if (!speechCompleted) releaseCatchUpQueue();
         else requestNextCatchUp(message.catchUpHasMore);
       });
     }
     if (message.type === 'voice:error') {
       document.querySelector('#agent-mobile-detail').textContent = message.message;
-      if (message.continueCatchUp) requestNextCatchUp(message.catchUpHasMore);
+      if (message.continueCatchUp) releaseCatchUpQueue();
     }
   });
   socket.addEventListener('close', () => {
@@ -353,7 +359,7 @@ async function playMobileAudio(audio) {
     });
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
-    return true;
+    return false;
   } finally {
     activeMobileVoicePlayer = null;
     mobileBargeInStartedAt = 0;

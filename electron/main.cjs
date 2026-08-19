@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
 const { catchUpPrompt, nextCatchUp, pendingNotifications } = require('./agent/catch-up.cjs');
+const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   discoverPullRequest,
   fetchPullRequest,
@@ -48,6 +49,7 @@ let agentChatInFlight = false;
 let agentStatus = 'idle';
 let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
+const mobileCatchUpCoordinator = createCatchUpCoordinator();
 const pendingRendererActions = new Map();
 const ownsSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -670,7 +672,7 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
     const selectedNotificationIds = Array.isArray(notificationIds) ? new Set(notificationIds) : null;
     const unread = selectedNotificationIds
       ? state.notifications.filter((item) => !item.read && selectedNotificationIds.has(item.id))
-      : [];
+      : state.notifications.filter((item) => !item.read).slice(-8);
     const actionResults = state.actionResults.slice(-12);
     const evidence = unread.map((item) => ({
       sessionId: item.sessionId,
@@ -1378,6 +1380,9 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
     sendMobile(client, { type: 'agent:state', state: publicAgentState() });
     sendMobile(client, mobileVoiceSettings());
+    client.once('close', () => {
+      if (mobileCatchUpCoordinator.release(client)) broadcastAgentState();
+    });
     client.on('message', async (raw) => {
       let message;
       try { message = JSON.parse(String(raw)); } catch { return; }
@@ -1414,8 +1419,14 @@ async function startMobileServer({ persist = true } = {}) {
         }
       }
       if (message.type === 'agent:catch-up') {
+        const claim = mobileCatchUpCoordinator.claim(client);
+        if (claim !== 'claimed') {
+          sendMobile(client, { type: 'agent:catch-up-busy' });
+          return;
+        }
         try {
           const result = await catchUpWithSupervisor({ voice: Boolean(message.voiceMode) });
+          mobileCatchUpCoordinator.finish(client, { hasMore: result.hasMore });
           sendMobile(client, {
             type: 'agent:catch-up-result',
             response: result.response,
@@ -1424,9 +1435,11 @@ async function startMobileServer({ persist = true } = {}) {
             remainingCount: result.remainingCount
           });
         } catch (error) {
+          mobileCatchUpCoordinator.release(client);
           sendMobile(client, { type: 'agent:catch-up-result', error: error.message, hasMore: true });
         }
       }
+      if (message.type === 'agent:catch-up-release') mobileCatchUpCoordinator.release(client);
       if (message.type === 'agent:confirm') {
         try {
           await resolveAgentConfirmation(String(message.id || ''), Boolean(message.approved));

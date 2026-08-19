@@ -1254,6 +1254,9 @@ function renderAgentState(nextState) {
     row.append(copy, deny, approve);
     confirmations.append(row);
   }
+  if (supervisorDashboardActive && agentState.enabled && unread.length && !agentCatchUpInFlight) {
+    void runAgentCatchUpQueue();
+  }
 }
 
 async function respondToAgentConfirmation(id, approved) {
@@ -1288,7 +1291,7 @@ async function runAgentCatchUpQueue() {
       renderAgentState(result.state);
       if (!result.response) break;
       const speechCompleted = await speakAgentResponse(result.speech || result.response);
-      if (!speechCompleted && desktopVoiceMode) break;
+      if (!speechCompleted) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
   } finally {
@@ -1465,7 +1468,7 @@ async function speakAgentResponse(text) {
     return await playSpeechAudio(await api.synthesizeSpeech(text));
   } catch (error) {
     showToast(`Voice: ${error.message}`);
-    return true;
+    return false;
   }
 }
 

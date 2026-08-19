@@ -23,7 +23,7 @@ function catchUpPrompt(notification, remainingCount = 0) {
     ? `There are ${remainingCount} other pending updates. Do not summarize or mention their details yet, and do not ask a next-step question.`
     : 'This is the final pending update, so you may briefly ask what the user wants to do next.';
   return [
-    'Give a concise, colloquial spoken update for exactly this one finished task.',
+    'Give a concise, colloquial spoken summary for exactly this one pending update.',
     'Use one or two plain-text sentences, no Markdown, and no more than 35 words.',
     queueInstruction
   ].join(' ');

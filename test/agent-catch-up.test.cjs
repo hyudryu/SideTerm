@@ -17,9 +17,9 @@ test('catch-up processes unread notifications oldest first without mutating inpu
   assert.deepEqual(notifications.map((item) => item.id), ['newer', 'read', 'oldest']);
 });
 
-test('catch-up prompt limits the response to one task while more remain', () => {
+test('catch-up prompt limits the response to one generic update while more remain', () => {
   const prompt = catchUpPrompt({ id: 'one' }, 3);
-  assert.match(prompt, /exactly this one finished task/);
+  assert.match(prompt, /exactly this one pending update/);
   assert.match(prompt, /35 words/);
   assert.match(prompt, /3 other pending updates/);
   assert.match(prompt, /do not ask a next-step question/i);
