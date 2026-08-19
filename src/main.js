@@ -1643,7 +1643,9 @@ async function addSession(cwd, options = {}) {
         .map((link) => ({ ...link, url: normalizeGithubPullRequestUrl(link?.url) }))
         .filter((link) => link.url)
       : [],
-    createdAt: Number(options.createdAt) > 0 ? Number(options.createdAt) : Date.now(),
+    createdAt: Object.hasOwn(options, 'createdAt')
+      ? Math.max(0, Number(options.createdAt) || 0)
+      : Date.now(),
     lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
     responseSortTimer: null,
     linkScanBuffer: '',
@@ -1973,7 +1975,8 @@ api.onExit(({ id, exitCode }) => {
     markSessionNotification(session);
   }
   updateSessionItem(session);
-  updateVisualState();
+  if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
+  else updateVisualState();
   schedulePersist();
 });
 
