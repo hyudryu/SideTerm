@@ -119,3 +119,16 @@ test('legacy sessions retain an unknown creation-time tie', () => {
   parsed.groups[0].sortBy = 'created';
   assert.deepEqual(sortedSessionIds(parsed.groups[0], lookup), ['b', 'a']);
 });
+
+test('pending initial AI context survives workspace restoration', () => {
+  const parsed = parseSavedWorkspace(JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: [{ id: 'first', title: 'First', sessionIds: ['pending', 'legacy'] }],
+    sessions: [
+      { id: 'pending', groupId: 'first', aiInitialSummaryDone: false },
+      { id: 'legacy', groupId: 'first' }
+    ]
+  }));
+  assert.equal(parsed.sessions[0].aiInitialSummaryDone, false);
+  assert.equal(parsed.sessions[1].aiInitialSummaryDone, null);
+});

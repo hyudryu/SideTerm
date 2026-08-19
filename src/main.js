@@ -757,6 +757,15 @@ function syncAiContextSchedules() {
   }
 }
 
+function aiSummaryModeEnabled(mode) {
+  return Boolean(
+    settings.llmEnabled
+    && settings.apiUrl
+    && settings.model
+    && (mode === 'initial' ? settings.aiInitialContextEnabled : settings.aiContinuousContextEnabled)
+  );
+}
+
 async function requestAiSummary(session, mode) {
   if (session.aiSummaryInFlight) {
     armAiSummaryTimer(session, mode, 1_000);
@@ -785,11 +794,12 @@ async function requestAiSummary(session, mode) {
       agent: session.agent || 'Terminal',
       requestTimeoutMs: AI_SUMMARY_REQUEST_TIMEOUT_MS
     });
-    if (sessions.get(session.id) !== session || session.exited) return;
+    if (sessions.get(session.id) !== session || session.exited || !aiSummaryModeEnabled(mode)) return;
     if (!result) return;
     session.displayName = session.agent || result.name;
     session.summary = result.summary;
     session.lastSummarizedRevision = summarizedRevision;
+    session.aiErrorShown = false;
     completed = true;
     updateSessionItem(session);
     resortSessionGroupByName(session);
@@ -802,6 +812,7 @@ async function requestAiSummary(session, mode) {
   } finally {
     session.aiSummaryInFlight = false;
     if (sessions.get(session.id) !== session || session.exited) return;
+    if (!aiSummaryModeEnabled(mode)) return;
     if (!completed) {
       armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
       return;
@@ -2011,7 +2022,9 @@ async function addSession(cwd, options = {}) {
     aiSummaryDueAt: 0,
     aiSummaryInFlight: false,
     aiErrorShown: false,
-    aiInitialSummaryDone: Boolean(options.aiInitialSummaryDone || options.summary || restoringWorkspace),
+    aiInitialSummaryDone: typeof options.aiInitialSummaryDone === 'boolean'
+      ? options.aiInitialSummaryDone
+      : Boolean(options.summary || restoringWorkspace),
     lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
     contextRevision: 0,
     lastSummarizedRevision: 0,
