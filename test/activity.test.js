@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
+import { isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -30,10 +30,12 @@ test('GitHub pull request URLs are captured across terminal output chunks', () =
   assert.deepEqual(second.urls, ['https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pull/684']);
 });
 
-test('GitHub links are limited to pull requests while other HTTP links remain available', () => {
+test('URL capture keeps only canonical GitHub pull requests', () => {
   const result = scanTerminalUrls('', [
     'https://github.com/Andorra-Labs/Andorra-Labs-Alpha/issues/12',
-    'https://docs.example.com/setup'
+    'https://docs.example.com/setup',
+    'https://github.com/hyudryu/SideTerm/pull/2/files?diff=split#discussion_r1'
   ].join(' '));
-  assert.deepEqual(result.urls, ['https://docs.example.com/setup']);
+  assert.deepEqual(result.urls, ['https://github.com/hyudryu/SideTerm/pull/2']);
+  assert.equal(normalizeGithubPullRequestUrl('https://example.com/a/b/pull/2'), null);
 });

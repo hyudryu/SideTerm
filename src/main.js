@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -16,7 +16,8 @@ import {
   moveSession,
   parseSavedWorkspace,
   removeSessionFromGroups,
-  reorderGroup
+  reorderGroup,
+  sortedSessionIds
 } from './workspace.js';
 
 const api = window.sideTerm;
@@ -27,6 +28,12 @@ const SESSION_BUSY_SETTLE_MS = 1_400;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_SUMMARY_SETTLE_MS = 1_200;
 const MAX_CONTEXT_CHARS = 16_000;
+const GROUP_SORT_OPTIONS = [
+  { value: 'default', label: 'Default', initialDirection: 'asc' },
+  { value: 'created', label: 'Date created', initialDirection: 'desc' },
+  { value: 'response', label: 'Last response', initialDirection: 'desc' },
+  { value: 'name', label: 'Name', initialDirection: 'asc' }
+];
 const sessions = new Map();
 const restoredWorkspace = parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
@@ -268,7 +275,7 @@ function getGroupForSession(sessionId) {
 }
 
 function orderedSessionIds() {
-  return groups.flatMap((group) => group.sessionIds).filter((id) => sessions.has(id));
+  return groups.flatMap((group) => sortedSessionIds(group, sessions));
 }
 
 function showToast(message) {
@@ -550,7 +557,7 @@ function showLinkPopover(session, trigger) {
   window.clearTimeout(linkPopoverTimer);
   linkPopover.replaceChildren();
   const heading = document.createElement('header');
-  heading.innerHTML = `<strong>Session links</strong><span>${session.links.length} captured</span>`;
+  heading.innerHTML = `<strong>GitHub pull requests</strong><span>${session.links.length} captured</span>`;
   linkPopover.append(heading);
   const list = document.createElement('div');
   list.className = 'link-popover-list';
@@ -558,10 +565,9 @@ function showLinkPopover(session, trigger) {
     const button = document.createElement('button');
     button.type = 'button';
     const parsed = new URL(link.url);
-    const isPullRequest = parsed.hostname.toLowerCase() === 'github.com' && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(parsed.pathname);
     button.innerHTML = `<strong></strong><span></span><time></time>`;
-    button.querySelector('strong').textContent = isPullRequest ? 'GitHub pull request' : parsed.hostname;
-    button.querySelector('span').textContent = `${parsed.pathname}${parsed.search}` || '/';
+    button.querySelector('strong').textContent = 'GitHub pull request';
+    button.querySelector('span').textContent = parsed.pathname;
     button.querySelector('time').textContent = new Date(link.seenAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     button.addEventListener('click', () => void api.openExternal(link.url));
     list.append(button);
@@ -596,6 +602,8 @@ function persistWorkspaceNow() {
         summary: session.summary,
         agent: session.agent,
         hasUserActivity: session.hasUserActivity,
+        createdAt: session.createdAt,
+        lastResponseAt: session.lastResponseAt,
         links: session.links
       });
     }
@@ -607,6 +615,8 @@ function persistWorkspaceNow() {
       title: group.title,
       color: group.color,
       collapsed: group.collapsed,
+      sortBy: group.sortBy,
+      sortDirection: group.sortDirection,
       sessionIds: group.sessionIds.filter((id) => sessions.has(id))
     }));
     localStorage.setItem(WORKSPACE_KEY, JSON.stringify({
@@ -1262,6 +1272,11 @@ function startSessionRename(session, titleElement) {
   titleElement.addEventListener('blur', onBlur);
 }
 
+function closeGroupSortMenus() {
+  for (const menu of sessionList.querySelectorAll('.group-sort-menu')) menu.hidden = true;
+  for (const button of sessionList.querySelectorAll('.group-sort')) button.setAttribute('aria-expanded', 'false');
+}
+
 function renderGroups() {
   const fragment = document.createDocumentFragment();
   for (const group of groups) {
@@ -1281,6 +1296,12 @@ function renderGroups() {
         <input class="group-color" type="color" value="${group.color}" draggable="false" aria-label="Choose group color" title="Choose group color">
         <span class="group-session-count"></span>
         <span class="group-notification-badge" hidden></span>
+        <span class="group-sort-wrap">
+          <button class="group-sort" type="button" aria-label="Sort sessions in ${group.title}" title="Sort sessions" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M5 8h8M7 12h6"/></svg>
+          </button>
+          <span class="group-sort-menu" role="menu" hidden></span>
+        </span>
         <button class="group-add" type="button" aria-label="New session in this group" title="New session in this group">+</button>
         <button class="group-delete" type="button" aria-label="Delete group" title="Delete group">×</button>
       </header>
@@ -1304,6 +1325,37 @@ function renderGroups() {
       section.style.setProperty('--group-color', group.color);
       schedulePersist();
     });
+    const sortButton = section.querySelector('.group-sort');
+    const sortMenu = section.querySelector('.group-sort-menu');
+    for (const option of GROUP_SORT_OPTIONS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.role = 'menuitem';
+      const active = group.sortBy === option.value;
+      button.classList.toggle('active', active);
+      button.innerHTML = `<span></span><i aria-hidden="true"></i>`;
+      button.querySelector('span').textContent = option.label;
+      button.querySelector('i').textContent = active ? (group.sortDirection === 'desc' ? '↓' : '↑') : '';
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (group.sortBy === option.value) {
+          group.sortDirection = group.sortDirection === 'desc' ? 'asc' : 'desc';
+        } else {
+          group.sortBy = option.value;
+          group.sortDirection = option.initialDirection;
+        }
+        renderGroups();
+        schedulePersist();
+      });
+      sortMenu.append(button);
+    }
+    sortButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const opening = sortMenu.hidden;
+      closeGroupSortMenus();
+      sortMenu.hidden = !opening;
+      sortButton.setAttribute('aria-expanded', String(opening));
+    });
     section.querySelector('.group-toggle').addEventListener('click', (event) => {
       event.stopPropagation();
       group.collapsed = !group.collapsed;
@@ -1326,7 +1378,7 @@ function renderGroups() {
       schedulePersist();
     });
     const body = section.querySelector('.group-sessions');
-    for (const sessionId of group.sessionIds) {
+    for (const sessionId of sortedSessionIds(group, sessions)) {
       const item = sessions.get(sessionId)?.item;
       if (item) body.append(item);
     }
@@ -1486,6 +1538,16 @@ function noteSessionBusy(session, data) {
   }, SESSION_BUSY_SETTLE_MS);
 }
 
+function recordSessionResponse(session, data) {
+  if (!session || session.exited || !plainTerminalText(data).trim()) return;
+  session.lastResponseAt = Date.now();
+  window.clearTimeout(session.responseSortTimer);
+  session.responseSortTimer = window.setTimeout(() => {
+    if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
+    schedulePersist();
+  }, SESSION_BUSY_SETTLE_MS);
+}
+
 function noteBackgroundActivity(session, data) {
   if (!session || session.id === activeId || restoringWorkspace) return;
   if (!session.activityArmed) return;
@@ -1555,7 +1617,14 @@ async function addSession(cwd, options = {}) {
     summary: options.summary || '',
     agent: options.agent || '',
     manualTitle: Boolean(options.manualTitle),
-    links: Array.isArray(options.links) ? options.links : [],
+    links: Array.isArray(options.links)
+      ? options.links
+        .map((link) => ({ ...link, url: normalizeGithubPullRequestUrl(link?.url) }))
+        .filter((link) => link.url)
+      : [],
+    createdAt: Number(options.createdAt) > 0 ? Number(options.createdAt) : Date.now(),
+    lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
+    responseSortTimer: null,
     linkScanBuffer: '',
     context: '',
     commandBuffer: '',
@@ -1652,6 +1721,7 @@ function closeSession(id) {
   const index = ids.indexOf(id);
   if (!session.exited) api.close(id);
   window.clearTimeout(session.busyTimer);
+  window.clearTimeout(session.responseSortTimer);
   session.terminal.dispose();
   session.pane.remove();
   session.item.remove();
@@ -1708,6 +1778,7 @@ function deleteGroup(groupId) {
     if (!session) continue;
     if (!session.exited) api.close(sessionId);
     window.clearTimeout(session.busyTimer);
+    window.clearTimeout(session.responseSortTimer);
     window.clearTimeout(session.aiSummaryTimer);
     session.terminal.dispose();
     session.pane.remove();
@@ -1823,7 +1894,14 @@ sessionList.addEventListener('drop', (event) => {
   if (dragState.type === 'group') {
     groups = reorderGroup(groups, dragState.id, dropTarget.groupId, dropTarget.position);
   } else {
-    groups = moveSession(groups, dragState.id, dropTarget.groupId, dropTarget.beforeSessionId);
+    const sourceGroup = getGroupForSession(dragState.id);
+    const targetGroup = getGroup(dropTarget.groupId);
+    if (sourceGroup?.id === targetGroup?.id && targetGroup.sortBy !== 'default') {
+      showToast('Switch this group to Default sort to change its manual order');
+    } else {
+      const beforeSessionId = targetGroup?.sortBy === 'default' ? dropTarget.beforeSessionId : null;
+      groups = moveSession(groups, dragState.id, dropTarget.groupId, beforeSessionId);
+    }
     activeGroupId = dropTarget.groupId;
   }
   cleanupDrag();
@@ -1837,6 +1915,7 @@ api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.terminal.write(data);
+  recordSessionResponse(session, data);
   noteSessionBusy(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
@@ -1856,6 +1935,7 @@ api.onExit(({ id, exitCode }) => {
   session.activityArmed = false;
   session.notifyWhenIdle = false;
   window.clearTimeout(session.busyTimer);
+  window.clearTimeout(session.responseSortTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
   if (id === activeId) {
@@ -2001,11 +2081,19 @@ document.querySelector('#desktop-voice-toggle').addEventListener('click', async 
 sidebarResizer.addEventListener('pointerdown', beginSidebarResize);
 linkPopover.addEventListener('mouseenter', () => window.clearTimeout(linkPopoverTimer));
 linkPopover.addEventListener('mouseleave', hideLinkPopoverSoon);
+document.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
+});
 api.onAgentState(renderAgentState);
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && sessionList.querySelector('.group-sort[aria-expanded="true"]')) {
+    event.preventDefault();
+    closeGroupSortMenus();
+    return;
+  }
   if (!agentBackdrop.hidden && event.key === 'Escape') {
     event.preventDefault();
     closeAgentPanel();
@@ -2059,6 +2147,8 @@ async function restoreSavedWorkspace() {
       summary: saved.summary,
       agent: saved.agent,
       hasUserActivity: saved.hasUserActivity,
+      createdAt: saved.createdAt,
+      lastResponseAt: saved.lastResponseAt,
       links: saved.links,
       activate: false
     });

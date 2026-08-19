@@ -18,27 +18,25 @@ export function stripTerminalControlInput(value) {
     .replace(/\x1B./g, '');
 }
 
+export function normalizeGithubPullRequestUrl(value) {
+  try {
+    const parsed = new URL(String(value).replace(/[),.;:!?]+$/, ''));
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname.toLowerCase() !== 'github.com') return null;
+    const match = parsed.pathname.match(/^\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/pull\/(\d+)(?:\/.*)?$/i);
+    if (!match) return null;
+    return `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`;
+  } catch {
+    return null;
+  }
+}
+
 export function scanTerminalUrls(previousBuffer, chunk) {
   const buffer = `${previousBuffer || ''}${chunk || ''}`.slice(-4096);
   const urls = new Set();
-  const addUrl = (value, githubPullRequest = false) => {
-    try {
-      const parsed = new URL(value.replace(/[),.;:!?]+$/, ''));
-      if (!['http:', 'https:'].includes(parsed.protocol)) return;
-      if (parsed.hostname.toLowerCase() === 'github.com') {
-        if (!githubPullRequest) return;
-        parsed.search = '';
-        parsed.hash = '';
-      }
-      urls.add(parsed.toString());
-    } catch {
-      // A future output chunk may complete a currently partial URL.
-    }
-  };
 
-  for (const match of buffer.matchAll(/https?:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/\d+/gi)) {
-    addUrl(match[0], true);
+  for (const match of buffer.matchAll(/https?:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/\d+(?:\/[^\s<>"'`]*)?/gi)) {
+    const normalized = normalizeGithubPullRequestUrl(match[0]);
+    if (normalized) urls.add(normalized);
   }
-  for (const match of buffer.matchAll(/https?:\/\/[^\s<>"'`]+/g)) addUrl(match[0]);
   return { buffer, urls: [...urls] };
 }

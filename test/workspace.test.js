@@ -7,7 +7,8 @@ import {
   moveSession,
   parseSavedWorkspace,
   removeSessionFromGroups,
-  reorderGroup
+  reorderGroup,
+  sortedSessionIds
 } from '../src/workspace.js';
 
 function fixture() {
@@ -37,23 +38,47 @@ test('session removal cleans every group', () => {
   assert.deepEqual(removeSessionFromGroups(fixture(), 'a').map((group) => group.sessionIds), [['b'], ['c']]);
 });
 
+test('per-group sorting preserves canonical manual order', () => {
+  const group = createGroup('first', 'First');
+  group.sessionIds = ['a', 'b', 'c'];
+  const sessions = new Map([
+    ['a', { title: 'Zebra', createdAt: 10, lastResponseAt: 30 }],
+    ['b', { title: 'Alpha', createdAt: 30, lastResponseAt: 10 }],
+    ['c', { title: 'Middle', createdAt: 20, lastResponseAt: 20 }]
+  ]);
+
+  assert.deepEqual(sortedSessionIds(group, sessions), ['a', 'b', 'c']);
+  group.sortDirection = 'desc';
+  assert.deepEqual(sortedSessionIds(group, sessions), ['c', 'b', 'a']);
+  group.sortBy = 'created';
+  assert.deepEqual(sortedSessionIds(group, sessions), ['b', 'c', 'a']);
+  group.sortBy = 'response';
+  assert.deepEqual(sortedSessionIds(group, sessions), ['a', 'c', 'b']);
+  group.sortBy = 'name';
+  group.sortDirection = 'asc';
+  assert.deepEqual(sortedSessionIds(group, sessions), ['b', 'c', 'a']);
+  assert.deepEqual(group.sessionIds, ['a', 'b', 'c']);
+});
+
 test('saved workspaces validate, deduplicate, and restore unassigned sessions', () => {
   const saved = parseSavedWorkspace(JSON.stringify({
     version: WORKSPACE_VERSION,
     activeId: 'b',
     activeGroupId: 'missing',
     groups: [
-      { id: 'first', title: ' Work ', color: '#A142F4', sessionIds: ['a', 'a'] },
+      { id: 'first', title: ' Work ', color: '#A142F4', sortBy: 'response', sortDirection: 'desc', sessionIds: ['a', 'a'] },
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', links: [{ url: 'https://github.com/a/b/pull/1', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
 
   assert.equal(saved.groups[0].title, 'Work');
   assert.equal(saved.groups[0].color, '#a142f4');
+  assert.equal(saved.groups[0].sortBy, 'response');
+  assert.equal(saved.groups[0].sortDirection, 'desc');
   assert.deepEqual(saved.groups[0].sessionIds, ['a']);
   assert.deepEqual(saved.groups[1].sessionIds, ['b']);
   assert.equal(saved.groups[1].color, DEFAULT_GROUP_COLOR);
@@ -62,6 +87,9 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.sessions[0].displayName, 'API work');
   assert.equal(saved.sessions[0].manualTitle, true);
   assert.equal(saved.sessions[0].activityArmed, true);
+  assert.equal(saved.sessions[0].createdAt, 10);
+  assert.equal(saved.sessions[0].lastResponseAt, 20);
+  assert.equal(saved.sessions[0].links.length, 1);
   assert.equal(saved.sessions[0].links[0].url, 'https://github.com/a/b/pull/1');
 });
 
