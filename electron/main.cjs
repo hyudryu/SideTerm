@@ -10,6 +10,11 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { discoverPullRequest, fetchPullRequest, postPullRequestComment } = require('./github/pr-monitor.cjs');
 
+// Set the product identity before any Electron call (including the
+// single-instance lock) can initialize the user-data path.
+app.setName('SideTerm');
+app.setAppUserModelId('io.github.hyudryu.sideterm');
+
 // Desktop launchers may close their inherited output pipes after starting the
 // application. Electron logs rejected IPC handlers internally; without an
 // error listener that secondary log write can crash the main process (EPIPE)
@@ -1600,9 +1605,6 @@ function createWindow() {
     mainWindow = null;
   });
 }
-
-app.setName('SideTerm');
-app.setAppUserModelId('io.github.hyudryu.sideterm');
 
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
   registerIpc();
