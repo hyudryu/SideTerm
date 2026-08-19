@@ -619,7 +619,7 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .supervisor-dashboard-header strong { font-size: 21px; font-weight: 600; }
 .supervisor-dashboard-header small { color: #858585; font-size: 10px; }
 .supervisor-kicker { color: var(--accent); font-size: 8px; font-weight: 700; letter-spacing: .18em; }
-.agent-panel-body { display: grid; width: min(1120px, 100%); min-height: 0; margin: 0 auto; grid-template-rows: auto auto auto auto minmax(150px, 1fr) auto auto; gap: 12px; padding: 18px clamp(18px, 3vw, 38px) 24px; overflow-y: auto; }
+.agent-panel-body { display: grid; width: min(1120px, 100%); min-height: 0; margin: 0 auto; grid-template-rows: auto auto auto auto auto minmax(150px, 1fr) auto auto; gap: 12px; padding: 18px clamp(18px, 3vw, 38px) 24px; overflow-y: auto; }
 .agent-overview { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 12px; background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.07); border-radius: 8px; }
 #agent-status-dot { width: 8px; height: 8px; background: #63c174; border-radius: 50%; }
 #agent-status-dot.thinking { background: var(--accent); animation: session-spin 800ms linear infinite; box-shadow: 0 0 0 4px rgba(96,205,255,.1); }
@@ -646,6 +646,20 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .agent-pending-copy strong { font-size: 10px; }
 .agent-pending-copy small { color: #858585; font-size: 8px; }
 .agent-pending-arrow { color: #777; font-size: 17px; }
+.agent-pull-section { min-height: 0; overflow: hidden; background: #181818; border: 1px solid rgba(255,255,255,.07); border-radius: 8px; }
+.agent-pull-section > header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; padding: 0 11px; border-bottom: 1px solid rgba(255,255,255,.06); }
+.agent-pull-section > header strong { font-size: 11px; }
+.agent-pull-section > header span { color: #777; font-size: 8px; }
+.agent-pull-requests { display: flex; min-height: 58px; max-height: 210px; gap: 8px; padding: 8px; overflow-x: auto; }
+.agent-pull-card { display: flex; min-width: 300px; max-width: 420px; flex-direction: column; gap: 6px; padding: 9px 10px; overflow: hidden; background: #222; border: 1px solid rgba(255,255,255,.07); border-radius: 7px; }
+.agent-pull-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 0; color: #ddd; text-align: left; background: transparent; border: 0; cursor: pointer; }
+.agent-pull-heading strong { overflow: hidden; color: #bcecff; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-pull-heading span { flex: 0 0 auto; color: #777; font-size: 7px; text-transform: uppercase; }
+.agent-pull-card p { display: -webkit-box; margin: 0; overflow: hidden; color: #999; font-size: 8px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.agent-pull-reactions { display: flex; min-height: 18px; flex-wrap: wrap; gap: 4px; }
+.agent-pull-reactions span { padding: 2px 5px; background: rgba(255,255,255,.05); border-radius: 8px; font-size: 8px; }
+.agent-pull-comments { display: flex; flex-direction: column; gap: 3px; }
+.agent-pull-comments span { overflow: hidden; color: #858585; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-notification-section { overflow: hidden; background: #181818; border: 1px solid rgba(255,255,255,.07); border-radius: 8px; }
 .agent-notification-section > header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; padding: 0 11px; border-bottom: 1px solid rgba(255,255,255,.06); }
 .agent-notification-section > header strong { font-size: 11px; }
