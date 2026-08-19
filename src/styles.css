@@ -497,6 +497,7 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .settings-scroll { min-height: 0; flex: 1; padding: 20px 22px 30px; overflow-y: auto; }
 .settings-section { display: flex; flex-direction: column; gap: 14px; padding: 18px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.07); border-radius: 9px; }
 .settings-section + .settings-section { margin-top: 16px; }
+.settings-toggle-section { padding-block: 14px; }
 .settings-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 4px; }
 .settings-section-title strong { font-size: 14px; font-weight: 600; }
 .settings-section-title span { color: #777; font-size: 10px; }

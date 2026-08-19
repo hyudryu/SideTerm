@@ -146,17 +146,19 @@ document.querySelector('#app').innerHTML = `
         <form id="settings-form">
           <div class="settings-scroll">
             <section class="settings-section">
-              <div class="settings-section-title"><strong>AI session context</strong><span>Optional · compatible provider</span></div>
-              <label class="toggle-row">
-                <span><strong>Automatic session naming</strong><small>Summarize recent terminal context after activity settles.</small></span>
-                <input id="ai-enabled" type="checkbox"><i></i>
-              </label>
+              <div class="settings-section-title"><strong>LLM Provider</strong><span>OpenAI-compatible</span></div>
               <label class="field-row"><span>API URL</span><input id="ai-api-url" type="url" autocomplete="off" placeholder="http://localhost:11434/v1" spellcheck="false"></label>
               <label class="field-row"><span>API key <small>(optional)</small></span><input id="api-key" type="password" autocomplete="off" placeholder="Provider key"></label>
               <div class="credential-actions"><span id="api-key-state">No key configured</span><button id="clear-api-key" type="button">Clear key</button></div>
               <label class="field-row"><span>Model name</span><input id="ai-model" type="text" placeholder="Your provider's model ID" spellcheck="false"></label>
               <p class="settings-note">Uses the OpenAI-compatible Chat Completions format. Enter a base URL such as <code>http://localhost:11434/v1</code>, or the full <code>/chat/completions</code> URL. Provider keys are encrypted by Electron and never exposed to the terminal renderer.</p>
               <div class="test-row"><button id="test-ai" class="secondary-button" type="button">Test connection</button><span id="ai-test-status"></span></div>
+            </section>
+            <section class="settings-section settings-toggle-section">
+              <label class="toggle-row">
+                <span><strong>AI session context</strong><small>Use the configured provider to name and summarize terminal sessions.</small></span>
+                <input id="ai-enabled" type="checkbox"><i></i>
+              </label>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Strands supervisor</strong><span>Persistent human assistant</span></div>
