@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { isBareAgentLaunchCommand, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -16,7 +16,8 @@ import {
   moveSession,
   parseSavedWorkspace,
   removeSessionFromGroups,
-  reorderGroup
+  reorderGroup,
+  sortedSessionIds
 } from './workspace.js';
 
 const api = window.sideTerm;
@@ -29,6 +30,12 @@ const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
 const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const MAX_CONTEXT_CHARS = 16_000;
+const GROUP_SORT_OPTIONS = [
+  { value: 'default', label: 'Default', initialDirection: 'asc' },
+  { value: 'created', label: 'Date created', initialDirection: 'desc' },
+  { value: 'response', label: 'Last response', initialDirection: 'desc' },
+  { value: 'name', label: 'Name', initialDirection: 'asc' }
+];
 const sessions = new Map();
 const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
   ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
@@ -299,7 +306,7 @@ function getGroupForSession(sessionId) {
 }
 
 function orderedSessionIds() {
-  return groups.flatMap((group) => group.sessionIds).filter((id) => sessions.has(id));
+  return groups.flatMap((group) => sortedSessionIds(group, sessions));
 }
 
 function showToast(message) {
@@ -334,7 +341,12 @@ function applySettings() {
     ? `Expand sidebar (${settings.hotkeys.toggleSidebar})`
     : `Collapse sidebar (${settings.hotkeys.toggleSidebar})`;
   document.querySelector('#settings-button').title = `Settings (${settings.hotkeys.openSettings})`;
-  updateVisualState();
+  if (groups.some((group) => group.sortBy === 'name')) {
+    for (const session of sessions.values()) updateSessionItem(session);
+    renderGroups();
+  } else {
+    updateVisualState();
+  }
   syncAiContextSchedules();
 }
 
@@ -662,7 +674,11 @@ function appendSessionContext(session, text) {
 
 function trackTerminalInput(session, data) {
   const input = stripTerminalControlInput(data);
-  if (input) session.busySuppressedUntil = 0;
+  if (input) {
+    session.busySuppressedUntil = 0;
+    session.expectedInputEcho = `${session.expectedInputEcho}${input}`.slice(-4096);
+    session.expectedInputEchoAt = Date.now();
+  }
   for (const character of input) {
     if (character === '\r' || character === '\n') {
       const command = session.commandBuffer.trim();
@@ -790,6 +806,7 @@ async function requestAiSummary(session, mode) {
     session.aiErrorShown = false;
     completed = true;
     updateSessionItem(session);
+    resortSessionGroupByName(session);
     schedulePersist();
   } catch (error) {
     if (!session.aiErrorShown) {
@@ -823,7 +840,7 @@ function showLinkPopover(session, trigger) {
   window.clearTimeout(linkPopoverTimer);
   linkPopover.replaceChildren();
   const heading = document.createElement('header');
-  heading.innerHTML = `<strong>Session links</strong><span>${session.links.length} captured</span>`;
+  heading.innerHTML = `<strong>GitHub pull requests</strong><span>${session.links.length} captured</span>`;
   linkPopover.append(heading);
   const list = document.createElement('div');
   list.className = 'link-popover-list';
@@ -831,10 +848,9 @@ function showLinkPopover(session, trigger) {
     const button = document.createElement('button');
     button.type = 'button';
     const parsed = new URL(link.url);
-    const isPullRequest = parsed.hostname.toLowerCase() === 'github.com' && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(parsed.pathname);
     button.innerHTML = `<strong></strong><span></span><time></time>`;
-    button.querySelector('strong').textContent = isPullRequest ? 'GitHub pull request' : parsed.hostname;
-    button.querySelector('span').textContent = `${parsed.pathname}${parsed.search}` || '/';
+    button.querySelector('strong').textContent = 'GitHub pull request';
+    button.querySelector('span').textContent = parsed.pathname;
     button.querySelector('time').textContent = new Date(link.seenAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     button.addEventListener('click', () => void api.openExternal(link.url));
     list.append(button);
@@ -871,6 +887,8 @@ function persistWorkspaceNow() {
         hasUserActivity: session.hasUserActivity,
         aiInitialSummaryDone: session.aiInitialSummaryDone,
         lastAiSummaryAt: session.lastAiSummaryAt,
+        createdAt: session.createdAt,
+        lastResponseAt: session.lastResponseAt,
         links: session.links
       });
     }
@@ -882,7 +900,16 @@ function persistWorkspaceNow() {
       title: group.title,
       color: group.color,
       collapsed: group.collapsed,
+      sortBy: group.sortBy,
+      sortDirection: group.sortDirection,
       sessionIds: group.sessionIds.filter((id) => sessions.has(id))
+    }));
+    const mobileGroups = groups.map((group) => ({
+      id: group.id,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+      sessionIds: sortedSessionIds(group, sessions)
     }));
     const serializedWorkspace = JSON.stringify({
       version: WORKSPACE_VERSION,
@@ -894,7 +921,7 @@ function persistWorkspaceNow() {
     localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
     api.saveWorkspace(serializedWorkspace);
     api.updateMobileWorkspace({
-      groups: savedGroups,
+      groups: mobileGroups,
       sessions: savedSessions.map((session) => ({
         id: session.id,
         groupId: session.groupId,
@@ -1513,6 +1540,7 @@ function updateSessionItem(session) {
     : session.exited
       ? `${session.shell} · stopped`
       : `${session.shell} · ${session.cwd === '~' ? '~' : session.cwd.split('/').filter(Boolean).at(-1) || '/'}`;
+  session.sortName = primary;
   session.item.title = (aiLabelActive || session.manualTitle) ? `${primary} ${secondary}` : session.title;
   session.item.querySelector('.session-details strong').textContent = primary;
   session.item.querySelector('.session-details small').textContent = secondary;
@@ -1523,6 +1551,10 @@ function updateSessionItem(session) {
   linkTrigger.hidden = session.links.length === 0;
   linkTrigger.querySelector('span').textContent = String(session.links.length);
   if (session.id === activeId && !activeTitle.isContentEditable) activeTitle.textContent = session.title;
+}
+
+function resortSessionGroupByName(session) {
+  if (getGroupForSession(session.id)?.sortBy === 'name') renderGroups();
 }
 
 function updateVisualState() {
@@ -1607,6 +1639,7 @@ function startSessionRename(session, titleElement) {
     }
     titleElement.textContent = session.title;
     updateSessionItem(session);
+    resortSessionGroupByName(session);
     schedulePersist();
   };
   const onKeyDown = (event) => {
@@ -1621,6 +1654,11 @@ function startSessionRename(session, titleElement) {
   const onBlur = () => finish(true);
   titleElement.addEventListener('keydown', onKeyDown);
   titleElement.addEventListener('blur', onBlur);
+}
+
+function closeGroupSortMenus() {
+  for (const menu of sessionList.querySelectorAll('.group-sort-menu')) menu.hidden = true;
+  for (const button of sessionList.querySelectorAll('.group-sort')) button.setAttribute('aria-expanded', 'false');
 }
 
 function renderGroups() {
@@ -1642,6 +1680,12 @@ function renderGroups() {
         <input class="group-color" type="color" value="${group.color}" draggable="false" aria-label="Choose group color" title="Choose group color">
         <span class="group-session-count"></span>
         <span class="group-notification-badge" hidden></span>
+        <span class="group-sort-wrap">
+          <button class="group-sort" type="button" title="Sort sessions" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M5 8h8M7 12h6"/></svg>
+          </button>
+          <span class="group-sort-menu" role="menu" hidden></span>
+        </span>
         <button class="group-add" type="button" aria-label="New session in this group" title="New session in this group">+</button>
         <button class="group-delete" type="button" aria-label="Delete group" title="Delete group">×</button>
       </header>
@@ -1665,6 +1709,38 @@ function renderGroups() {
       section.style.setProperty('--group-color', group.color);
       schedulePersist();
     });
+    const sortButton = section.querySelector('.group-sort');
+    sortButton.setAttribute('aria-label', `Sort sessions in ${group.title}`);
+    const sortMenu = section.querySelector('.group-sort-menu');
+    for (const option of GROUP_SORT_OPTIONS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.role = 'menuitem';
+      const active = group.sortBy === option.value;
+      button.classList.toggle('active', active);
+      button.innerHTML = `<span></span><i aria-hidden="true"></i>`;
+      button.querySelector('span').textContent = option.label;
+      button.querySelector('i').textContent = active ? (group.sortDirection === 'desc' ? '↓' : '↑') : '';
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (group.sortBy === option.value) {
+          group.sortDirection = group.sortDirection === 'desc' ? 'asc' : 'desc';
+        } else {
+          group.sortBy = option.value;
+          group.sortDirection = option.initialDirection;
+        }
+        renderGroups();
+        schedulePersist();
+      });
+      sortMenu.append(button);
+    }
+    sortButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const opening = sortMenu.hidden;
+      closeGroupSortMenus();
+      sortMenu.hidden = !opening;
+      sortButton.setAttribute('aria-expanded', String(opening));
+    });
     section.querySelector('.group-toggle').addEventListener('click', (event) => {
       event.stopPropagation();
       group.collapsed = !group.collapsed;
@@ -1687,7 +1763,7 @@ function renderGroups() {
       schedulePersist();
     });
     const body = section.querySelector('.group-sessions');
-    for (const sessionId of group.sessionIds) {
+    for (const sessionId of sortedSessionIds(group, sessions)) {
       const item = sessions.get(sessionId)?.item;
       if (item) body.append(item);
     }
@@ -1853,6 +1929,26 @@ function noteSessionBusy(session, data) {
   }, SESSION_BUSY_SETTLE_MS);
 }
 
+function recordSessionResponse(session, data) {
+  if (!session || session.exited) return;
+  let output = plainTerminalText(data);
+  if (Date.now() - session.expectedInputEchoAt <= 1_500) {
+    const consumed = consumeTerminalInputEcho(session.expectedInputEcho, output);
+    session.expectedInputEcho = consumed.expected;
+    output = consumed.response;
+  } else {
+    session.expectedInputEcho = '';
+  }
+  if (!output.trim()) return;
+  if (restoringWorkspace || Date.now() < session.busySuppressedUntil) return;
+  session.lastResponseAt = Date.now();
+  window.clearTimeout(session.responseSortTimer);
+  session.responseSortTimer = window.setTimeout(() => {
+    if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
+    schedulePersist();
+  }, SESSION_BUSY_SETTLE_MS);
+}
+
 function noteBackgroundActivity(session, data) {
   if (!session || isSessionForeground(session) || restoringWorkspace) return;
   if (!session.activityArmed) return;
@@ -1921,10 +2017,21 @@ async function addSession(cwd, options = {}) {
     summary: options.summary || '',
     agent: options.agent || '',
     manualTitle: Boolean(options.manualTitle),
-    links: Array.isArray(options.links) ? options.links : [],
+    links: Array.isArray(options.links)
+      ? options.links
+        .map((link) => ({ ...link, url: normalizeGithubPullRequestUrl(link?.url) }))
+        .filter((link) => link.url)
+      : [],
+    createdAt: Object.hasOwn(options, 'createdAt')
+      ? Math.max(0, Number(options.createdAt) || 0)
+      : Date.now(),
+    lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
+    responseSortTimer: null,
     linkScanBuffer: '',
     context: '',
     commandBuffer: '',
+    expectedInputEcho: '',
+    expectedInputEchoAt: 0,
     aiSummaryTimer: null,
     aiSummaryMode: '',
     aiSummaryDueAt: 0,
@@ -1973,6 +2080,7 @@ async function addSession(cwd, options = {}) {
     if (!cleaned) return;
     session.title = cleaned.length > 34 ? `${cleaned.slice(0, 31)}…` : cleaned;
     updateSessionItem(session);
+    resortSessionGroupByName(session);
     schedulePersist();
   });
   terminal.onBell(() => {
@@ -2028,6 +2136,7 @@ function closeSession(id) {
   session.exited = true;
   window.clearTimeout(session.busyTimer);
   clearAiSummaryTimer(session);
+  window.clearTimeout(session.responseSortTimer);
   session.terminal.dispose();
   session.pane.remove();
   session.item.remove();
@@ -2086,6 +2195,7 @@ function deleteGroup(groupId) {
     session.exited = true;
     window.clearTimeout(session.busyTimer);
     clearAiSummaryTimer(session);
+    window.clearTimeout(session.responseSortTimer);
     session.terminal.dispose();
     session.pane.remove();
     session.item.remove();
@@ -2200,7 +2310,20 @@ sessionList.addEventListener('drop', (event) => {
   if (dragState.type === 'group') {
     groups = reorderGroup(groups, dragState.id, dropTarget.groupId, dropTarget.position);
   } else {
-    groups = moveSession(groups, dragState.id, dropTarget.groupId, dropTarget.beforeSessionId);
+    const sourceGroup = getGroupForSession(dragState.id);
+    const targetGroup = getGroup(dropTarget.groupId);
+    if (sourceGroup?.id === targetGroup?.id && targetGroup.sortBy !== 'default') {
+      showToast('Switch this group to Default sort to change its manual order');
+    } else {
+      const beforeSessionId = targetGroup?.sortBy === 'default' ? dropTarget.beforeSessionId : null;
+      groups = moveSession(
+        groups,
+        dragState.id,
+        dropTarget.groupId,
+        beforeSessionId,
+        targetGroup?.sortBy === 'default' ? targetGroup.sortDirection : 'asc'
+      );
+    }
     activeGroupId = dropTarget.groupId;
   }
   cleanupDrag();
@@ -2214,6 +2337,7 @@ api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.terminal.write(data);
+  recordSessionResponse(session, data);
   noteSessionBusy(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
@@ -2233,6 +2357,7 @@ api.onExit(({ id, exitCode }) => {
   session.activityArmed = false;
   session.notifyWhenIdle = false;
   window.clearTimeout(session.busyTimer);
+  window.clearTimeout(session.responseSortTimer);
   session.terminal.options.disableStdin = true;
   session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
   if (isSessionForeground(session)) {
@@ -2242,7 +2367,8 @@ api.onExit(({ id, exitCode }) => {
     markSessionNotification(session);
   }
   updateSessionItem(session);
-  updateVisualState();
+  if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
+  else updateVisualState();
   schedulePersist();
 });
 
@@ -2402,11 +2528,19 @@ document.querySelector('#desktop-voice-toggle').addEventListener('click', async 
 sidebarResizer.addEventListener('pointerdown', beginSidebarResize);
 linkPopover.addEventListener('mouseenter', () => window.clearTimeout(linkPopoverTimer));
 linkPopover.addEventListener('mouseleave', hideLinkPopoverSoon);
+document.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
+});
 api.onAgentState(renderAgentState);
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && sessionList.querySelector('.group-sort[aria-expanded="true"]')) {
+    event.preventDefault();
+    closeGroupSortMenus();
+    return;
+  }
   if (supervisorDashboardActive && event.key === 'Escape') {
     event.preventDefault();
     closeAgentPanel();
@@ -2462,6 +2596,8 @@ async function restoreSavedWorkspace() {
       hasUserActivity: saved.hasUserActivity,
       aiInitialSummaryDone: saved.aiInitialSummaryDone,
       lastAiSummaryAt: saved.lastAiSummaryAt,
+      createdAt: saved.createdAt,
+      lastResponseAt: saved.lastResponseAt,
       links: saved.links,
       activate: false
     });
