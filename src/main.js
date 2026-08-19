@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
 import { renderMarkdown } from './markdown.js';
 import {
   DEFAULT_HOTKEYS,
@@ -1968,8 +1968,12 @@ function visibleTerminalText(terminal) {
   const buffer = terminal?.buffer?.active;
   if (!buffer) return '';
   const screenRows = Math.max(1, terminal.rows || 1);
-  const end = Math.min(buffer.length, Math.max(0, buffer.baseY) + screenRows);
-  const start = Math.max(0, end - Math.min(12, screenRows));
+  const { start, end } = terminalStatusRowRange({
+    bufferLength: buffer.length,
+    baseY: buffer.baseY,
+    cursorY: buffer.cursorY,
+    screenRows
+  });
   const lines = [];
   for (let index = start; index < end; index += 1) {
     lines.push(buffer.getLine(index)?.translateToString(true) || '');
@@ -1995,18 +1999,39 @@ function settleSessionBusy(session) {
   }
 }
 
+function recheckSuppressedAgentBusy(session) {
+  session.busyTimer = null;
+  if (!session.activityArmed || session.notified || session.exited) return;
+  if (!shouldKeepSessionBusy(true, visibleTerminalText(session.terminal))) {
+    session.activityArmed = false;
+    schedulePersist();
+    return;
+  }
+  noteSessionBusy(session, '');
+}
+
 function noteSessionBusy(session, data) {
   if (!session || session.exited) return;
   const output = plainTerminalText(data);
-  const agentIsWorking = isAgentWorkingText(output) || isAgentWorkingText(visibleTerminalText(session.terminal));
+  const visible = visibleTerminalText(session.terminal);
+  const agentIsWorking = agentActivityState(`${output}\n${visible}`) === 'working';
   if (!output.trim() && !agentIsWorking) return;
-  if (!session.activityArmed && agentIsWorking) {
+  if (canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
     session.activityArmed = true;
     session.activityCycleId = crypto.randomUUID();
     session.notifyWhenIdle = !isSessionForeground(session);
   }
   if (!session.activityArmed) return;
-  if (!session.busy && Date.now() < session.busySuppressedUntil) return;
+  if (!session.busy && Date.now() < session.busySuppressedUntil) {
+    if (agentIsWorking) {
+      window.clearTimeout(session.busyTimer);
+      session.busyTimer = window.setTimeout(
+        () => recheckSuppressedAgentBusy(session),
+        Math.max(1, session.busySuppressedUntil - Date.now() + 1)
+      );
+    }
+    return;
+  }
   window.clearTimeout(session.busyTimer);
   if (!session.busy) {
     session.busy = true;

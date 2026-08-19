@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalWheelAmount } from '../src/activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -80,4 +80,24 @@ test('an idle coding-agent prompt does not keep the spinner active', () => {
   assert.equal(isAgentWorkingText(idle), false);
   assert.equal(isAgentWorkingText(idleHermes), false);
   assert.equal(shouldKeepSessionBusy(true, idle), false);
+});
+
+test('a newer idle prompt overrides stale working status in the visible window', () => {
+  const interruptedCodex = '• Working (34s • esc to interrupt)\n^C\nmark@ubuntu:~/repo$';
+  const completedHermes = '⚕ model │ ⏱ 4m 9s\n⚕ ❯ msg=interrupt · Ctrl+C cancel\n⚕ model │ ⏲ 4m 12s │ ✓ 3s\n❯';
+
+  assert.equal(agentActivityState(interruptedCodex), 'idle');
+  assert.equal(agentActivityState(completedHermes), 'idle');
+  assert.equal(shouldKeepSessionBusy(true, interruptedCodex), false);
+  assert.equal(shouldKeepSessionBusy(true, completedHermes), false);
+});
+
+test('terminal status scanning follows the cursor instead of trailing blank viewport rows', () => {
+  assert.deepEqual(terminalStatusRowRange({ bufferLength: 30, baseY: 0, cursorY: 4, screenRows: 30 }), { start: 0, end: 7 });
+  assert.deepEqual(terminalStatusRowRange({ bufferLength: 80, baseY: 50, cursorY: 28, screenRows: 30 }), { start: 67, end: 80 });
+});
+
+test('an unread bell notification cannot be auto-armed into a new activity cycle', () => {
+  assert.equal(canAutoArmAgentActivity(false, false, true), true);
+  assert.equal(canAutoArmAgentActivity(false, true, true), false);
 });
