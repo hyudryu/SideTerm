@@ -73,14 +73,42 @@ def download_tts(args) -> None:
     print(json.dumps({"ok": True, "model": args.model}))
 
 
+def normalize_speech_audio(samples, target_dbfs: float = -18.0, peak_ceiling: float = 0.95):
+    """Normalize active speech loudness while retaining headroom and avoiding noise boosts."""
+    import numpy as np
+
+    materialized = np.asarray(samples, dtype=np.float32)
+    if materialized.size == 0:
+        return materialized, {"gain": 1.0, "activeRms": 0.0, "peak": 0.0}
+
+    absolute = np.abs(materialized)
+    peak = float(np.max(absolute))
+    if peak < 1e-6:
+        return materialized, {"gain": 1.0, "activeRms": 0.0, "peak": peak}
+
+    # Ignore silence and very low background noise when measuring loudness.
+    gate = max(peak * 0.02, 1e-4)
+    active = materialized[absolute >= gate]
+    active_rms = float(np.sqrt(np.mean(np.square(active)))) if active.size else 0.0
+    if active_rms < 1e-6:
+        return materialized, {"gain": 1.0, "activeRms": active_rms, "peak": peak}
+
+    target_rms = 10.0 ** (target_dbfs / 20.0)
+    gain = max(0.25, min(16.0, target_rms / active_rms))
+    gain = min(gain, peak_ceiling / peak)
+    normalized = np.clip(materialized * gain, -peak_ceiling, peak_ceiling).astype(np.float32)
+    return normalized, {"gain": gain, "activeRms": active_rms, "peak": peak}
+
+
 def synthesize(args) -> None:
     import scipy.io.wavfile
     model = load_tts()
     voice_state = model.get_state_for_audio_prompt(args.voice)
     audio = model.generate_audio(voice_state, args.text)
     samples = audio.detach().cpu().numpy() if hasattr(audio, "detach") else audio.numpy()
-    scipy.io.wavfile.write(args.output, model.sample_rate, samples)
-    print(json.dumps({"ok": True, "output": args.output}))
+    normalized, loudness = normalize_speech_audio(samples)
+    scipy.io.wavfile.write(args.output, model.sample_rate, normalized)
+    print(json.dumps({"ok": True, "output": args.output, "normalization": loudness}))
 
 
 def main() -> None:
