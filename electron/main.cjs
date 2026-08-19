@@ -31,6 +31,18 @@ let agentStatus = 'idle';
 let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
 const pendingRendererActions = new Map();
+const ownsSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!ownsSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 const DEFAULT_HOTKEYS = {
   copy: 'Ctrl+C',
@@ -1562,7 +1574,7 @@ function createWindow() {
 app.setName('SideTerm');
 app.setAppUserModelId('io.github.hyudryu.sideterm');
 
-app.whenReady().then(() => {
+if (ownsSingleInstanceLock) app.whenReady().then(() => {
   registerIpc();
   createWindow();
   githubMonitorTimer = setInterval(() => void pollMonitoredPullRequests(), 60_000);
