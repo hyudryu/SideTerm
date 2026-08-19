@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, scanTerminalUrls, stripTerminalControlInput, terminalWheelAmount } from './activity.js';
+import { renderMarkdown } from './markdown.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -1199,7 +1200,11 @@ function renderAgentState(nextState) {
   for (const message of agentState.messages || []) {
     const bubble = document.createElement('div');
     bubble.className = `agent-message ${message.role}`;
-    bubble.textContent = message.text;
+    if (message.role === 'assistant') {
+      renderMarkdown(document, bubble, message.text, { onLink: (url) => void api.openExternal(url) });
+    } else {
+      bubble.textContent = message.text;
+    }
     chat.append(bubble);
   }
   chat.scrollTop = chat.scrollHeight;
@@ -1260,8 +1265,9 @@ async function openAgentPanel() {
     if (agentState.enabled && hasUnreadWork && !agentCatchUpInFlight) {
       agentCatchUpInFlight = true;
       try {
-        const result = await api.catchUpAgent();
+        const result = await api.catchUpAgent({ voice: desktopVoiceMode });
         renderAgentState(result.state);
+        await speakAgentResponse(result.speech || result.response);
       } finally {
         agentCatchUpInFlight = false;
       }
@@ -1289,9 +1295,9 @@ async function submitAgentChat(text) {
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt);
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode });
     renderAgentState(result.state);
-    await speakAgentResponse(result.response);
+    await speakAgentResponse(result.speech || result.response);
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));

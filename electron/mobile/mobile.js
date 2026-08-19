@@ -166,7 +166,7 @@ function renderAgentState(state) {
     confirmations.append(row);
   }
   if (agentState.enabled && unreadNotifications.length && !catchupRequested) {
-    catchupRequested = send({ type: 'agent:catch-up' });
+    catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
   }
   if (viewMode === 'agent') setView('agent');
 }
@@ -421,7 +421,7 @@ mobileAgentInput.addEventListener('keydown', (event) => {
 mobileAgentForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = mobileAgentInput.value.trim();
-  if (!text || !send({ type: 'agent:chat', text })) return;
+  if (!text || !send({ type: 'agent:chat', text, voiceMode: mobileVoiceMode })) return;
   mobileAgentInput.value = '';
 });
 mobileVoiceToggle.addEventListener('click', async () => {
