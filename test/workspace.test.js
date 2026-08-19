@@ -103,3 +103,19 @@ test('invalid saved workspace data is ignored', () => {
   assert.equal(parseSavedWorkspace('{oops'), null);
   assert.equal(parseSavedWorkspace(JSON.stringify({ version: 999, groups: [], sessions: [] })), null);
 });
+
+test('legacy sessions retain an unknown creation-time tie', () => {
+  const parsed = parseSavedWorkspace(JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: [{ id: 'first', title: 'First', sessionIds: ['b', 'a'] }],
+    sessions: [
+      { id: 'a', groupId: 'first', title: 'A' },
+      { id: 'b', groupId: 'first', title: 'B' }
+    ]
+  }));
+
+  assert.deepEqual(parsed.sessions.map((session) => session.createdAt), [0, 0]);
+  const lookup = new Map(parsed.sessions.map((session) => [session.id, session]));
+  parsed.groups[0].sortBy = 'created';
+  assert.deepEqual(sortedSessionIds(parsed.groups[0], lookup), ['b', 'a']);
+});
