@@ -32,6 +32,10 @@ test('sessions reorder within a group and transfer across groups', () => {
   const transferred = moveSession(reordered, 'a', 'second', 'c');
   assert.deepEqual(transferred[0].sessionIds, ['b']);
   assert.deepEqual(transferred[1].sessionIds, ['a', 'c']);
+
+  const reversed = moveSession(fixture(), 'c', 'first', 'a', 'desc');
+  assert.deepEqual(reversed[0].sessionIds, ['a', 'c', 'b']);
+  assert.deepEqual([...reversed[0].sessionIds].reverse(), ['b', 'c', 'a']);
 });
 
 test('session removal cleans every group', () => {
@@ -42,9 +46,9 @@ test('per-group sorting preserves canonical manual order', () => {
   const group = createGroup('first', 'First');
   group.sessionIds = ['a', 'b', 'c'];
   const sessions = new Map([
-    ['a', { title: 'Zebra', createdAt: 10, lastResponseAt: 30 }],
-    ['b', { title: 'Alpha', createdAt: 30, lastResponseAt: 10 }],
-    ['c', { title: 'Middle', createdAt: 20, lastResponseAt: 20 }]
+    ['a', { title: 'Hidden A', sortName: 'Zebra', createdAt: 10, lastResponseAt: 30 }],
+    ['b', { title: 'Hidden B', sortName: 'Alpha', createdAt: 30, lastResponseAt: 10 }],
+    ['c', { title: 'Hidden C', sortName: 'Middle', createdAt: 20, lastResponseAt: 20 }]
   ]);
 
   assert.deepEqual(sortedSessionIds(group, sessions), ['a', 'b', 'c']);

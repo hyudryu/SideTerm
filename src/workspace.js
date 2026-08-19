@@ -44,8 +44,8 @@ export function sortedSessionIds(group, sessionLookup) {
     if (sortBy === 'created') comparison = (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0);
     if (sortBy === 'response') comparison = (Number(left.lastResponseAt) || 0) - (Number(right.lastResponseAt) || 0);
     if (sortBy === 'name') {
-      const leftName = String(left.displayName || left.title || '').trim();
-      const rightName = String(right.displayName || right.title || '').trim();
+      const leftName = String(left.sortName || left.title || '').trim();
+      const rightName = String(right.sortName || right.title || '').trim();
       comparison = leftName.localeCompare(rightName, undefined, { numeric: true, sensitivity: 'base' });
     }
     return comparison === 0
@@ -65,7 +65,7 @@ export function reorderGroup(groups, sourceId, targetId, position) {
   return reordered;
 }
 
-export function moveSession(groups, sessionId, targetGroupId, beforeSessionId = null) {
+export function moveSession(groups, sessionId, targetGroupId, beforeSessionId = null, viewDirection = 'asc') {
   if (!groups.some((group) => group.id === targetGroupId)) return groups;
 
   const moved = groups.map((group) => ({
@@ -73,6 +73,13 @@ export function moveSession(groups, sessionId, targetGroupId, beforeSessionId = 
     sessionIds: group.sessionIds.filter((id) => id !== sessionId)
   }));
   const target = moved.find((group) => group.id === targetGroupId);
+  if (viewDirection === 'desc') {
+    const visualIds = [...target.sessionIds].reverse();
+    const beforeVisualIndex = beforeSessionId ? visualIds.indexOf(beforeSessionId) : -1;
+    visualIds.splice(beforeVisualIndex >= 0 ? beforeVisualIndex : visualIds.length, 0, sessionId);
+    target.sessionIds = visualIds.reverse();
+    return moved;
+  }
   const beforeIndex = beforeSessionId ? target.sessionIds.indexOf(beforeSessionId) : -1;
   target.sessionIds.splice(beforeIndex >= 0 ? beforeIndex : target.sessionIds.length, 0, sessionId);
   return moved;
