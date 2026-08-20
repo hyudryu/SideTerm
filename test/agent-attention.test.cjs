@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { attentionCycleId, reconcileAttentionNotifications } = require('../electron/agent/attention.cjs');
+const { acknowledgeAttentionNotification, attentionCycleId, reconcileAttentionNotifications } = require('../electron/agent/attention.cjs');
 
 test('restored attention sessions become unread supervisor notifications', () => {
   const state = { notifications: [] };
@@ -43,4 +43,17 @@ test('idle acknowledged sessions are not added to the supervisor inbox', () => {
   });
   assert.deepEqual(added, []);
   assert.deepEqual(state.notifications, []);
+});
+
+test('opening a session acknowledges only its matching attention cycle', () => {
+  const state = {
+    notifications: [
+      { sessionId: 'session-1', cycleId: 'cycle-1', read: false },
+      { sessionId: 'session-1', cycleId: 'cycle-2', read: false },
+      { sessionId: 'session-2', cycleId: 'cycle-1', read: false }
+    ]
+  };
+
+  assert.equal(acknowledgeAttentionNotification(state, 'session-1', 'cycle-1'), 1);
+  assert.deepEqual(state.notifications.map((item) => item.read), [true, false, false]);
 });

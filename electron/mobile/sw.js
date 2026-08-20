@@ -1,9 +1,14 @@
-const cacheName = 'sideterm-mobile-v1';
+const cacheName = 'sideterm-mobile-v4';
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(['./', './mobile.css', './mobile.js', './xterm.css', './xterm.js', './icon.png'])));
   self.skipWaiting();
 });
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', (event) => event.waitUntil(Promise.all([
+  self.clients.claim(),
+  caches.keys().then((keys) => Promise.all(keys
+    .filter((key) => key.startsWith('sideterm-mobile-') && key !== cacheName)
+    .map((key) => caches.delete(key))))
+])));
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET' || event.request.url.includes('/socket')) return;
   event.respondWith(fetch(event.request).then((response) => {

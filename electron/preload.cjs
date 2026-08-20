@@ -8,7 +8,7 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('sideTerm', {
   getWorkspaceSync: () => ipcRenderer.sendSync('workspace:get-sync'),
-  saveWorkspace: (raw) => ipcRenderer.send('workspace:save', raw),
+  saveWorkspace: (raw) => ipcRenderer.invoke('workspace:save', raw),
   createSession: (options) => ipcRenderer.invoke('terminal:create', options),
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   enableTailscaleHttps: () => ipcRenderer.invoke('mobile:enable-tailscale-https'),
   updateMobileWorkspace: (workspace) => ipcRenderer.send('mobile:update-workspace', workspace),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  acknowledgeSessionAttention: (sessionId, cycleId) => ipcRenderer.invoke('agent:acknowledge-session', { sessionId, cycleId }),
   chatWithAgent: (text, options = {}) => ipcRenderer.invoke('agent:chat', { text, ...options }),
   catchUpAgent: (options = {}) => ipcRenderer.invoke('agent:catch-up', options),
   confirmAgentAction: (id, approved) => ipcRenderer.invoke('agent:confirm', { id, approved }),
@@ -49,7 +50,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
     if (!result?.ok) throw new Error(result?.error || 'Speech installation failed.');
     return result.status;
   },
-  previewVoice: (voice) => ipcRenderer.invoke('voice:preview', voice),
+  previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
   transcribeSpeech: (bytes, mimeType) => ipcRenderer.invoke('voice:transcribe', { bytes, mimeType }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),

@@ -57,3 +57,61 @@ export function scanTerminalUrls(previousBuffer, chunk) {
   }
   return { buffer, urls: [...urls] };
 }
+
+export function restoredContextState(history, hasSummary, maxCharacters = 16_000) {
+  const context = String(history || '').slice(-Math.max(1, maxCharacters));
+  const contextRevision = context.trim() ? 1 : 0;
+  return {
+    context,
+    contextRevision,
+    lastSummarizedRevision: hasSummary ? contextRevision : 0
+  };
+}
+
+function lastMatchIndex(text, patterns) {
+  let latest = -1;
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) latest = Math.max(latest, match.index || 0);
+  }
+  return latest;
+}
+
+export function agentActivityState(value) {
+  const text = String(value);
+  const workingIndex = lastMatchIndex(text, [
+    /(?:working|thinking|running|processing)\s*\([^\n)]*(?:esc|ctrl\s*\+\s*c)\s+to\s+interrupt[^\n)]*\)/giu,
+    /⏱\s*\d+(?:m|s|h)[\s\S]{0,400}?(?:msg=interrupt|ctrl\s*\+\s*c\s+cancel)/giu
+  ]);
+  const idleIndex = lastMatchIndex(text, [
+    /^[^\n]*[│|]\s*✓\s*\d[^\n]*$/gmu,
+    /^\s*[❯>]\s*$/gmu,
+    /^(?:[^\n]*@[^:\n]+:[^\n]*[$#]|[$#])\s*$/gmu
+  ]);
+  if (idleIndex > workingIndex) return 'idle';
+  if (workingIndex >= 0) return 'working';
+  return 'unknown';
+}
+
+export function isAgentWorkingText(value) {
+  return agentActivityState(value) === 'working';
+}
+
+export function shouldKeepSessionBusy(activityArmed, visibleTerminalText) {
+  return Boolean(activityArmed && isAgentWorkingText(visibleTerminalText));
+}
+
+export function canAutoArmAgentActivity(activityArmed, notified, agentIsWorking) {
+  return Boolean(!activityArmed && !notified && agentIsWorking);
+}
+
+export function terminalStatusRowRange({ bufferLength, baseY, cursorY, screenRows }) {
+  const length = Math.max(0, Number(bufferLength) || 0);
+  if (!length) return { start: 0, end: 0 };
+  const firstScreenRow = Math.max(0, Number(baseY) || 0);
+  const rows = Math.max(1, Number(screenRows) || 1);
+  const cursor = Math.max(firstScreenRow, Math.min(length - 1, firstScreenRow + Math.max(0, Number(cursorY) || 0)));
+  return {
+    start: Math.max(firstScreenRow, cursor - 11),
+    end: Math.min(length, cursor + 3, firstScreenRow + rows)
+  };
+}
