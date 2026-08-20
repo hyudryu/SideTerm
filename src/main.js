@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
 import { renderMarkdown } from './markdown.js';
+import { sessionDisplayLabels } from './session-labels.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -26,6 +27,7 @@ const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
+const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
@@ -702,6 +704,8 @@ function trackTerminalInput(session, data) {
           session.hasUserActivity = true;
           session.activityArmed = true;
           session.activityCycleId = crypto.randomUUID();
+          session.activityScanBuffer = '';
+          session.lastWorkingAt = 0;
           session.notifyWhenIdle = false;
           scheduleAiSummary(session);
           schedulePersist();
@@ -809,7 +813,7 @@ async function requestAiSummary(session, mode) {
     });
     if (sessions.get(session.id) !== session || session.exited || !aiSummaryModeEnabled(mode)) return;
     if (!result) return;
-    session.displayName = session.agent || result.name;
+    session.displayName = result.name;
     session.summary = result.summary;
     session.lastSummarizedRevision = summarizedRevision;
     session.aiErrorShown = false;
@@ -1617,19 +1621,11 @@ function groupNotificationCount(group) {
 
 function updateSessionItem(session) {
   if (!session.item) return;
-  const aiLabelActive = settings.llmEnabled && settings.apiUrl && settings.model && session.summary;
-  const primary = session.manualTitle
-    ? session.title
-    : aiLabelActive
-    ? `${session.agent || session.displayName || 'Terminal'}:`
-    : session.title;
-  const secondary = session.manualTitle && session.summary
-    ? session.summary
-    : aiLabelActive
-    ? session.summary
-    : session.exited
-      ? `${session.shell} · stopped`
-      : `${session.shell} · ${session.cwd === '~' ? '~' : session.cwd.split('/').filter(Boolean).at(-1) || '/'}`;
+  const labels = sessionDisplayLabels(session, settings.llmEnabled && settings.apiUrl && settings.model);
+  const { aiLabelActive, primary } = labels;
+  const secondary = labels.secondary || (session.exited
+    ? `${session.shell} · stopped`
+    : `${session.shell} · ${session.cwd === '~' ? '~' : session.cwd.split('/').filter(Boolean).at(-1) || '/'}`);
   session.sortName = primary;
   session.item.title = (aiLabelActive || session.manualTitle) ? `${primary} ${secondary}` : session.title;
   session.item.querySelector('.session-details strong').textContent = primary;
@@ -1640,7 +1636,7 @@ function updateSessionItem(session) {
   const linkTrigger = session.item.querySelector('.session-link-trigger');
   linkTrigger.hidden = session.links.length === 0;
   linkTrigger.querySelector('span').textContent = String(session.links.length);
-  if (session.id === activeId && !activeTitle.isContentEditable) activeTitle.textContent = session.title;
+  if (session.id === activeId && !activeTitle.isContentEditable) activeTitle.textContent = primary;
 }
 
 function resortSessionGroupByName(session) {
@@ -1930,7 +1926,7 @@ function activateSession(id) {
   next.attentionCycleId = '';
   next.notifyWhenIdle = false;
   if (acknowledgedNotification && !next.busy) next.activityArmed = false;
-  activeTitle.textContent = next.title;
+  activeTitle.textContent = sessionDisplayLabels(next, settings.llmEnabled && settings.apiUrl && settings.model).primary;
   activeSubtitle.textContent = next.exited
     ? `${next.shell} · stopped · ${next.cwd}`
     : `${next.shell} · ${next.cwd}`;
@@ -2020,11 +2016,16 @@ function visibleTerminalText(terminal) {
 
 function settleSessionBusy(session) {
   if (!session?.busy) return;
-  if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal))) {
+  if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal), {
+    lastWorkingAt: session.lastWorkingAt,
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+  })) {
     session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
     return;
   }
   session.busy = false;
+  session.lastWorkingAt = 0;
+  session.activityScanBuffer = '';
   updateSessionItem(session);
   reportSessionCompletion(session);
   if (session.notifyWhenIdle) {
@@ -2039,7 +2040,10 @@ function settleSessionBusy(session) {
 function recheckSuppressedAgentBusy(session) {
   session.busyTimer = null;
   if (!session.activityArmed || session.notified || session.exited) return;
-  if (!shouldKeepSessionBusy(true, visibleTerminalText(session.terminal))) {
+  if (!shouldKeepSessionBusy(true, visibleTerminalText(session.terminal), {
+    lastWorkingAt: session.lastWorkingAt,
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+  })) {
     session.activityArmed = false;
     schedulePersist();
     return;
@@ -2051,7 +2055,13 @@ function noteSessionBusy(session, data) {
   if (!session || session.exited) return;
   const output = plainTerminalText(data);
   const visible = visibleTerminalText(session.terminal);
-  const agentIsWorking = agentActivityState(`${output}\n${visible}`) === 'working';
+  session.activityScanBuffer = `${session.activityScanBuffer}${output}`.slice(-8_000);
+  const visibleState = agentActivityState(visible);
+  const activityState = visibleState === 'unknown'
+    ? agentActivityState(session.activityScanBuffer)
+    : visibleState;
+  const agentIsWorking = activityState === 'working';
+  if (agentIsWorking) session.lastWorkingAt = Date.now();
   if (!output.trim() && !agentIsWorking) return;
   if (canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
     session.activityArmed = true;
@@ -2196,6 +2206,8 @@ async function addSession(cwd, options = {}) {
     lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
     activityCycleId: '',
+    activityScanBuffer: '',
+    lastWorkingAt: 0,
     lastReportedCycleId: '',
     persistent: false
   };
