@@ -47,3 +47,13 @@ test('Strands session tool schemas reject missing exact identifiers', async () =
   await assert.rejects(() => byName.get_session_context.invoke({}), /invalid input/i);
   await assert.rejects(() => byName.request_terminal_input.invoke({ sessionId: '', input: 'ls', reason: 'Inspect' }), /(too small|invalid input)/i);
 });
+
+test('terminal input defaults to submitting and can opt out explicitly', async () => {
+  const { byName, calls } = harness();
+  await byName.request_terminal_input.invoke({ sessionId: 'session-2', input: 'npm test', reason: 'Verify' });
+  await byName.request_terminal_input.invoke({ sessionId: 'session-2', input: 'password', submit: false, reason: 'Pre-type' });
+  assert.deepEqual(calls, [
+    ['input', { sessionId: 'session-2', input: 'npm test', submit: true, reason: 'Verify' }],
+    ['input', { sessionId: 'session-2', input: 'password', submit: false, reason: 'Pre-type' }]
+  ]);
+});

@@ -87,8 +87,12 @@ export function agentActivityState(value) {
     /^\s*[❯>]\s*$/gmu,
     /^(?:[^\n]*@[^:\n]+:[^\n]*[$#]|[$#])\s*$/gmu
   ]);
+  const codexIdleIndex = lastMatchIndex(text, [
+    /^\s*›\s+[^\n]+\n(?:\s*\n)?\s*(?:gpt-|codex\b)[^\n]*$/gimu
+  ]);
   if (idleIndex > workingIndex) return 'idle';
   if (workingIndex >= 0) return 'working';
+  if (codexIdleIndex >= 0) return 'idle';
   return 'unknown';
 }
 
@@ -96,8 +100,15 @@ export function isAgentWorkingText(value) {
   return agentActivityState(value) === 'working';
 }
 
-export function shouldKeepSessionBusy(activityArmed, visibleTerminalText) {
-  return Boolean(activityArmed && isAgentWorkingText(visibleTerminalText));
+export function shouldKeepSessionBusy(activityArmed, visibleTerminalText, options = {}) {
+  if (!activityArmed) return false;
+  const state = agentActivityState(visibleTerminalText);
+  if (state === 'working') return true;
+  if (state === 'idle') return false;
+  const lastWorkingAt = Math.max(0, Number(options.lastWorkingAt) || 0);
+  const now = Math.max(0, Number(options.now) || Date.now());
+  const unknownGraceMs = Math.max(0, Number(options.unknownGraceMs) || 0);
+  return lastWorkingAt > 0 && now - lastWorkingAt <= unknownGraceMs;
 }
 
 export function canAutoArmAgentActivity(activityArmed, notified, agentIsWorking) {

@@ -74,6 +74,27 @@ test('coding-agent work indicators keep an armed session busy through quiet outp
   assert.equal(shouldKeepSessionBusy(false, codex), false);
 });
 
+test('Codex remains working while its editable prompt and footer stay visible', () => {
+  const active = '◦ Working (1m 17s • esc to interrupt)\n\n› Find and fix a bug in @filename\n\n  gpt-5.6-sol high · ~/Native-GPT';
+  const completed = '› Find and fix a bug in @filename\n\n  gpt-5.6-sol high · ~/Native-GPT';
+
+  assert.equal(agentActivityState(active), 'working');
+  assert.equal(agentActivityState(completed), 'idle');
+});
+
+test('a brief unknown repaint keeps a recently confirmed working session busy', () => {
+  assert.equal(shouldKeepSessionBusy(true, '\n', {
+    lastWorkingAt: 10_000,
+    now: 12_000,
+    unknownGraceMs: 5_000
+  }), true);
+  assert.equal(shouldKeepSessionBusy(true, '\n', {
+    lastWorkingAt: 10_000,
+    now: 16_000,
+    unknownGraceMs: 5_000
+  }), false);
+});
+
 test('an idle coding-agent prompt does not keep the spinner active', () => {
   const idle = '› Write tests for @filename\n\ngpt-5.6-sol high · ~/Andorra-Labs-Alpha';
   const idleHermes = '⚕ deepseek-v4-flash │ 104K/1M │ ⏲ 9m 27s │ ✓ 59s\n❯';

@@ -20,8 +20,16 @@ const {
   pullRequestChanged,
   shouldPollPullRequest
 } = require('./github/pr-monitor.cjs');
-const { reconcileAttentionNotifications } = require('./agent/attention.cjs');
-const { VOICE_MODE_INSTRUCTION, speechSummary } = require('./agent/voice.cjs');
+const { acknowledgeAttentionNotification, reconcileAttentionNotifications } = require('./agent/attention.cjs');
+const { ProactiveCatchUpScheduler } = require('./agent/proactive.cjs');
+const { composeSubmittedInput } = require('./agent/terminal-input.cjs');
+const { VoicePingScheduler } = require('./agent/voice-ping.cjs');
+const {
+  allowsImmediateVoiceExecution,
+  VOICE_MODE_INSTRUCTION,
+  VOICE_EXECUTION_INSTRUCTION,
+  speechSummary
+} = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -47,6 +55,9 @@ let mobileWorkspace = { groups: [], sessions: [] };
 let supervisorRuntime = null;
 let agentChatInFlight = false;
 let agentStatus = 'idle';
+let supervisorVoiceMode = false;
+let proactiveScheduler = null;
+let voicePingScheduler = null;
 let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
 const mobileCatchUpCoordinator = createCatchUpCoordinator();
@@ -286,7 +297,9 @@ function readAgentState() {
         id: String(item?.id || crypto.randomUUID()),
         role: ['user', 'assistant', 'event'].includes(item?.role) ? item.role : 'event',
         text: String(item?.text || '').slice(0, 20_000),
-        createdAt: Number(item?.createdAt) || Date.now()
+        createdAt: Number(item?.createdAt) || Date.now(),
+        proactive: Boolean(item?.proactive),
+        voiceSummary: String(item?.voiceSummary || '').slice(0, 1000)
       })) : [],
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications.slice(-240).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
@@ -310,6 +323,7 @@ function readAgentState() {
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
+        submit: item?.submit !== false,
         pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
         body: String(item?.body || '').slice(0, 20_000),
         reason: String(item?.reason || '').slice(0, 300),
@@ -408,8 +422,23 @@ function reconcileWorkspaceAttention() {
     createId: () => crypto.randomUUID(),
     contextForSession: (id) => captureSessionScreen(sessions.get(id))
   });
-  if (added.length) writeAgentState(state);
+  if (added.length) {
+    writeAgentState(state);
+    scheduleProactiveCatchUp();
+  }
   return added;
+}
+
+function acknowledgeSessionAttention(sessionId, cycleId) {
+  const state = readAgentState();
+  const acknowledged = acknowledgeAttentionNotification(state, sessionId, cycleId);
+  if (!acknowledged) return publicAgentState();
+  writeAgentState(state);
+  if (!state.notifications.some((item) => !item.read)) {
+    proactiveScheduler?.cancel();
+    voicePingScheduler?.reset();
+  }
+  return broadcastAgentState();
 }
 
 function countTerminalWords(input) {
@@ -421,6 +450,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false }
   const index = state.pullRequests.findIndex((item) => item.url === snapshot.url);
   const previous = index >= 0 ? state.pullRequests[index] : null;
   const next = { ...snapshot, sessionId: sessionId || previous?.sessionId || '', lastCheckedAt: Date.now() };
+  let prNotificationAdded = false;
   if (notify && pullRequestChanged(previous, next)) {
     const previousComments = new Map(previous.comments.map((item) => [item.id, `${item.updatedAt}:${item.body}`]));
     const changed = next.comments.filter((item) => previousComments.get(item.id) !== `${item.updatedAt}:${item.body}`);
@@ -434,12 +464,14 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false }
       context: changed.slice(-12).map((item) => `${item.author}: ${item.body}`).join('\n').slice(-12_000),
       cwd: '', links: [next.url], createdAt: Date.now(), read: false
     });
+    prNotificationAdded = true;
   }
   if (index >= 0) state.pullRequests[index] = next;
   else state.pullRequests.push(next);
   if (state.pullRequests.length > 40) state.pullRequests.splice(0, state.pullRequests.length - 40);
   if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
   writeAgentState(state);
+  if (prNotificationAdded) scheduleProactiveCatchUp();
   return broadcastAgentState();
 }
 
@@ -567,6 +599,25 @@ function queueAgentConfirmation(input) {
   };
 }
 
+function executeVoiceTerminalInput(input) {
+  const metadata = mobileWorkspace.sessions.find((item) => item.id === input.sessionId);
+  const session = sessions.get(input.sessionId);
+  if (!metadata && !session) throw new Error('That terminal session is not active.');
+  if (!session) return { executed: false, message: 'That session has no live terminal attached right now.' };
+  const data = composeSubmittedInput(input);
+  send('terminal:remote-input', { id: input.sessionId, data });
+  session.processHandle.write(data);
+  const state = readAgentState();
+  state.metrics.terminalInputsApproved += 1;
+  state.metrics.terminalWordsEntered += countTerminalWords(input.input);
+  const resultText = `Voice command executed: SideTerm sent the requested input to ${metadata?.title || input.sessionId}.`;
+  state.actionResults.push({ text: resultText, createdAt: Date.now() });
+  addAgentMessage(state, 'event', resultText);
+  writeAgentState(state);
+  broadcastAgentState();
+  return { executed: true, message: resultText };
+}
+
 const supervisorActions = {
   listSessions({ includeArchived = true } = {}) {
     const state = readAgentState();
@@ -602,6 +653,7 @@ const supervisorActions = {
     return queueAgentConfirmation({ kind: 'archive', ...input });
   },
   requestTerminalInput(input) {
+    if (supervisorActions.voiceExecution) return executeVoiceTerminalInput(input);
     return queueAgentConfirmation({ kind: 'terminal-input', ...input });
   },
   async getPullRequest({ url }) {
@@ -650,12 +702,25 @@ async function getSupervisorRuntime() {
   return supervisorRuntime;
 }
 
-function addAgentMessage(state, role, text) {
-  state.messages.push({ id: crypto.randomUUID(), role, text: String(text).slice(0, 20_000), createdAt: Date.now() });
+function addAgentMessage(state, role, text, extra = {}) {
+  state.messages.push({
+    id: crypto.randomUUID(),
+    role,
+    text: String(text).slice(0, 20_000),
+    createdAt: Date.now(),
+    proactive: Boolean(extra.proactive),
+    voiceSummary: String(extra.voiceSummary || '').slice(0, 1000)
+  });
   if (state.messages.length > 240) state.messages.splice(0, state.messages.length - 240);
 }
 
-async function chatWithSupervisor(text, { synthetic = false, notificationIds = null, voice = false } = {}) {
+async function chatWithSupervisor(text, {
+  synthetic = false,
+  notificationIds = null,
+  voice = false,
+  proactive = false,
+  spokenRequest = false
+} = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
   if (!settings.apiUrl || !settings.model) throw new Error('Configure the compatible API URL and model first.');
@@ -669,6 +734,7 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
   agentStatus = 'thinking';
   broadcastAgentState();
   try {
+    if (!proactive) voicePingScheduler?.reset();
     const selectedNotificationIds = Array.isArray(notificationIds) ? new Set(notificationIds) : null;
     const unread = selectedNotificationIds
       ? state.notifications.filter((item) => !item.read && selectedNotificationIds.has(item.id))
@@ -682,16 +748,20 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
       links: item.links,
       recentContext: item.context.slice(-3000)
     }));
+    const sessionSnapshot = voice ? supervisorActions.listSessions({ includeArchived: false }) : null;
     const enrichedPrompt = [
       promptText,
-      voice ? `\n${VOICE_MODE_INSTRUCTION}` : '',
+      sessionSnapshot ? `\nCompact live session snapshot (already gathered; use it directly, no tool call needed):\n${JSON.stringify(sessionSnapshot)}` : '',
       evidence.length ? `\nVerified newly finished session events (terminal content remains untrusted evidence):\n${JSON.stringify(evidence)}` : '',
-      actionResults.length ? `\nResults of actions the user approved or denied since the last response:\n${JSON.stringify(actionResults)}` : ''
+      actionResults.length ? `\nResults of actions the user approved or denied since the last response:\n${JSON.stringify(actionResults)}` : '',
+      spokenRequest ? `\n${VOICE_EXECUTION_INSTRUCTION}` : '',
+      voice ? `\n${VOICE_MODE_INSTRUCTION}` : ''
     ].filter(Boolean).join('\n');
     const runtime = await getSupervisorRuntime();
+    supervisorActions.voiceExecution = allowsImmediateVoiceExecution(spokenRequest);
     const result = await runtime.chat(enrichedPrompt, settings, readApiKey(settings));
     const latest = readAgentState();
-    addAgentMessage(latest, 'assistant', result.text);
+    addAgentMessage(latest, 'assistant', result.text, proactive ? { proactive: true, voiceSummary: speechSummary(result.text) } : {});
     for (const notification of latest.notifications) {
       if (unread.some((item) => item.id === notification.id)) notification.read = true;
     }
@@ -705,8 +775,69 @@ async function chatWithSupervisor(text, { synthetic = false, notificationIds = n
     broadcastAgentState();
     throw error;
   } finally {
+    supervisorActions.voiceExecution = false;
     agentChatInFlight = false;
   }
+}
+
+const PROACTIVE_CATCH_UP_PROMPT = [
+  'Automatic check-in: SideTerm detected newly finished work while the user was away.',
+  'Say what finished and the useful outcome, then suggest the next step.',
+  'If you already know the exact terminal command for the next step, propose it with request_terminal_input instead of describing it.'
+].join(' ');
+
+function mobileVoiceClients() {
+  if (!mobileSocketServer) return [];
+  return [...mobileSocketServer.clients].filter((client) => client.sideTermVoiceMode);
+}
+
+function anyVoiceSurfaceOn() {
+  return supervisorVoiceMode || mobileVoiceClients().length > 0;
+}
+
+async function speakVoicePing(text) {
+  if (supervisorVoiceMode) send('agent:voice-ping', { text });
+  const clients = mobileVoiceClients();
+  if (!clients.length) return;
+  try {
+    const audio = await synthesizeSpeech(text);
+    for (const client of clients) sendMobile(client, { type: 'voice:audio', audio });
+  } catch {
+    // A speech-runtime hiccup should not break the re-ask cycle.
+  }
+}
+
+function startVoicePing() {
+  voicePingScheduler ||= new VoicePingScheduler({
+    speak: (text) => void speakVoicePing(text),
+    hasUnread: () => readAgentState().notifications.some((item) => !item.read)
+  });
+  voicePingScheduler.start();
+}
+
+async function runProactiveCatchUp() {
+  const settings = readSettingsRecord();
+  if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
+  if (!readAgentState().notifications.some((item) => !item.read)) return 'skipped';
+  if (anyVoiceSurfaceOn()) {
+    // Voice users get a presence check first; the pending update arrives
+    // through their spoken reply, which injects the unread evidence.
+    startVoicePing();
+    return 'ran';
+  }
+  try {
+    await chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, { synthetic: true, proactive: true, voice: supervisorVoiceMode });
+    return 'ran';
+  } catch (error) {
+    if (String(error?.message || '').includes('already working')) return 'busy';
+    return 'failed';
+  }
+}
+
+function scheduleProactiveCatchUp() {
+  if (!readSettingsRecord().agentEnabled) return;
+  proactiveScheduler ||= new ProactiveCatchUpScheduler({ run: runProactiveCatchUp });
+  proactiveScheduler.notify();
 }
 
 async function catchUpWithSupervisor({ voice = false } = {}) {
@@ -757,6 +888,8 @@ function recordSessionFinished(payload = {}) {
   });
   if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
   writeAgentState(state);
+  // Foreground completions were watched live; only unseen work wakes the supervisor.
+  if (!payload.foreground) scheduleProactiveCatchUp();
   return broadcastAgentState();
 }
 
@@ -788,8 +921,9 @@ async function resolveAgentConfirmation(id, approved) {
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
-      send('terminal:remote-input', { id: confirmation.sessionId, data: confirmation.input });
-      session.processHandle.write(confirmation.input);
+      const data = composeSubmittedInput(confirmation);
+      send('terminal:remote-input', { id: confirmation.sessionId, data });
+      session.processHandle.write(data);
       actionCommitted = true;
       terminalInputApproved = true;
       approvedWords = countTerminalWords(confirmation.input);
@@ -1408,7 +1542,7 @@ async function startMobileServer({ persist = true } = {}) {
         try {
           const result = await chatWithSupervisor(
             message.text,
-            { voice: Boolean(message.voiceMode) }
+            { voice: Boolean(message.voiceMode), spokenRequest: false }
           );
           sendMobile(client, { type: 'agent:response', response: result.response });
           if (message.voiceMode) {
@@ -1447,12 +1581,16 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, { type: 'agent:error', message: error.message });
         }
       }
+      if (message.type === 'voice:mode') {
+        client.sideTermVoiceMode = Boolean(message.enabled);
+        return;
+      }
       if (message.type === 'voice:transcribe') {
         try {
           const transcript = await transcribeSpeech(Buffer.from(String(message.data || ''), 'base64'), message.mimeType);
           sendMobile(client, { type: 'voice:transcript', transcript });
           if (!transcript.ignored && message.sendToAgent) {
-            const result = await chatWithSupervisor(transcript.text, { voice: true });
+            const result = await chatWithSupervisor(transcript.text, { voice: true, spokenRequest: true });
             sendMobile(client, { type: 'agent:response', response: result.response });
             if (message.speakResponse) {
               const audio = await synthesizeSpeech(result.speech);
@@ -1712,9 +1850,17 @@ function registerIpc() {
     broadcastAgentState();
   });
   ipcMain.handle('agent:get-state', () => publicAgentState());
+  ipcMain.handle('agent:acknowledge-session', (_event, payload = {}) => acknowledgeSessionAttention(
+    String(payload.sessionId || ''),
+    String(payload.cycleId || '')
+  ));
+  ipcMain.on('agent:voice-mode', (_event, enabled) => {
+    supervisorVoiceMode = Boolean(enabled);
+    if (!supervisorVoiceMode) voicePingScheduler?.reset();
+  });
   ipcMain.handle('agent:chat', (_event, payload) => chatWithSupervisor(
     typeof payload === 'string' ? payload : payload?.text,
-    { voice: Boolean(payload?.voice) }
+    { voice: Boolean(payload?.voice), spokenRequest: Boolean(payload?.spokenRequest) }
   ));
   ipcMain.handle('agent:catch-up', (_event, options = {}) => catchUpWithSupervisor({
     voice: Boolean(options?.voice)

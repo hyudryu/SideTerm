@@ -413,6 +413,7 @@ async function startMobileVoice() {
   });
   voiceRecorder.start(220);
   mobileVoiceMode = true;
+  send({ type: 'voice:mode', enabled: true });
   agentDashboard.classList.add('voice-mode');
   document.querySelector('#mobile-waveform').hidden = false;
   mobileVoiceToggle.textContent = 'Voice on';
@@ -462,6 +463,7 @@ async function startMobileVoice() {
 function stopMobileVoice() {
   interruptMobileVoicePlayback();
   mobileVoiceMode = false;
+  send({ type: 'voice:mode', enabled: false });
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
   if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();

@@ -39,4 +39,18 @@ function reconcileAttentionNotifications(state, workspace, options = {}) {
   return added;
 }
 
-module.exports = { attentionCycleId, reconcileAttentionNotifications };
+function acknowledgeAttentionNotification(state, sessionId, cycleId) {
+  const exactSessionId = String(sessionId || '').slice(0, 100);
+  const exactCycleId = String(cycleId || '').slice(0, 200);
+  if (!exactSessionId || !exactCycleId || !Array.isArray(state?.notifications)) return 0;
+  let acknowledged = 0;
+  for (const notification of state.notifications) {
+    if (!notification.read && notification.sessionId === exactSessionId && notification.cycleId === exactCycleId) {
+      notification.read = true;
+      acknowledged += 1;
+    }
+  }
+  return acknowledged;
+}
+
+module.exports = { acknowledgeAttentionNotification, attentionCycleId, reconcileAttentionNotifications };
