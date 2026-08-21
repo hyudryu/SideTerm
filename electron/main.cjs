@@ -1757,8 +1757,12 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
   const clarification = transcriptClarification(text, activeSpeechVocabulary(), { confidence: transcript.confidence });
   if (clarification) {
     const state = readAgentState();
-    addAgentMessage(state, 'assistant', clarification.prompt, { proactive: true, voiceSummary: clarification.prompt });
-    interactionManagerFor(state).create({
+    addAgentMessage(state, 'assistant', clarification.prompt, {
+      proactive: true,
+      voiceSummary: clarification.prompt,
+      desktopSpeechPresented: supervisorVoiceMode
+    });
+    const interaction = interactionManagerFor(state).create({
       kind: 'supervisor_question',
       prompt: clarification.prompt,
       options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
@@ -1767,7 +1771,10 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
     });
     writeAgentState(state);
     broadcastAgentState();
-    return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider, clarification };
+    return {
+      ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider,
+      clarification: { ...clarification, interactionId: interaction.id }
+    };
   }
   return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider };
 }

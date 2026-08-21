@@ -148,11 +148,19 @@ async function* awsAudioEvents(audio, options = {}) {
   }
 }
 
+function awsClientConfiguration(options = {}) {
+  return {
+    region: options.region,
+    credentials: awsCredentials(options.credential),
+    ...(options.endpoint ? { endpoint: String(options.endpoint) } : {})
+  };
+}
+
 async function transcribeAws(audio, options) {
   if (!/^(?:audio\/ogg|audio\/pcm)/i.test(options.mimeType)) throw new Error('Amazon Transcribe requires OGG Opus or canonical PCM audio; SideTerm will not send an incompatible recording or fall back to another provider.');
   const { StartStreamTranscriptionCommand, TranscribeStreamingClient } = require('@aws-sdk/client-transcribe-streaming');
   const encoding = /ogg/i.test(options.mimeType) ? 'ogg-opus' : 'pcm';
-  const client = new TranscribeStreamingClient({ region: options.region, credentials: awsCredentials(options.credential) });
+  const client = new TranscribeStreamingClient(awsClientConfiguration(options));
   try {
     const response = await client.send(new StartStreamTranscriptionCommand({
       LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000,
@@ -197,4 +205,4 @@ async function transcribeCloud(providerId, audio, options = {}) {
   }
 }
 
-module.exports = { awsAudioEvents, awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };
+module.exports = { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };

@@ -110,6 +110,7 @@ let voiceTranscriptionInFlight = false;
 let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
+let voiceReplyInteractionId = '';
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -1485,13 +1486,13 @@ function closeAgentPanel() {
   });
 }
 
-async function submitAgentChat(text, { spokenRequest = false } = {}) {
+async function submitAgentChat(text, { spokenRequest = false, interactionId = '' } = {}) {
   const input = document.querySelector('#agent-chat-input');
   const prompt = String(text ?? input.value).trim();
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest });
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest, interactionId });
     renderAgentState(result.state);
     await queueAgentSpeech(result.speech || result.response);
   } catch (error) {
@@ -1728,12 +1729,15 @@ async function processVoiceUtterance(blob, durationMs) {
     }
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
+      voiceReplyInteractionId = transcript.clarification.interactionId || '';
       await queueAgentSpeech(transcript.clarification.prompt, { openReplyWindow: true });
       return;
     }
     voiceReplyUntil = 0;
+    const interactionId = voiceReplyInteractionId;
+    voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
-    await submitAgentChat(transcript.text, { spokenRequest: true });
+    await submitAgentChat(transcript.text, { spokenRequest: true, interactionId });
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   } finally {
@@ -1833,6 +1837,7 @@ function stopDesktopVoiceMode() {
   desktopVoiceMode = false;
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
+  voiceReplyInteractionId = '';
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
