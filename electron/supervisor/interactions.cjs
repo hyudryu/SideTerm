@@ -21,9 +21,13 @@ function normalizePendingInteraction(value = {}, options = {}) {
 }
 
 function interpretApprovalAnswer(value) {
-  const text = String(value || '').trim();
-  if (/^(?:yes|yeah|yep|approve|approved|do it|go ahead|okay|ok)$/i.test(text)) return true;
-  if (/^(?:no|nope|deny|denied|cancel|don.t|do not)$/i.test(text)) return false;
+  const text = String(value || '').trim().toLowerCase()
+    .replace(/[.,!?;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const polite = '(?: (?:please|thanks|thank you))?';
+  if (new RegExp(`^(?:yes|yeah|yep|approve|approved|do it|go ahead|okay|ok)${polite}$`, 'i').test(text)) return true;
+  if (new RegExp(`^(?:no|nope|deny|denied|cancel|don['’]?t|do not)${polite}$`, 'i').test(text)) return false;
   return null;
 }
 
