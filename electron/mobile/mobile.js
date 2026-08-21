@@ -493,12 +493,14 @@ async function submitVoiceBlob(blob, duration) {
   if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
   document.querySelector('#mobile-wave-detail').textContent = 'Transcribing locally…';
   const bytes = new Uint8Array(await blob.arrayBuffer());
+  const replyWindowActive = Date.now() <= mobileReplyUntil;
+  if (!replyWindowActive) mobileVoiceInteractionId = '';
   mobileTranscriptionInFlight = send({
     type: 'voice:transcribe',
     data: bytesToBase64(bytes),
     mimeType: blob.type,
-    allowWithoutWakeWord: Date.now() <= mobileReplyUntil,
-    interactionId: mobileVoiceInteractionId,
+    allowWithoutWakeWord: replyWindowActive,
+    interactionId: replyWindowActive ? mobileVoiceInteractionId : '',
     sendToAgent: true,
     speakResponse: true
   });
