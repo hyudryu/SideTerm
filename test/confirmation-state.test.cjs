@@ -68,3 +68,17 @@ test('an answered approval stays paired while its action is in flight', () => {
   reconcileConfirmationInteractions(state);
   assert.equal(state.interactions[0].id, 'claimed');
 });
+
+test('legacy confirmations gain approval interactions before pair reconciliation', () => {
+  const state = {
+    confirmations: [{ id: 'legacy', kind: 'archive', title: 'Old terminal', createdAt: 10 }],
+    interactions: [],
+    notifications: [],
+    activeInteractionId: ''
+  };
+  reconcileConfirmationInteractions(state, { migrateLegacy: true });
+  assert.equal(state.confirmations[0].id, 'legacy');
+  assert.equal(state.interactions[0].id, 'legacy');
+  assert.equal(state.interactions[0].kind, 'approval');
+  assert.equal(state.activeInteractionId, 'legacy');
+});

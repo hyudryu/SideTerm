@@ -20,6 +20,16 @@ function pendingNotifications(notifications = []) {
     .map(({ item }) => item);
 }
 
+function latestNotificationsBySession(notifications = []) {
+  const latest = new Map();
+  for (const notification of pendingNotifications(notifications)) {
+    if (notification.sessionId && !latest.has(notification.sessionId)) {
+      latest.set(notification.sessionId, notification);
+    }
+  }
+  return latest;
+}
+
 function markSupersededNotificationsRead(notifications = []) {
   const pending = new Set(pendingNotifications(notifications));
   for (const item of notifications) {
@@ -68,4 +78,4 @@ function shouldScheduleWorkspaceCatchUp({ addedCount = 0, unreadCount = 0, initi
   return addedCount > 0 || (!initialized && unreadCount > 0);
 }
 
-module.exports = { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };
+module.exports = { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, latestNotificationsBySession, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };
