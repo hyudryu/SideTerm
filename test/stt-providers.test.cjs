@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { awsCredentials, providerConfigurationError, providerDescriptor, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
+const { awsAudioEvents, awsCredentials, providerConfigurationError, providerDescriptor, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
 
 test('STT provider descriptors visibly distinguish local and cloud', () => {
   assert.equal(providerDescriptor('parakeet').location, 'local');
@@ -35,6 +35,14 @@ test('only the explicitly selected cloud provider receives audio', async (contex
 test('Amazon credentials accept secure JSON or colon-separated values', () => {
   assert.deepEqual(awsCredentials('{"accessKeyId":"id","secretAccessKey":"secret"}'), { accessKeyId: 'id', secretAccessKey: 'secret' });
   assert.deepEqual(awsCredentials('id:secret:token'), { accessKeyId: 'id', secretAccessKey: 'secret', sessionToken: 'token' });
+});
+
+test('Amazon streaming audio events stay below the service size limit', async () => {
+  const events = [];
+  for await (const event of awsAudioEvents(Buffer.alloc(70 * 1024))) events.push(event);
+  assert.ok(events.length > 2);
+  assert.ok(events.every((event) => event.AudioEvent.AudioChunk.length <= 16 * 1024));
+  assert.equal(events.reduce((total, event) => total + event.AudioEvent.AudioChunk.length, 0), 70 * 1024);
 });
 
 test('cloud readiness includes each provider specific region requirement', () => {

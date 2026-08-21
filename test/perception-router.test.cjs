@@ -42,3 +42,13 @@ test('explicit screenshot inspection bypasses non-visual high-confidence sources
   assert.equal(result.source, 'native-vision');
   assert.deepEqual(calls, ['vision']);
 });
+
+test('perception continues after null and failed preferred sources', async () => {
+  const router = new PerceptionRouter({
+    structuredState: async () => null,
+    accessibility: async () => { throw new Error('unavailable'); },
+    terminalText: async () => ({ summary: 'Terminal is ready', confidence: 0.9 })
+  });
+  const result = await router.inspect();
+  assert.equal(result.source, 'terminal-text');
+});

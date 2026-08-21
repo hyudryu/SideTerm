@@ -35,7 +35,7 @@ class PerceptionRouter {
       if (request.forceVision && !['native-vision', 'separate-vision'].includes(source)) continue;
       if (['native-vision', 'separate-vision'].includes(source) && !request.allowCloudVision) continue;
       try {
-        const result = normalizePerception(await provider(request), source);
+        const result = normalizePerception((await provider(request)) || {}, source);
         errors.push(...result.errors);
         if (result.confidence >= (request.minimumConfidence ?? 0.75)) return result;
       } catch (error) {
