@@ -1362,7 +1362,8 @@ async function runProactiveCatchUp() {
           notificationIds: [event.id],
           proactive: true,
           automatic: false,
-          voice
+          voice,
+          interruptible: true
         }).then((enriched) => {
           if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech, presentationOptions);
           return null;
@@ -2320,7 +2321,10 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, { type: 'voice:transcript', transcript });
           if (!transcript.ignored && transcript.clarification) {
             sendMobile(client, { type: 'agent:response', response: transcript.clarification.prompt });
-            if (message.speakResponse) mobileSpeechPipeline(client).speak(transcript.clarification.prompt, { opensReplyWindow: true });
+            if (message.speakResponse) mobileSpeechPipeline(client).speak(transcript.clarification.prompt, {
+              opensReplyWindow: true,
+              interactionId: transcript.clarification.interactionId || ''
+            });
             return;
           }
           if (!transcript.ignored && message.sendToAgent) {
