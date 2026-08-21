@@ -39,7 +39,7 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
-const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
+const { audioFileExtension, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
@@ -265,6 +265,10 @@ function saveSettings(update = {}) {
   if (personality.length > 2000) throw new Error('Personality must be 2,000 characters or fewer.');
   if (agentInstructions.length > 8000) throw new Error('Agent instructions must be 8,000 characters or fewer.');
   if (wakeWord.length > 80) throw new Error('Wake word must be 80 characters or fewer.');
+  const sttProvider = Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider;
+  const sttProviderChanged = sttProvider !== current.sttProvider;
+  const requestedSttEndpoint = typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint;
+  const requestedSttRegion = typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion;
   const next = {
     ...current,
     llmEnabled,
@@ -277,10 +281,10 @@ function saveSettings(update = {}) {
     personality,
     agentInstructions,
     wakeWord,
-    sttProvider: Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider,
+    sttProvider,
     sttModel: update.sttModel === DEFAULT_SETTINGS.sttModel ? update.sttModel : current.sttModel,
-    sttEndpoint: typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint,
-    sttRegion: typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion,
+    sttEndpoint: sttProviderChanged && requestedSttEndpoint === current.sttEndpoint ? '' : requestedSttEndpoint,
+    sttRegion: sttProviderChanged && requestedSttRegion === current.sttRegion ? '' : requestedSttRegion,
     githubCodexActorLogins: Array.isArray(update.githubCodexActorLogins)
       ? update.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
       : current.githubCodexActorLogins,
@@ -1626,18 +1630,25 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   const descriptor = providerDescriptor(settings.sttProvider);
   if (descriptor.location === 'cloud') {
     const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
-    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${/ogg/i.test(mimeType) ? 'ogg' : /wav/i.test(mimeType) ? 'wav' : 'webm'}`);
+    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${audioFileExtension(mimeType)}`);
     const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
+    const pcmPath = path.join(outputDirectory, `${crypto.randomUUID()}.pcm`);
     speechTranscriptionInFlight = true;
     try {
       let providerAudio = bytes;
       let providerMimeType = mimeType;
-      if (settings.sttProvider === 'aws' && !/^(?:audio\/ogg|audio\/wav)/i.test(mimeType)) {
+      if (settings.sttProvider === 'aws' || settings.sttProvider === 'google') {
         fs.mkdirSync(outputDirectory, { recursive: true });
         fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
-        await convertToSpeechWav(inputPath, wavPath);
-        providerAudio = fs.readFileSync(wavPath);
-        providerMimeType = 'audio/wav';
+        if (settings.sttProvider === 'aws') {
+          await convertToSpeechPcm(inputPath, pcmPath);
+          providerAudio = fs.readFileSync(pcmPath);
+          providerMimeType = 'audio/pcm';
+        } else {
+          await convertToSpeechWav(inputPath, wavPath);
+          providerAudio = fs.readFileSync(wavPath);
+          providerMimeType = 'audio/wav';
+        }
       }
       const transcript = await transcribeCloud(settings.sttProvider, providerAudio, {
         credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
@@ -1648,6 +1659,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
       speechTranscriptionInFlight = false;
       try { fs.unlinkSync(inputPath); } catch {}
       try { fs.unlinkSync(wavPath); } catch {}
+      try { fs.unlinkSync(pcmPath); } catch {}
     }
   }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';

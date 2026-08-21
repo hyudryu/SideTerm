@@ -2840,6 +2840,8 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  document.querySelector('#stt-endpoint').value = '';
+  document.querySelector('#stt-region').value = '';
   syncSttProviderFields();
   document.querySelector('#stt-status').textContent = document.querySelector('#stt-provider').value === 'parakeet'
     ? 'LOCAL — Parakeet'

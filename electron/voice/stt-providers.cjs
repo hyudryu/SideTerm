@@ -1,4 +1,4 @@
-const { Readable } = require('node:stream');
+const { audioFileExtension } = require('./audio-converter.cjs');
 
 const STT_PROVIDERS = Object.freeze({
   parakeet: { id: 'parakeet', name: 'NVIDIA Parakeet', location: 'local', supportsStreaming: false, supportsPartialResults: false, supportsVocabularyHints: false },
@@ -91,7 +91,7 @@ async function transcribeAzure(audio, options) {
 async function transcribeOpenAi(audio, options) {
   const endpoint = options.endpoint || 'https://api.openai.com/v1/audio/transcriptions';
   const form = new FormData();
-  form.set('file', new Blob([audio], { type: options.mimeType }), `speech.${/ogg/i.test(options.mimeType) ? 'ogg' : /wav/i.test(options.mimeType) ? 'wav' : 'webm'}`);
+  form.set('file', new Blob([audio], { type: options.mimeType }), `speech.${audioFileExtension(options.mimeType)}`);
   form.set('model', options.model || 'gpt-4o-mini-transcribe');
   form.set('language', String(options.language || 'en').split('-')[0]);
   const prompt = vocabularyQuery(options.vocabulary).join(', ');
@@ -112,18 +112,22 @@ function awsCredentials(value) {
   return { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
 }
 
+async function* awsAudioEvents(audio, maximumChunkBytes = 16 * 1024) {
+  const source = Buffer.from(audio);
+  const size = Math.max(1, Math.min(32 * 1024, Number(maximumChunkBytes) || 16 * 1024));
+  for (let offset = 0; offset < source.length; offset += size) {
+    yield { AudioEvent: { AudioChunk: source.subarray(offset, offset + size) } };
+  }
+}
+
 async function transcribeAws(audio, options) {
-  if (!/^(?:audio\/ogg|audio\/wav)/i.test(options.mimeType)) throw new Error('Amazon Transcribe requires OGG Opus or WAV audio; SideTerm will not send an incompatible recording or fall back to another provider.');
+  if (!/^(?:audio\/ogg|audio\/pcm)/i.test(options.mimeType)) throw new Error('Amazon Transcribe requires OGG Opus or canonical PCM audio; SideTerm will not send an incompatible recording or fall back to another provider.');
   const { StartStreamTranscriptionCommand, TranscribeStreamingClient } = require('@aws-sdk/client-transcribe-streaming');
   const encoding = /ogg/i.test(options.mimeType) ? 'ogg-opus' : 'pcm';
-  const source = Readable.from(Buffer.from(audio), { highWaterMark: 16 * 1024 });
-  async function* chunks() {
-    for await (const chunk of source) yield { AudioEvent: { AudioChunk: chunk } };
-  }
   const client = new TranscribeStreamingClient({ region: options.region, credentials: awsCredentials(options.credential) });
   try {
     const response = await client.send(new StartStreamTranscriptionCommand({
-      LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000, AudioStream: chunks()
+      LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000, AudioStream: awsAudioEvents(audio)
     }), { abortSignal: options.signal });
     let text = '';
     for await (const event of response.TranscriptResultStream || []) {
@@ -164,4 +168,4 @@ async function transcribeCloud(providerId, audio, options = {}) {
   }
 }
 
-module.exports = { awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };
+module.exports = { awsAudioEvents, awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };
