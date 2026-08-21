@@ -106,6 +106,7 @@ let agentState = { enabled: false, status: 'idle', messages: [], notifications: 
 let agentCatchUpInFlight = false;
 let supervisorDashboardActive = false;
 let terminalCaptureRestore = null;
+const terminalCaptureResizeTokens = new Map();
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
@@ -1560,6 +1561,25 @@ function lockTerminalCaptureInteraction() {
   return () => shellElement.classList.remove('capture-locked');
 }
 
+function restoreCapturedTerminalLayout(sessionId, token, onRestored) {
+  let settled = false;
+  const restore = () => {
+    if (settled || terminalCaptureResizeTokens.get(sessionId) !== token) return;
+    settled = true;
+    try {
+      fitActive();
+    } finally {
+      if (terminalCaptureResizeTokens.get(sessionId) === token) terminalCaptureResizeTokens.delete(sessionId);
+      onRestored?.();
+    }
+  };
+  const timer = window.setTimeout(restore, 80);
+  requestAnimationFrame(() => {
+    window.clearTimeout(timer);
+    restore();
+  });
+}
+
 function hideNonterminalCaptureOverlays({ hideDashboard = true } = {}) {
   const dashboardWasHidden = supervisorDashboard.hidden;
   const supervisorWasActive = shellElement.classList.contains('supervisor-active');
@@ -1601,12 +1621,13 @@ async function handleAgentAction({ requestId, type, payload }) {
       if (!session) throw new Error('The session is no longer available.');
       const restoreOverlays = hideNonterminalCaptureOverlays();
       const restoreInteraction = lockTerminalCaptureInteraction();
+      const resizeToken = Symbol(session.id);
+      terminalCaptureResizeTokens.set(session.id, resizeToken);
       terminalCaptureRestore = () => {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         sessions.get(activeId)?.pane.classList.add('active');
-        restoreInteraction();
         restoreOverlays();
-        requestAnimationFrame(fitActive);
+        restoreCapturedTerminalLayout(session.id, resizeToken, restoreInteraction);
       };
       try {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
@@ -2625,7 +2646,9 @@ async function addSession(cwd, options = {}) {
     if (userInput) trackTerminalInput(session, data);
     api.write(id, data);
   });
-  terminal.onResize(({ cols, rows }) => api.resize(id, cols, rows));
+  terminal.onResize(({ cols, rows }) => {
+    if (!terminalCaptureResizeTokens.has(id)) api.resize(id, cols, rows);
+  });
   terminal.onTitleChange((title) => {
     if (session.manualTitle) return;
     const cleaned = title.trim();
