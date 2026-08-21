@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { awsAudioEvents, awsCredentials, providerConfigurationError, providerDescriptor, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
+const { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
 
 test('STT provider descriptors visibly distinguish local and cloud', () => {
   assert.equal(providerDescriptor('parakeet').location, 'local');
@@ -35,6 +35,14 @@ test('only the explicitly selected cloud provider receives audio', async (contex
 test('Amazon credentials accept secure JSON or colon-separated values', () => {
   assert.deepEqual(awsCredentials('{"accessKeyId":"id","secretAccessKey":"secret"}'), { accessKeyId: 'id', secretAccessKey: 'secret' });
   assert.deepEqual(awsCredentials('id:secret:token'), { accessKeyId: 'id', secretAccessKey: 'secret', sessionToken: 'token' });
+});
+
+test('Amazon client configuration honors a selected private endpoint', () => {
+  assert.deepEqual(awsClientConfiguration({
+    region: 'us-west-2', credential: 'id:secret', endpoint: 'https://vpce.example.test'
+  }), {
+    region: 'us-west-2', credentials: { accessKeyId: 'id', secretAccessKey: 'secret' }, endpoint: 'https://vpce.example.test'
+  });
 });
 
 test('Amazon streaming audio events stay below the service size limit', async () => {

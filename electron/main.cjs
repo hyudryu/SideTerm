@@ -1143,8 +1143,8 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
     if (capturedImage) return capturedImage;
     if (session) {
       if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The SideTerm window is not available to capture.');
-      const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
       try {
+        const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
         const bounds = prepared?.bounds || {};
         if (!['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key])) || bounds.width < 1 || bounds.height < 1) {
           throw new Error('The terminal returned invalid capture bounds.');
@@ -2021,8 +2021,12 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
   const clarification = transcriptClarification(text, activeSpeechVocabulary(), { confidence: transcript.confidence });
   if (clarification) {
     const state = readAgentState();
-    addAgentMessage(state, 'assistant', clarification.prompt, { proactive: true, voiceSummary: clarification.prompt });
-    interactionManagerFor(state).create({
+    addAgentMessage(state, 'assistant', clarification.prompt, {
+      proactive: true,
+      voiceSummary: clarification.prompt,
+      desktopSpeechPresented: supervisorVoiceMode
+    });
+    const interaction = interactionManagerFor(state).create({
       kind: 'supervisor_question',
       prompt: clarification.prompt,
       options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
@@ -2031,7 +2035,10 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
     });
     writeAgentState(state);
     broadcastAgentState();
-    return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider, clarification };
+    return {
+      ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider,
+      clarification: { ...clarification, interactionId: interaction.id }
+    };
   }
   return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider };
 }
