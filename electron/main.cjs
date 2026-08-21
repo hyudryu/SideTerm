@@ -43,7 +43,7 @@ const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs'
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
 const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
-const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
+const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -311,8 +311,8 @@ function saveSettings(update = {}) {
   if (wakeWord.length > 80) throw new Error('Wake word must be 80 characters or fewer.');
   const sttProvider = Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider;
   const sttProviderChanged = sttProvider !== current.sttProvider;
-  const requestedSttEndpoint = typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint;
-  const requestedSttRegion = typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion;
+  const requestedSttEndpoint = providerScopedSetting(current.sttEndpoint, update.sttEndpoint, sttProviderChanged, 1000);
+  const requestedSttRegion = providerScopedSetting(current.sttRegion, update.sttRegion, sttProviderChanged, 100);
   const next = {
     ...current,
     llmEnabled,
@@ -332,8 +332,8 @@ function saveSettings(update = {}) {
     wakeWord,
     sttProvider,
     sttModel: update.sttModel === DEFAULT_SETTINGS.sttModel ? update.sttModel : current.sttModel,
-    sttEndpoint: sttProviderChanged && requestedSttEndpoint === current.sttEndpoint ? '' : requestedSttEndpoint,
-    sttRegion: sttProviderChanged && requestedSttRegion === current.sttRegion ? '' : requestedSttRegion,
+    sttEndpoint: requestedSttEndpoint,
+    sttRegion: requestedSttRegion,
     githubCodexActorLogins: Array.isArray(update.githubCodexActorLogins)
       ? update.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
       : current.githubCodexActorLogins,
