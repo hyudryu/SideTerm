@@ -22,3 +22,11 @@ test('terminal capture hides credential-bearing and nonterminal overlays', () =>
   assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = overlay\.hidden/);
   assert.match(renderer, /supervisorDashboard\.hidden = true/);
 });
+
+test('whole-window capture uses the same overlay hide and restore lifecycle', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /requestRendererAction\('prepare-window-capture'/);
+  assert.match(main, /prepare-window-capture'[\s\S]*capturePage\(\)[\s\S]*finally \{[\s\S]*restore-terminal-capture/);
+  assert.match(renderer, /type === 'prepare-window-capture'[\s\S]*hideNonterminalCaptureOverlays\(\)/);
+});
