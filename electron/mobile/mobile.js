@@ -54,6 +54,8 @@ let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
 let pendingMobileCreateTimer = null;
+let mobileSttProviderName = 'NVIDIA Parakeet';
+let mobileSttLocation = 'local';
 
 function queueMobileAudio(message) {
   mobileAudioQueue = mobileAudioQueue
@@ -382,6 +384,8 @@ function connect() {
       document.querySelector('#mobile-tts-speed').value = String(message.settings?.ttsSpeed || 1);
       document.querySelector('#mobile-tts-speed-value').textContent = `${Number(message.settings?.ttsSpeed || 1).toFixed(2)}×`;
       document.querySelector('#mobile-settings-status').textContent = message.saved ? 'Saved' : '';
+      mobileSttProviderName = message.settings?.sttProviderName || 'NVIDIA Parakeet';
+      mobileSttLocation = message.settings?.sttLocation === 'cloud' ? 'cloud' : 'local';
     }
     if (message.type === 'mobile:settings:error') {
       document.querySelector('#mobile-settings-status').textContent = message.message;
@@ -481,7 +485,9 @@ function interruptMobileVoicePlayback() {
 
 async function submitVoiceBlob(blob, duration) {
   if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
-  document.querySelector('#mobile-wave-detail').textContent = 'Transcribing locally…';
+  document.querySelector('#mobile-wave-detail').textContent = mobileSttLocation === 'local'
+    ? 'Transcribing locally with Parakeet…'
+    : `Transcribing with ${mobileSttProviderName}…`;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   mobileTranscriptionInFlight = send({
     type: 'voice:transcribe',

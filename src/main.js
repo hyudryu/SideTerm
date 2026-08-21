@@ -1694,7 +1694,10 @@ async function processVoiceUtterance(blob, durationMs) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
-  label.textContent = 'Transcribing locally…';
+  const descriptor = (settings.sttProviders || []).find((provider) => provider.id === settings.sttProvider);
+  label.textContent = settings.sttProvider === 'parakeet'
+    ? 'Transcribing locally with Parakeet…'
+    : `Transcribing with ${descriptor?.name || settings.sttProvider}…`;
   try {
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
@@ -1727,7 +1730,7 @@ async function processVoiceUtterance(blob, durationMs) {
 
 async function startDesktopVoiceMode() {
   const status = await refreshSpeechStatus();
-  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Install both local speech models in Settings first.');
+  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Configure speech-to-text and install Pocket TTS in Settings first.');
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Microphone recording is unavailable in this desktop session.');
   voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   voiceAudioContext = new AudioContext();

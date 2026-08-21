@@ -2122,10 +2122,17 @@ function broadcastMobileSnapshot() {
 
 function mobileVoiceSettings(saved = false) {
   const settings = readSettingsRecord();
+  const descriptor = providerDescriptor(settings.sttProvider);
   return {
     type: 'mobile:settings',
     saved,
-    settings: { wakeWord: settings.wakeWord, ttsVoice: settings.ttsVoice, ttsSpeed: settings.ttsSpeed }
+    settings: {
+      wakeWord: settings.wakeWord,
+      ttsVoice: settings.ttsVoice,
+      ttsSpeed: settings.ttsSpeed,
+      sttProviderName: descriptor.name,
+      sttLocation: descriptor.location
+    }
   };
 }
 
