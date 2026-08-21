@@ -63,6 +63,8 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What is the supervisor status?'), true);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
   assert.equal(structuredStateSufficient('Summarize this session.'), true);
+  assert.equal(structuredStateSufficient('Is this session running?'), true);
+  assert.equal(structuredStateSufficient('Is this session stopped?'), true);
   assert.equal(structuredStateSufficient('What command is running in this session?'), false);
   assert.equal(structuredStateSufficient('What is visible in the window?'), false);
 });
@@ -81,6 +83,12 @@ test('structured collection payloads remain valid within the router summary limi
   assert.ok(result.summary.length <= 3900);
   assert.deepEqual(JSON.parse(result.summary), result.payload);
   assert.equal(result.payload.sessionCollection.total, 300);
+  assert.equal(result.payload.sessionCollection.truncated, true);
+});
+
+test('intentionally omitted session collections are marked incomplete', () => {
+  const result = fitSessionCollection({ sessionCollection: { total: 3 } }, [], { includeSessions: false });
+  assert.equal(result.payload.sessionCollection.returned, 0);
   assert.equal(result.payload.sessionCollection.truncated, true);
 });
 
