@@ -320,7 +320,7 @@ function saveSettings(update = {}) {
     && providerDescriptor(current.sttProvider).location === 'local'
     && providerDescriptor(next.sttProvider).location === 'cloud';
   writeSettingsRecord(next);
-  if (releaseLocalStt) stopSpeechWorker();
+  if (releaseLocalStt) void releaseLocalSpeechRecognition().catch(() => {});
   return publicSettings(next);
 }
 
@@ -1664,6 +1664,12 @@ function stopSpeechWorker() {
   speechWorker?.stop();
   speechWorker = null;
   speechTranscriptionInFlight = false;
+}
+
+async function releaseLocalSpeechRecognition() {
+  if (!speechWorker) return false;
+  await speechWorker.request('release-stt');
+  return true;
 }
 
 async function warmTextToSpeech() {
