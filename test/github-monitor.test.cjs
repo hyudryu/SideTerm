@@ -13,6 +13,7 @@ const {
   hasCodexThumbsUp,
   isActionableCodexComment,
   isCodexAuthor,
+  mergePullRequest,
   parsePullRequestUrl,
   parseJsonLines,
   pullRequestChanged,
@@ -27,6 +28,18 @@ test('GitHub monitor accepts only canonical pull request URLs', () => {
     owner: 'hyudryu', repo: 'SideTerm', number: 2, url: 'https://github.com/hyudryu/SideTerm/pull/2'
   });
   assert.throws(() => parsePullRequestUrl('https://github.com/hyudryu/SideTerm/issues/2'), /pull request URL/);
+});
+
+test('approved merge actions execute the canonical pull request once', async () => {
+  const calls = [];
+  const result = await mergePullRequest('https://github.com/hyudryu/SideTerm/pull/11', {
+    runGh: async (args, options) => { calls.push({ args, options }); return ''; }
+  });
+  assert.deepEqual(result, { merged: true, url: 'https://github.com/hyudryu/SideTerm/pull/11', number: 11 });
+  assert.deepEqual(calls, [{
+    args: ['pr', 'merge', 'https://github.com/hyudryu/SideTerm/pull/11', '--merge'],
+    options: { owner: 'hyudryu', timeout: 120_000 }
+  }]);
 });
 
 test('GitHub main-post reactions retain emoji, counts, and authors', () => {
