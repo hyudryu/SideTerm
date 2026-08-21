@@ -1,3 +1,5 @@
+const { visionEndpointConfigurationError } = require('./credentials.cjs');
+
 function extractResponseText(payload = {}) {
   const content = payload.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
@@ -50,6 +52,8 @@ function parseStructuredPerception(text) {
 
 async function analyzeScreenshot(image, options = {}) {
   if (!options.endpoint || !options.model) throw new Error('Visual inspection requires a compatible API endpoint and vision model.');
+  const endpointError = visionEndpointConfigurationError(options.endpoint);
+  if (endpointError) throw new Error(endpointError);
   const dataUrl = `data:image/png;base64,${Buffer.from(image).toString('base64')}`;
   const controller = new AbortController();
   const timeoutMs = Math.max(100, Math.min(120_000, Number(options.timeoutMs) || 30_000));

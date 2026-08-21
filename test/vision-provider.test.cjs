@@ -41,6 +41,12 @@ test('vision permits a keyless local endpoint and aborts stalled requests', asyn
   }), /timed out/);
 });
 
+test('vision refuses plaintext remote screenshot uploads', async () => {
+  await assert.rejects(analyzeScreenshot(Buffer.from('png'), {
+    endpoint: 'http://vision.example.test/v1/chat/completions', model: 'vision-model', apiKey: 'secret'
+  }), /must use HTTPS/);
+});
+
 test('vision sends a readable high-detail image only to the configured endpoint', async (context) => {
   const originalFetch = global.fetch;
   context.after(() => { global.fetch = originalFetch; });
