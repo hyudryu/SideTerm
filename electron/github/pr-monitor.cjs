@@ -260,8 +260,10 @@ function isCodexAuthor(author, actorLogins = ['chatgpt-codex-connector', 'codex'
 }
 
 function shouldPollPullRequest(pull) {
-  return String(pull?.state || '').toLowerCase() === 'open'
-    && !(pull?.headSha && pull?.codexApprovalHeadSha && sameGitRevision(pull.headSha, pull.codexApprovalHeadSha));
+  // Keep a lightweight observation loop for every open PR. An approval is not
+  // permanent: the reaction can be withdrawn and GitHub can advance the head
+  // without SideTerm seeing a local commit first.
+  return String(pull?.state || '').toLowerCase() === 'open';
 }
 
 function pullRequestChanged(previous, next) {

@@ -115,7 +115,7 @@ test('only open pull requests remain on the regular polling loop', () => {
   assert.equal(shouldPollPullRequest({ state: 'open' }), true);
   assert.equal(shouldPollPullRequest({ state: 'closed' }), false);
   assert.equal(shouldPollPullRequest({ state: 'merged' }), false);
-  assert.equal(shouldPollPullRequest({ state: 'open', headSha: 'abc', codexApprovalHeadSha: 'abc' }), false);
+  assert.equal(shouldPollPullRequest({ state: 'open', headSha: 'abc', codexApprovalHeadSha: 'abc' }), true);
   assert.equal(shouldPollPullRequest({ state: 'open', headSha: 'def', codexApprovalHeadSha: 'abc' }), true);
 });
 
