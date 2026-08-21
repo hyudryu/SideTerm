@@ -52,7 +52,11 @@ contextBridge.exposeInMainWorld('sideTerm', {
   },
   previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
-  transcribeSpeech: (bytes, mimeType) => ipcRenderer.invoke('voice:transcribe', { bytes, mimeType }),
+  transcribeSpeech: (bytes, mimeType, allowWithoutWakeWord = false) => ipcRenderer.invoke('voice:transcribe', {
+    bytes,
+    mimeType,
+    allowWithoutWakeWord: Boolean(allowWithoutWakeWord)
+  }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),
   resumeDesktopMedia: () => ipcRenderer.invoke('voice:resume-media'),
   onSpeechStatus: (callback) => subscribe('voice:status', callback)

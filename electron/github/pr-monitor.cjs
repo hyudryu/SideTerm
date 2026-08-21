@@ -1,4 +1,4 @@
-const { execFile } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,6 +9,7 @@ const PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/i;
 const REACTION_EMOJI = {
   '+1': '👍', '-1': '👎', laugh: '😄', hooray: '🎉', confused: '😕', heart: '❤️', rocket: '🚀', eyes: '👀'
 };
+const githubTokenCache = new Map();
 
 function parsePullRequestUrl(value) {
   const match = String(value || '').trim().match(PR_URL);
@@ -34,6 +35,42 @@ function githubCliError() {
   return error;
 }
 
+function githubRepositoryOwner(cwd) {
+  try {
+    const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+    return remote.match(/github\.com(?::|\/)([^/]+)\//i)?.[1] || '';
+  } catch {
+    return '';
+  }
+}
+
+function githubEnvironment(owner) {
+  const environment = { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1' };
+  if (!owner || environment.GH_TOKEN || environment.GITHUB_TOKEN) return environment;
+  if (!githubTokenCache.has(owner)) {
+    try {
+      const authEnvironment = { ...process.env };
+      delete authEnvironment.GH_TOKEN;
+      delete authEnvironment.GITHUB_TOKEN;
+      const token = execFileSync('gh', ['auth', 'token', '--hostname', 'github.com', '--user', owner], {
+        encoding: 'utf8',
+        env: authEnvironment,
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+      githubTokenCache.set(owner, token || null);
+    } catch {
+      githubTokenCache.set(owner, null);
+    }
+  }
+  const token = githubTokenCache.get(owner);
+  if (token) environment.GH_TOKEN = token;
+  return environment;
+}
+
 async function runGh(args, options = {}) {
   if (!githubCliAvailable()) throw githubCliError();
   try {
@@ -41,7 +78,7 @@ async function runGh(args, options = {}) {
       cwd: options.cwd,
       timeout: options.timeout || 20_000,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1' }
+      env: githubEnvironment(options.owner)
     });
     return stdout;
   } catch (error) {
@@ -51,7 +88,8 @@ async function runGh(args, options = {}) {
 }
 
 async function ghJson(endpoint) {
-  const output = await runGh(['api', endpoint, '--header', 'Accept: application/vnd.github+json']);
+  const owner = String(endpoint).match(/^repos\/([^/]+)\//)?.[1] || '';
+  const output = await runGh(['api', endpoint, '--header', 'Accept: application/vnd.github+json'], { owner });
   return JSON.parse(output || 'null');
 }
 
@@ -65,7 +103,8 @@ function parseJsonLines(output) {
 }
 
 async function ghCollection(endpoint) {
-  const output = await runGh(['api', endpoint, '--paginate', '--jq', '.[]', '--header', 'Accept: application/vnd.github+json']);
+  const owner = String(endpoint).match(/^repos\/([^/]+)\//)?.[1] || '';
+  const output = await runGh(['api', endpoint, '--paginate', '--jq', '.[]', '--header', 'Accept: application/vnd.github+json'], { owner });
   return parseJsonLines(output);
 }
 
@@ -85,9 +124,77 @@ function cleanComment(item, kind) {
 }
 
 function reactionSummary(reactions) {
-  const counts = new Map();
-  for (const reaction of reactions || []) counts.set(reaction.content, (counts.get(reaction.content) || 0) + 1);
-  return [...counts.entries()].filter(([, count]) => count > 0).map(([name, count]) => ({ name, emoji: REACTION_EMOJI[name] || name, count }));
+  const summaries = new Map();
+  for (const reaction of reactions || []) {
+    const name = String(reaction.content || '');
+    const summary = summaries.get(name) || { name, emoji: REACTION_EMOJI[name] || name, count: 0, authors: [] };
+    summary.count += 1;
+    const author = String(reaction.user?.login || '').trim();
+    if (author && !summary.authors.includes(author)) summary.authors.push(author);
+    summaries.set(name, summary);
+  }
+  return [...summaries.values()].filter((item) => item.count > 0);
+}
+
+function changedPullRequestComments(previous, next) {
+  const previousComments = new Map((previous?.comments || []).map((item) => [item.id, `${item.updatedAt}:${item.body}:${item.state}`]));
+  return (next?.comments || []).filter((item) => previousComments.get(item.id) !== `${item.updatedAt}:${item.body}:${item.state}`);
+}
+
+function commentRevisionKey(comment) {
+  return crypto.createHash('sha256').update(JSON.stringify([
+    comment?.id || '', comment?.updatedAt || '', comment?.body || '', comment?.state || ''
+  ])).digest('hex');
+}
+
+function hasCodexThumbsUp(pull) {
+  return (pull?.reactions || []).some((reaction) => reaction.name === '+1'
+    && reaction.count > 0
+    && (reaction.authors || []).some(isCodexAuthor));
+}
+
+function successfulGitCommit(output) {
+  const plain = String(output || '').replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '');
+  return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+([0-9a-f]{7,40})\]\s+[^\r\n]+/i)?.[1] || '';
+}
+
+function isActionableCodexComment(comment) {
+  if (!isCodexAuthor(comment?.author) || !String(comment?.body || '').trim()) return false;
+  return comment.kind !== 'review' || String(comment.state || '').toUpperCase() !== 'APPROVED';
+}
+
+function sameGitRevision(left, right) {
+  const first = String(left || '').toLowerCase();
+  const second = String(right || '').toLowerCase();
+  return Boolean(first && second && (first === second || first.startsWith(second) || second.startsWith(first)));
+}
+
+function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '') {
+  const approved = hasCodexThumbsUp(snapshot);
+  const wasApproved = hasCodexThumbsUp(previous);
+  let approvalHeadSha = String(previous?.codexApprovalHeadSha || '');
+  let promptedHeadSha = String(previous?.mergePromptedHeadSha || (previous?.mergePrompted ? previous?.headSha : '') || '');
+  let pendingHeadSha = String(pendingLocalHeadSha || previous?.pendingLocalHeadSha || '');
+
+  if (pendingHeadSha && sameGitRevision(pendingHeadSha, snapshot?.headSha)) pendingHeadSha = '';
+  if (!approved) {
+    approvalHeadSha = '';
+    promptedHeadSha = '';
+  } else if (!wasApproved) {
+    approvalHeadSha = String(snapshot?.headSha || '');
+  } else if (!approvalHeadSha) {
+    approvalHeadSha = String(previous?.headSha || snapshot?.headSha || '');
+  }
+
+  const ready = Boolean(approved && !pendingHeadSha && sameGitRevision(approvalHeadSha, snapshot?.headSha));
+  return {
+    codexApprovalHeadSha: approvalHeadSha,
+    mergePromptedHeadSha: promptedHeadSha,
+    mergePrompted: Boolean(promptedHeadSha),
+    pendingLocalHeadSha: pendingHeadSha,
+    ready,
+    shouldPrompt: ready && !sameGitRevision(promptedHeadSha, snapshot?.headSha)
+  };
 }
 
 async function fetchPullRequest(value) {
@@ -103,7 +210,7 @@ async function fetchPullRequest(value) {
   const comments = [
     ...(issueComments || []).map((item) => cleanComment(item, 'conversation')),
     ...(reviewComments || []).map((item) => cleanComment(item, 'review-comment')),
-    ...(reviews || []).filter((item) => item.body || item.state).map((item) => cleanComment(item, 'review'))
+    ...(reviews || []).filter((item) => String(item.body || '').trim()).map((item) => cleanComment(item, 'review'))
   ].sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)) || left.id.localeCompare(right.id));
   const result = {
     url: ref.url,
@@ -133,7 +240,7 @@ async function fetchPullRequest(value) {
 }
 
 async function discoverPullRequest(cwd) {
-  const output = await runGh(['pr', 'view', '--json', 'url', '--jq', '.url'], { cwd });
+  const output = await runGh(['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'], { cwd, owner: githubRepositoryOwner(cwd) });
   return parsePullRequestUrl(output.trim()).url;
 }
 
@@ -142,7 +249,7 @@ async function postPullRequestComment(value, body) {
   const output = await runGh([
     'api', '--method', 'POST', `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`,
     '-f', `body=${String(body || '').slice(0, 20_000)}`
-  ]);
+  ], { owner: ref.owner });
   const result = JSON.parse(output);
   return { id: result.id, url: result.html_url, body: result.body, createdAt: result.created_at };
 }
@@ -160,15 +267,23 @@ function pullRequestChanged(previous, next) {
 }
 
 module.exports = {
+  changedPullRequestComments,
+  commentRevisionKey,
   discoverPullRequest,
   fetchPullRequest,
   flattenPages,
   githubCliAvailable,
+  githubRepositoryOwner,
   isCodexAuthor,
+  isActionableCodexComment,
+  hasCodexThumbsUp,
   parsePullRequestUrl,
   parseJsonLines,
   postPullRequestComment,
   pullRequestChanged,
   reactionSummary,
-  shouldPollPullRequest
+  reconcileCodexApproval,
+  sameGitRevision,
+  shouldPollPullRequest,
+  successfulGitCommit
 };

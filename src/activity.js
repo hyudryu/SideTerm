@@ -3,6 +3,14 @@ export function isBareAgentLaunchCommand(command) {
   return /^(?:(?:sudo|env)\s+)*(?:\S*\/)?(?:codex|claude|hermes|gemini)(?:\s+--?[^\s]+)*$/i.test(value);
 }
 
+export function isForegroundSession({ sessionId, activeId, dashboardActive, documentVisible, windowFocused }) {
+  return Boolean(sessionId
+    && sessionId === activeId
+    && !dashboardActive
+    && documentVisible
+    && windowFocused);
+}
+
 export function terminalWheelAmount({ ctrlKey, deltaY }) {
   if (ctrlKey || !Number.isFinite(deltaY) || deltaY === 0) return null;
   const lineCount = Math.max(1, Math.min(12, Math.round(Math.abs(deltaY) / 36)));

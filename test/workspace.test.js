@@ -5,6 +5,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
   reorderGroup,
@@ -132,4 +133,12 @@ test('legacy sessions retain an unknown creation-time tie', () => {
   const lookup = new Map(parsed.sessions.map((session) => [session.id, session]));
   parsed.groups[0].sortBy = 'created';
   assert.deepEqual(sortedSessionIds(parsed.groups[0], lookup), ['b', 'a']);
+});
+
+test('workspace restoration chooses the newest valid browser or native copy', () => {
+  const native = { savedAt: 10, groups: [{ id: 'native' }] };
+  const browser = { savedAt: 20, groups: [{ id: 'browser' }] };
+  assert.equal(newestSavedWorkspace(native, browser), browser);
+  assert.equal(newestSavedWorkspace(browser, native), browser);
+  assert.equal(newestSavedWorkspace(native, null), native);
 });

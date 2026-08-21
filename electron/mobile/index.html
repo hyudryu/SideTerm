@@ -13,16 +13,28 @@
     <link rel="stylesheet" href="./xterm.css">
     <link rel="stylesheet" href="./mobile.css">
     <script defer src="./xterm.js"></script>
+    <script defer src="./terminal-frame.js"></script>
+    <script defer src="./terminal-submit.js"></script>
     <script defer src="./mobile.js"></script>
   </head>
   <body>
     <div id="mobile-app">
       <aside id="drawer" aria-label="Terminal sessions">
         <header><img src="./icon.png" alt=""><div><strong>SideTerm</strong><span>Mobile sessions</span></div><button id="drawer-close" aria-label="Close sessions">×</button></header>
-        <nav id="mobile-sessions"></nav>
+        <nav><div id="mobile-workspace-actions"><button id="mobile-new-group" type="button">+ Group</button><button id="mobile-new-session" type="button">+ Session</button></div><div id="mobile-sessions"></div></nav>
         <footer><button id="mobile-settings-button" type="button">⚙ Settings</button><span id="connection-detail">Connecting…</span><button id="install-button" hidden>Install app</button></footer>
       </aside>
       <button id="drawer-shade" aria-label="Close sessions" hidden></button>
+      <div id="mobile-create-backdrop" hidden>
+        <form id="mobile-create-sheet">
+          <header><div><strong id="mobile-create-title">New session</strong><span id="mobile-create-subtitle">Create it in an existing group</span></div><button id="mobile-create-close" type="button" aria-label="Close creation form">×</button></header>
+          <label id="mobile-create-group-name-row" hidden><span>Group name</span><input id="mobile-create-group-name" type="text" maxlength="32" autocomplete="off" placeholder="Project name"></label>
+          <label id="mobile-create-group-row"><span>Group</span><select id="mobile-create-group"></select></label>
+          <label><span id="mobile-create-name-label">Session name (optional)</span><input id="mobile-create-name" type="text" maxlength="64" autocomplete="off" placeholder="Terminal"></label>
+          <label><span>Working directory (optional)</span><input id="mobile-create-cwd" type="text" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="/home/you/project"></label>
+          <footer><span id="mobile-create-status"></span><button id="mobile-create-cancel" type="button">Cancel</button><button id="mobile-create-submit" type="submit">Create</button></footer>
+        </form>
+      </div>
       <div id="mobile-settings-backdrop" hidden>
         <form id="mobile-settings-sheet">
           <header><div><strong>Settings</strong><span>Mobile voice preferences</span></div><button id="mobile-settings-close" type="button" aria-label="Close settings">×</button></header>

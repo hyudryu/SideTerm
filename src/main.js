@@ -3,9 +3,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, isForegroundSession, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
+import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES, shouldRearmAiSummary } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
 import { sessionDisplayLabels } from './session-labels.js';
+import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -16,6 +18,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
   reorderGroup,
@@ -32,7 +35,9 @@ const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
 const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
+const AI_SUMMARY_FAILURE_COOLDOWN_MS = 5 * 60_000;
 const MAX_CONTEXT_CHARS = 16_000;
+const VOICE_REPLY_WINDOW_MS = 30_000;
 const GROUP_SORT_OPTIONS = [
   { value: 'default', label: 'Default', initialDirection: 'asc' },
   { value: 'created', label: 'Date created', initialDirection: 'desc' },
@@ -40,8 +45,10 @@ const GROUP_SORT_OPTIONS = [
   { value: 'name', label: 'Name', initialDirection: 'asc' }
 ];
 const sessions = new Map();
-const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
-  ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
+const restoredWorkspace = newestSavedWorkspace(
+  parseSavedWorkspace(api.getWorkspaceSync()),
+  parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY))
+);
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -54,6 +61,7 @@ let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
 let settings = {
+  appVersion: '',
   llmEnabled: false,
   aiInitialContextEnabled: true,
   aiContinuousContextEnabled: true,
@@ -82,9 +90,14 @@ let voiceAudioContext = null;
 let voiceMonitorFrame = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
+let voiceTranscriptionInFlight = false;
 let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
+let voiceReplyUntil = 0;
+let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
+let aiSummaryGlobalInFlight = false;
+let aiSummaryCooldownUntil = 0;
 
 document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
@@ -234,7 +247,7 @@ document.querySelector('#app').innerHTML = `
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
               <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
-              <p class="settings-note">Recommended: Whisper turbo for accurate multilingual coding terms on this GPU, or Distil-Whisper large-v3 for lighter English-only use. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
+              <p class="settings-note">Recommended: Whisper turbo for accurate English coding terms on this GPU, or Distil-Whisper large-v3 for a lighter English model. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
@@ -246,7 +259,7 @@ document.querySelector('#app').innerHTML = `
               <button id="reset-hotkeys" class="text-button" type="button">Reset keyboard shortcuts</button>
             </section>
           </div>
-          <footer class="settings-footer"><span id="settings-status"></span><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" type="submit">Save settings</button></footer>
+          <footer class="settings-footer"><span id="settings-version" class="settings-version"></span><span id="settings-status"></span><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" type="submit">Save settings</button></footer>
         </form>
       </section>
     </div>
@@ -383,6 +396,7 @@ function renderHotkeyInputs() {
 
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
+  document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
   document.querySelector('#ai-continuous-context-enabled').checked = settings.aiContinuousContextEnabled;
@@ -679,6 +693,9 @@ function appendSessionContext(session, text) {
   if (!plain) return;
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
   session.contextRevision += 1;
+  if (shouldRearmAiSummary(session.aiSummaryFailureCount, session.aiSummaryFailureRevision, session.contextRevision)) {
+    scheduleAiSummary(session);
+  }
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
 }
@@ -746,6 +763,11 @@ function armAiSummaryTimer(session, mode, delayMs) {
 
 function scheduleAiSummary(session) {
   if (sessions.get(session.id) !== session || !settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
+  if (session.aiSummaryFailureCount >= MAX_AI_SUMMARY_FAILURES) {
+    if (session.aiSummaryFailureRevision === session.contextRevision) return;
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
+  }
   if (!session.aiInitialSummaryDone) {
     if (settings.aiInitialContextEnabled) {
       armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
@@ -761,6 +783,8 @@ function scheduleAiSummary(session) {
 
 function syncAiContextSchedules() {
   for (const session of sessions.values()) {
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
     const preserveInitialDeadline = session.aiSummaryTimer
       && session.aiSummaryMode === 'initial'
       && settings.llmEnabled
@@ -784,6 +808,14 @@ function aiSummaryModeEnabled(mode) {
 }
 
 async function requestAiSummary(session, mode) {
+  if (Date.now() < aiSummaryCooldownUntil) {
+    armAiSummaryTimer(session, mode, Math.max(1_000, aiSummaryCooldownUntil - Date.now()));
+    return;
+  }
+  if (aiSummaryGlobalInFlight) {
+    armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
+    return;
+  }
   if (session.aiSummaryInFlight) {
     armAiSummaryTimer(session, mode, 1_000);
     return;
@@ -802,9 +834,11 @@ async function requestAiSummary(session, mode) {
     return;
   }
   session.aiSummaryInFlight = true;
+  aiSummaryGlobalInFlight = true;
   const summarizedContext = session.context;
   const summarizedRevision = session.contextRevision;
   let completed = false;
+  let requestFailed = false;
   try {
     const result = await api.summarizeSession({
       context: summarizedContext,
@@ -812,26 +846,45 @@ async function requestAiSummary(session, mode) {
       requestTimeoutMs: AI_SUMMARY_REQUEST_TIMEOUT_MS
     });
     if (sessions.get(session.id) !== session || session.exited || !aiSummaryModeEnabled(mode)) return;
-    if (!result) return;
+    if (!result) {
+      requestFailed = true;
+      session.aiSummaryFailureCount += 1;
+      session.aiSummaryFailureRevision = summarizedRevision;
+      return;
+    }
     session.displayName = result.name;
     session.summary = result.summary;
     session.lastSummarizedRevision = summarizedRevision;
     session.aiErrorShown = false;
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
     completed = true;
+    aiSummaryCooldownUntil = 0;
     updateSessionItem(session);
     resortSessionGroupByName(session);
     schedulePersist();
   } catch (error) {
+    requestFailed = true;
+    session.aiSummaryFailureCount += 1;
+    session.aiSummaryFailureRevision = summarizedRevision;
+    aiSummaryCooldownUntil = Date.now() + AI_SUMMARY_FAILURE_COOLDOWN_MS;
     if (!session.aiErrorShown) {
       session.aiErrorShown = true;
       showToast(`AI naming: ${error.message}`);
     }
   } finally {
     session.aiSummaryInFlight = false;
+    aiSummaryGlobalInFlight = false;
     if (sessions.get(session.id) !== session || session.exited) return;
     if (!aiSummaryModeEnabled(mode)) return;
     if (!completed) {
-      armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
+      const retryDelay = aiSummaryRetryDelay(session.aiSummaryFailureCount, {
+        baseDelayMs: AI_SUMMARY_RETRY_DELAY_MS,
+        cooldownDelayMs: aiSummaryCooldownUntil - Date.now()
+      });
+      if (!requestFailed || retryDelay !== null) {
+        armAiSummaryTimer(session, mode, retryDelay ?? AI_SUMMARY_RETRY_DELAY_MS);
+      }
       return;
     }
     if (mode === 'initial') session.aiInitialSummaryDone = true;
@@ -926,6 +979,7 @@ function persistWorkspaceNow() {
   }));
   const serializedWorkspace = JSON.stringify({
     version: WORKSPACE_VERSION,
+    savedAt: Date.now(),
     groups: savedGroups,
     sessions: savedSessions,
     activeId,
@@ -951,6 +1005,7 @@ function persistWorkspaceNow() {
       cwd: session.cwd,
       links: session.links.map((link) => link.url),
       summary: session.summary,
+      agent: session.agent,
       attentionCycleId: session.attentionCycleId,
       notified: session.notified,
       busy: sessions.get(session.id)?.busy
@@ -1120,7 +1175,7 @@ function handleProactiveMessages() {
     if (spokenProactiveMessageIds.has(message.id)) continue;
     spokenProactiveMessageIds.add(message.id);
     const brief = message.voiceSummary || message.text;
-    if (desktopVoiceMode) void speakAgentResponse(brief);
+    if (desktopVoiceMode) void queueAgentSpeech(brief);
     else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
   }
 }
@@ -1168,7 +1223,7 @@ function renderAgentState(nextState) {
   if (!(agentState.pullRequests || []).length) {
     const empty = document.createElement('span');
     empty.className = 'agent-chat-empty';
-    empty.textContent = 'No pull requests monitored yet. SideTerm starts after a successful git push.';
+    empty.textContent = 'No pull requests monitored yet. SideTerm starts after a successful commit or push.';
     pullRequests.append(empty);
   }
   for (const pull of [...(agentState.pullRequests || [])].reverse()) {
@@ -1278,7 +1333,7 @@ function renderAgentState(nextState) {
     row.append(copy, deny, approve);
     confirmations.append(row);
   }
-  if (supervisorDashboardActive && agentState.enabled && unread.length && !agentCatchUpInFlight) {
+  if (supervisorDashboardActive && agentState.enabled && agentState.status !== 'thinking' && unread.length && !agentCatchUpInFlight) {
     void runAgentCatchUpQueue();
   }
 }
@@ -1313,8 +1368,11 @@ async function runAgentCatchUpQueue() {
     while (supervisorDashboardActive) {
       const result = await api.catchUpAgent({ voice: desktopVoiceMode });
       renderAgentState(result.state);
-      if (!result.response) break;
-      const speechCompleted = await speakAgentResponse(result.speech || result.response);
+      if (!result.response) {
+        if (result.hasMore) continue;
+        break;
+      }
+      const speechCompleted = await queueAgentSpeech(result.speech || result.response);
       if (!speechCompleted) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
@@ -1324,7 +1382,6 @@ async function runAgentCatchUpQueue() {
 }
 
 function closeAgentPanel() {
-  if (desktopVoiceMode) stopDesktopVoiceMode();
   const foreground = sessions.get(activeId);
   if (foreground) foreground.notifyWhenIdle = false;
   supervisorDashboardActive = false;
@@ -1345,7 +1402,7 @@ async function submitAgentChat(text, { spokenRequest = false } = {}) {
   try {
     const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest });
     renderAgentState(result.state);
-    await speakAgentResponse(result.speech || result.response);
+    await queueAgentSpeech(result.speech || result.response);
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));
@@ -1355,7 +1412,11 @@ async function submitAgentChat(text, { spokenRequest = false } = {}) {
 async function handleAgentAction({ requestId, type, payload }) {
   try {
     if (type === 'create-session') {
-      let group = payload.groupName
+      let group = payload.createGroup
+        ? null
+        : payload.groupId
+          ? groups.find((item) => item.id === payload.groupId)
+          : payload.groupName
         ? groups.find((item) => item.title.toLowerCase() === String(payload.groupName).toLowerCase())
         : getGroup(activeGroupId);
       if (!group) {
@@ -1363,10 +1424,11 @@ async function handleAgentAction({ requestId, type, payload }) {
         groups.push(group);
         renderGroups();
       }
+      const requestedName = String(payload.name || '').trim();
       const session = await addSession(payload.cwd, {
         groupId: group.id,
-        title: String(payload.name).slice(0, 64),
-        manualTitle: true
+        title: requestedName ? requestedName.slice(0, 64) : `Terminal ${sessions.size + 1}`,
+        manualTitle: Boolean(requestedName)
       });
       api.resolveAgentAction(requestId, { id: session.id, title: session.title, group: group.title, cwd: session.cwd });
       return;
@@ -1487,32 +1549,54 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text) {
+async function speakAgentResponse(text, { openReplyWindow = true } = {}) {
   if (!desktopVoiceMode) return true;
   try {
-    return await playSpeechAudio(await api.synthesizeSpeech(text));
+    const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
+    if (completed && openReplyWindow) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    return completed;
   } catch (error) {
     showToast(`Voice: ${error.message}`);
     return false;
   }
 }
 
+function queueAgentSpeech(text, options = {}) {
+  const spokenText = String(text || '').trim();
+  if (!spokenText) return Promise.resolve(true);
+  agentSpeechQueue = agentSpeechQueue
+    .catch(() => false)
+    .then(() => desktopVoiceMode ? speakAgentResponse(spokenText, options) : true);
+  return agentSpeechQueue;
+}
+
 async function processVoiceUtterance(blob, durationMs) {
-  if (!desktopVoiceMode || voiceCaptureMuted || durationMs < 650 || blob.size < 1000) return;
+  if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
+  voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
   label.textContent = 'Transcribing locally…';
   try {
-    const transcript = await api.transcribeSpeech(new Uint8Array(await blob.arrayBuffer()), blob.type);
+    const transcript = await api.transcribeSpeech(
+      new Uint8Array(await blob.arrayBuffer()),
+      blob.type,
+      Date.now() <= voiceReplyUntil
+    );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
       return;
     }
+    voiceReplyUntil = 0;
     document.querySelector('#agent-chat-input').value = transcript.text;
     await submitAgentChat(transcript.text, { spokenRequest: true });
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   } finally {
-    if (desktopVoiceMode) label.textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
+    voiceTranscriptionInFlight = false;
+    if (desktopVoiceMode) {
+      label.textContent = Date.now() <= voiceReplyUntil
+        ? 'Listening for your reply'
+        : `Listening for “${settings.wakeWord || 'speech'}”`;
+    }
   }
 }
 
@@ -1601,6 +1685,8 @@ async function startDesktopVoiceMode() {
 function stopDesktopVoiceMode() {
   interruptVoicePlayback();
   desktopVoiceMode = false;
+  voiceTranscriptionInFlight = false;
+  voiceReplyUntil = 0;
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -1920,12 +2006,7 @@ function activateSession(id) {
       renderGroups();
     }
   }
-  const acknowledgedNotification = next.notified;
-  const acknowledgedCycleId = next.attentionCycleId;
-  next.notified = false;
-  next.attentionCycleId = '';
-  next.notifyWhenIdle = false;
-  if (acknowledgedNotification && !next.busy) next.activityArmed = false;
+  acknowledgeSessionNotification(next);
   activeTitle.textContent = sessionDisplayLabels(next, settings.llmEnabled && settings.apiUrl && settings.model).primary;
   activeSubtitle.textContent = next.exited
     ? `${next.shell} · stopped · ${next.cwd}`
@@ -1933,9 +2014,6 @@ function activateSession(id) {
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
   schedulePersist();
-  if (acknowledgedNotification && acknowledgedCycleId) {
-    void api.acknowledgeSessionAttention(next.id, acknowledgedCycleId).catch(() => {});
-  }
   requestAnimationFrame(() => {
     fitSession(next);
     next.terminal.focus();
@@ -1983,7 +2061,13 @@ function cycleSession(direction) {
 }
 
 function isSessionForeground(session) {
-  return !supervisorDashboardActive && session?.id === activeId;
+  return isForegroundSession({
+    sessionId: session?.id,
+    activeId,
+    dashboardActive: supervisorDashboardActive,
+    documentVisible: document.visibilityState === 'visible',
+    windowFocused: document.hasFocus()
+  });
 }
 
 function markSessionNotification(session) {
@@ -1995,6 +2079,26 @@ function markSessionNotification(session) {
   updateSessionItem(session);
   updateVisualState();
   schedulePersist();
+}
+
+function acknowledgeSessionNotification(session) {
+  if (!session) return false;
+  session.notifyWhenIdle = false;
+  if (!session.notified) return false;
+  const cycleId = session.attentionCycleId;
+  session.notified = false;
+  session.attentionCycleId = '';
+  if (!session.busy) session.activityArmed = false;
+  updateSessionItem(session);
+  updateVisualState();
+  schedulePersist();
+  if (cycleId) void api.acknowledgeSessionAttention(session.id, cycleId).catch(() => {});
+  return true;
+}
+
+function acknowledgeActiveSessionOnFocus() {
+  const session = sessions.get(activeId);
+  if (session && isSessionForeground(session)) acknowledgeSessionNotification(session);
 }
 
 function visibleTerminalText(terminal) {
@@ -2146,6 +2250,10 @@ async function addSession(cwd, options = {}) {
     letterSpacing: 0.1,
     lineHeight: 1.15,
     scrollback: 10000,
+    linkHandler: {
+      activate: (event, text) => openTerminalLink(event, text, api.openExternal),
+      allowNonHttpProtocols: false
+    },
     theme: {
       background: '#0c0c0c', foreground: '#f2f2f2', cursor: '#f2f2f2', cursorAccent: '#0c0c0c', selectionBackground: '#264f78',
       black: '#0c0c0c', red: '#c50f1f', green: '#13a10e', yellow: '#c19c00', blue: '#0037da', magenta: '#881798', cyan: '#3a96dd', white: '#cccccc',
@@ -2155,6 +2263,7 @@ async function addSession(cwd, options = {}) {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open(pane);
+  terminal.registerLinkProvider(createTerminalLinkProvider(terminal, api.openExternal));
 
   const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
   const session = {
@@ -2198,6 +2307,8 @@ async function addSession(cwd, options = {}) {
     aiSummaryDueAt: 0,
     aiSummaryInFlight: false,
     aiErrorShown: false,
+    aiSummaryFailureCount: 0,
+    aiSummaryFailureRevision: 0,
     aiInitialSummaryDone: typeof options.aiInitialSummaryDone === 'boolean'
       ? options.aiInitialSummaryDone
       : Boolean(options.summary || restoringWorkspace),
@@ -2536,6 +2647,10 @@ api.onExit(({ id, exitCode }) => {
 
 new ResizeObserver(fitActive).observe(terminalStack);
 window.addEventListener('resize', fitActive);
+window.addEventListener('focus', acknowledgeActiveSessionOnFocus);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') acknowledgeActiveSessionOnFocus();
+});
 collapseButton.addEventListener('click', toggleSidebar);
 newSessionButton.addEventListener('click', () => void addSession(sessions.get(activeId)?.cwd, { groupId: activeGroupId }));
 document.querySelector('#new-group').addEventListener('click', () => void createNewGroup());
@@ -2689,7 +2804,6 @@ document.querySelector('#desktop-voice-toggle').addEventListener('click', async 
   }
   try {
     await startDesktopVoiceMode();
-    void runAgentCatchUpQueue();
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   }
@@ -2701,8 +2815,8 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text } = {}) => {
-  if (desktopVoiceMode) void speakAgentResponse(String(text || ''));
+api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
+  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
