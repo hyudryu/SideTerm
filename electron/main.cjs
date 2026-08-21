@@ -39,7 +39,7 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
-const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
+const { audioFileExtension, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
@@ -49,6 +49,7 @@ const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInte
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
+const { inferEventKind } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
@@ -335,6 +336,10 @@ function saveSettings(update = {}) {
   if (personality.length > 2000) throw new Error('Personality must be 2,000 characters or fewer.');
   if (agentInstructions.length > 8000) throw new Error('Agent instructions must be 8,000 characters or fewer.');
   if (wakeWord.length > 80) throw new Error('Wake word must be 80 characters or fewer.');
+  const sttProvider = Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider;
+  const sttProviderChanged = sttProvider !== current.sttProvider;
+  const requestedSttEndpoint = typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint;
+  const requestedSttRegion = typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion;
   const next = {
     ...current,
     llmEnabled,
@@ -354,10 +359,10 @@ function saveSettings(update = {}) {
     personality,
     agentInstructions,
     wakeWord,
-    sttProvider: Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider,
+    sttProvider,
     sttModel: update.sttModel === DEFAULT_SETTINGS.sttModel ? update.sttModel : current.sttModel,
-    sttEndpoint: typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint,
-    sttRegion: typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion,
+    sttEndpoint: sttProviderChanged && requestedSttEndpoint === current.sttEndpoint ? '' : requestedSttEndpoint,
+    sttRegion: sttProviderChanged && requestedSttRegion === current.sttRegion ? '' : requestedSttRegion,
     githubCodexActorLogins: Array.isArray(update.githubCodexActorLogins)
       ? update.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
       : current.githubCodexActorLogins,
@@ -573,7 +578,8 @@ function readAgentState() {
         text: String(item?.text || '').slice(0, 20_000),
         createdAt: Number(item?.createdAt) || Date.now(),
         proactive: Boolean(item?.proactive),
-        voiceSummary: String(item?.voiceSummary || '').slice(0, 1000)
+        voiceSummary: String(item?.voiceSummary || '').slice(0, 1000),
+        desktopSpeechPresented: Boolean(item?.desktopSpeechPresented)
       })) : [],
       notifications: Array.isArray(parsed.notifications)
         ? markSupersededNotificationsRead(parsed.notifications.slice(-240).map((item) => normalizeSupervisorEvent(item)))
@@ -671,14 +677,6 @@ function interactionManagerFor(state) {
 
 function watchManagerFor(state) {
   return new WatchManager(state.watches);
-}
-
-function inferEventKind({ summary = '', context = '' } = {}) {
-  const text = `${summary}\n${context}`;
-  if (/\b(?:needs?|requires?|waiting for)\s+(?:your\s+)?(?:input|answer|choice|approval)\b/i.test(text)) return 'INPUT_REQUIRED';
-  if (/\b(?:blocked|cannot continue|can.t proceed)\b/i.test(text)) return 'BLOCKED';
-  if (/\b(?:failed|error|tests? failing|failure)\b/i.test(text)) return 'FAILED';
-  return 'COMPLETED';
 }
 
 function enqueueSupervisorEvent(state, value) {
@@ -1111,6 +1109,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   const session = sessionId ? sessions.get(sessionId) : null;
   const metadata = sessionId ? mobileWorkspace.sessions.find((item) => item.id === sessionId) : null;
   if (sessionId && !session && !metadata) throw new Error('Session not found. Call list_sessions to get an exact session ID.');
+  if (sessionId && !session) throw new Error('That session is stopped and has no live terminal to inspect.');
   let capturedImage = null;
   const screenshot = async () => {
     if (capturedImage) return capturedImage;
@@ -1277,12 +1276,18 @@ const supervisorActions = {
   watchList() {
     return readAgentState().watches;
   },
-  watchCreate(input) {
-    const state = readAgentState();
-    const watch = watchManagerFor(state).create(input);
-    writeAgentState(state);
-    broadcastAgentState();
-    return watch;
+  async watchCreate(input) {
+    if (input.kind !== 'github_codex_review') throw new Error('Generic watches need a concrete evaluator and are not available yet.');
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.repo) || Number(input.prNumber) < 1) {
+      throw new Error('GitHub review watches require an exact owner/repository and pull request number.');
+    }
+    const url = `https://github.com/${input.repo}/pull/${Number(input.prNumber)}`;
+    const snapshot = await fetchPullRequest(url);
+    updateMonitoredPullRequest(snapshot, '', { notify: false });
+    // A second reconciliation evaluates an approval that already existed when
+    // the watch was created and enrolls the target in the ordinary poll queue.
+    updateMonitoredPullRequest(snapshot, '', { notify: true });
+    return readAgentState().watches.find((item) => item.kind === input.kind && item.repo === input.repo && item.prNumber === Number(input.prNumber));
   },
   watchCancel({ watchId }) {
     const state = readAgentState();
@@ -1337,7 +1342,8 @@ function addAgentMessage(state, role, text, extra = {}) {
     text: String(text).slice(0, 20_000),
     createdAt: Date.now(),
     proactive: Boolean(extra.proactive),
-    voiceSummary: String(extra.voiceSummary || '').slice(0, 1000)
+    voiceSummary: String(extra.voiceSummary || '').slice(0, 1000),
+    desktopSpeechPresented: Boolean(extra.desktopSpeechPresented)
   });
   if (state.messages.length > 240) state.messages.splice(0, state.messages.length - 240);
 }
@@ -1403,7 +1409,11 @@ async function performSupervisorChat(text, {
     const needsEnrichment = automatic && result.text.trim() === 'NEEDS_ENRICHMENT';
     const suppressed = automatic && (isNoUpdateResponse(result.text) || needsEnrichment);
     if (!suppressed) {
-      addAgentMessage(latest, 'assistant', result.text, proactive ? { proactive: true, voiceSummary: speechSummary(result.text) } : {});
+      addAgentMessage(latest, 'assistant', result.text, proactive ? {
+        proactive: true,
+        voiceSummary: speechSummary(result.text),
+        desktopSpeechPresented: voice && supervisorVoiceMode
+      } : {});
     }
     for (const notification of latest.notifications) {
       if (!needsEnrichment && unread.some((item) => item.id === notification.id)) notification.read = true;
@@ -1540,7 +1550,11 @@ async function runProactiveCatchUp() {
       if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
       return 'ran';
     }
-    addAgentMessage(state, 'assistant', presentation, { proactive: true, voiceSummary: presentation });
+    addAgentMessage(state, 'assistant', presentation, {
+      proactive: true,
+      voiceSummary: presentation,
+      desktopSpeechPresented: voice && supervisorVoiceMode
+    });
     eventBusFor(state).transition(event.id, 'acknowledged');
     writeAgentState(state);
     broadcastAgentState();
@@ -1573,12 +1587,21 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
       hasMore: false
     };
   }
-  const result = await chatWithSupervisor(catchUpPrompt(notification, remainingCount), {
+  const prompt = catchUpPrompt(notification, remainingCount);
+  let result = await chatWithSupervisor(prompt, {
     synthetic: true,
     notificationIds: [notification.id],
     voice,
     automatic: true
   });
+  if (result.needsEnrichment) {
+    result = await chatWithSupervisor(prompt, {
+      synthetic: true,
+      notificationIds: [notification.id],
+      voice,
+      automatic: false
+    });
+  }
   const remaining = pendingNotifications(readAgentState().notifications).length;
   return {
     ...result,
@@ -1886,18 +1909,25 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   const descriptor = providerDescriptor(settings.sttProvider);
   if (descriptor.location === 'cloud') {
     const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
-    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${/ogg/i.test(mimeType) ? 'ogg' : /wav/i.test(mimeType) ? 'wav' : 'webm'}`);
+    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${audioFileExtension(mimeType)}`);
     const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
+    const pcmPath = path.join(outputDirectory, `${crypto.randomUUID()}.pcm`);
     speechTranscriptionInFlight = true;
     try {
       let providerAudio = bytes;
       let providerMimeType = mimeType;
-      if (settings.sttProvider === 'aws' && !/^(?:audio\/ogg|audio\/wav)/i.test(mimeType)) {
+      if (settings.sttProvider === 'aws' || settings.sttProvider === 'google') {
         fs.mkdirSync(outputDirectory, { recursive: true });
         fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
-        await convertToSpeechWav(inputPath, wavPath);
-        providerAudio = fs.readFileSync(wavPath);
-        providerMimeType = 'audio/wav';
+        if (settings.sttProvider === 'aws') {
+          await convertToSpeechPcm(inputPath, pcmPath);
+          providerAudio = fs.readFileSync(pcmPath);
+          providerMimeType = 'audio/pcm';
+        } else {
+          await convertToSpeechWav(inputPath, wavPath);
+          providerAudio = fs.readFileSync(wavPath);
+          providerMimeType = 'audio/wav';
+        }
       }
       const transcript = await transcribeCloud(settings.sttProvider, providerAudio, {
         credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
@@ -1908,6 +1938,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
       speechTranscriptionInFlight = false;
       try { fs.unlinkSync(inputPath); } catch {}
       try { fs.unlinkSync(wavPath); } catch {}
+      try { fs.unlinkSync(pcmPath); } catch {}
     }
   }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';
