@@ -53,13 +53,17 @@ function isNoUpdateResponse(value) {
   return String(value || '').trim().replace(/[.!]+$/, '').toUpperCase() === 'NO_UPDATE';
 }
 
-function isAutomaticPresenterSentinel(value) {
+function automaticPresenterSentinel(value) {
   const normalized = String(value || '').trim().replace(/[.!]+$/, '').toUpperCase();
-  return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT';
+  return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT' ? normalized : '';
+}
+
+function isAutomaticPresenterSentinel(value) {
+  return Boolean(automaticPresenterSentinel(value));
 }
 
 function shouldScheduleWorkspaceCatchUp({ addedCount = 0, unreadCount = 0, initialized = false } = {}) {
   return addedCount > 0 || (!initialized && unreadCount > 0);
 }
 
-module.exports = { catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };
+module.exports = { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };
