@@ -1,6 +1,7 @@
-:root { color-scheme: dark; font-family: "Segoe UI", system-ui, sans-serif; color: #f2f2f2; background: #0c0c0c; --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }
+:root { color-scheme: dark; font-family: "Segoe UI", system-ui, sans-serif; color: #f2f2f2; background: #0c0c0c; --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 * { box-sizing: border-box; }
 html, body, #mobile-app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button, input, select, textarea { touch-action: manipulation; }
 button { color: inherit; font: inherit; -webkit-tap-highlight-color: transparent; }
 #mobile-app { display: grid; background: #0c0c0c; }
 main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0, 1fr); min-width: 0; min-height: 0; }
@@ -22,7 +23,7 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 #mobile-terminal .xterm { height: 100%; touch-action: none; }
 #mobile-terminal .xterm-viewport { overscroll-behavior: contain; scrollbar-width: thin; }
 #mobile-input-bar { display: grid; grid-template-columns: minmax(0, 1fr) 58px; align-items: end; gap: 7px; width: 100%; min-width: 0; padding: 6px 7px; background: #151515; border-top: 1px solid rgba(255,255,255,.08); }
-#mobile-input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; max-height: 86px; padding: 9px 11px; resize: none; overflow-y: auto; color: #f2f2f2; background: #242424; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; outline: none; font: 13px/1.35 "Cascadia Code", "Ubuntu Mono", ui-monospace, monospace; }
+#mobile-input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; max-height: 86px; padding: 8px 11px; resize: none; overflow-y: auto; color: #f2f2f2; background: #242424; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; outline: none; font: 16px/1.3 "Cascadia Code", "Ubuntu Mono", ui-monospace, monospace; }
 #mobile-input:focus { border-color: #60cdff; box-shadow: 0 0 0 2px rgba(96,205,255,.11); }
 #mobile-input-bar button { width: 58px; height: 38px; padding: 0; color: #071319; background: #60cdff; border: 0; border-radius: 8px; font-size: 12px; font-weight: 700; }
 #mobile-input-bar button:active { background: #8edcff; transform: translateY(1px); }
@@ -64,7 +65,7 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 .mobile-confirmation button { height: 30px; padding: 0 9px; color: #ddd; background: #303030; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; font-size: 9px; }
 .mobile-confirmation button:last-child { color: #071319; background: #60cdff; border-color: #60cdff; }
 #mobile-agent-form { display: grid; grid-template-columns: minmax(0, 1fr) 58px; align-items: end; gap: 7px; }
-#mobile-agent-input { width: 100%; min-width: 0; min-height: 42px; max-height: 100px; padding: 9px 10px; resize: none; color: #eee; background: #242424; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; outline: none; font: 12px/1.4 system-ui, sans-serif; }
+#mobile-agent-input { width: 100%; min-width: 0; min-height: 42px; max-height: 100px; padding: 9px 10px; resize: none; color: #eee; background: #242424; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; outline: none; font: 16px/1.35 system-ui, sans-serif; }
 #mobile-agent-form button { width: 58px; height: 42px; padding: 0; color: #071319; background: #60cdff; border: 0; border-radius: 8px; font-size: 11px; font-weight: 700; }
 .mobile-waveform { display: flex; min-height: 220px; flex: 1; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: radial-gradient(circle at center, rgba(96,205,255,.08), transparent 58%); }
 .mobile-waveform[hidden] { display: none; }
@@ -86,6 +87,9 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 #drawer header span, #drawer footer span { color: #929292; font-size: 10px; }
 #drawer-close { font-size: 24px; font-weight: 300; }
 #drawer nav { padding: 10px 8px 18px; overflow-y: auto; }
+#mobile-workspace-actions { position: sticky; top: -10px; z-index: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: -2px 0 10px; padding: 2px 0 8px; background: #202020; }
+#mobile-workspace-actions button { height: 36px; color: #ddd; background: #303030; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; font-size: 12px; font-weight: 600; }
+#mobile-workspace-actions button:last-child { color: #071319; background: #60cdff; border-color: #60cdff; }
 .mobile-group { margin-bottom: 12px; }
 .mobile-group-title { display: flex; align-items: center; gap: 7px; padding: 5px 7px; color: #bbb; font-size: 11px; font-weight: 700; }
 .mobile-group-title i { width: 8px; height: 8px; background: var(--group-color, #60cdff); border-radius: 50%; }
@@ -102,18 +106,23 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 #mobile-settings-button { height: 34px; padding: 0 9px; color: #ddd; background: #303030; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; font-size: 10px; }
 #install-button { padding: 6px 9px; color: #0b151a; background: #60cdff; border: 0; border-radius: 6px; font-size: 10px; font-weight: 700; }
 #drawer-shade { position: fixed; inset: 0; z-index: 15; padding: 0; background: rgba(0,0,0,.5); border: 0; }
-#mobile-settings-backdrop { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; padding: 14px; background: rgba(0,0,0,.66); }
-#mobile-settings-backdrop[hidden] { display: none; }
-#mobile-settings-sheet { display: flex; width: min(100%, 440px); max-height: 80vh; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto; background: #202020; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.6); }
-#mobile-settings-sheet > header, #mobile-settings-sheet > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-#mobile-settings-sheet > header > div { display: flex; flex-direction: column; gap: 2px; }
-#mobile-settings-sheet > header strong { font-size: 16px; }
-#mobile-settings-sheet > header span, #mobile-settings-sheet p, #mobile-settings-status { color: #929292; font-size: 10px; line-height: 1.45; }
-#mobile-settings-close { width: 36px; height: 36px; background: transparent; border: 0; border-radius: 7px; font-size: 24px; }
-#mobile-settings-sheet label { display: flex; flex-direction: column; gap: 6px; color: #bbb; font-size: 11px; }
-#mobile-settings-sheet input, #mobile-settings-sheet select { height: 40px; padding: 0 10px; color: #eee; background: #111; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; font: 13px system-ui, sans-serif; }
+#mobile-settings-backdrop, #mobile-create-backdrop { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; padding: 14px; background: rgba(0,0,0,.66); }
+#mobile-settings-backdrop[hidden], #mobile-create-backdrop[hidden] { display: none; }
+#mobile-settings-sheet, #mobile-create-sheet { display: flex; width: min(100%, 440px); max-height: 80vh; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto; background: #202020; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.6); }
+#mobile-settings-sheet > header, #mobile-settings-sheet > footer, #mobile-create-sheet > header, #mobile-create-sheet > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#mobile-settings-sheet > header > div, #mobile-create-sheet > header > div { display: flex; flex-direction: column; gap: 2px; }
+#mobile-settings-sheet > header strong, #mobile-create-sheet > header strong { font-size: 16px; }
+#mobile-settings-sheet > header span, #mobile-settings-sheet p, #mobile-settings-status, #mobile-create-sheet > header span, #mobile-create-status { color: #929292; font-size: 10px; line-height: 1.45; }
+#mobile-settings-close, #mobile-create-close { width: 36px; height: 36px; background: transparent; border: 0; border-radius: 7px; font-size: 24px; }
+#mobile-settings-sheet label, #mobile-create-sheet label { display: flex; flex-direction: column; gap: 6px; color: #bbb; font-size: 11px; }
+#mobile-settings-sheet input, #mobile-settings-sheet select, #mobile-create-sheet input, #mobile-create-sheet select { height: 40px; padding: 0 10px; color: #eee; background: #111; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; font: 16px system-ui, sans-serif; }
 #mobile-settings-sheet input[type="range"] { height: 26px; padding: 0; accent-color: #60cdff; }
+#mobile-terminal .xterm-helper-textarea { font-size: 16px !important; }
 #mobile-tts-speed-value { float: right; color: #eee; font-family: ui-monospace, monospace; }
-#mobile-settings-sheet > footer button { height: 38px; padding: 0 16px; color: #071319; background: #60cdff; border: 0; border-radius: 8px; font-weight: 700; }
+#mobile-settings-sheet > footer button, #mobile-create-sheet > footer button { height: 38px; padding: 0 16px; color: #071319; background: #60cdff; border: 0; border-radius: 8px; font-weight: 700; }
+#mobile-create-sheet > footer { justify-content: flex-end; }
+#mobile-create-status { min-width: 0; margin-right: auto; }
+#mobile-create-cancel { color: #ddd !important; background: #303030 !important; border: 1px solid rgba(255,255,255,.1) !important; }
+#mobile-create-submit:disabled { opacity: .55; }
 @media (min-width: 760px) { #mobile-app { grid-template-columns: 280px minmax(0, 1fr); } #drawer { position: static; width: 280px; transform: none; box-shadow: none; } #drawer-close, #menu-button, #drawer-shade { display: none !important; } main { grid-column: 2; } }
 @media (orientation: landscape) and (max-height: 520px) { main { grid-template-rows: calc(44px + var(--safe-top)) minmax(0, 1fr); } #terminal-view { grid-template-rows: minmax(0, 1fr) auto calc(42px + var(--safe-bottom)); } .mobile-topbar { padding-left: max(8px, env(safe-area-inset-left)); } #quick-keys, #mobile-input-bar { padding-left: max(6px, env(safe-area-inset-left)); } }

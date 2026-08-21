@@ -1,12 +1,29 @@
 function pendingNotifications(notifications = []) {
+  const latestBySession = new Map();
+  for (const item of notifications) {
+    if (!item || item.read || !item.sessionId) continue;
+    const previous = latestBySession.get(item.sessionId);
+    if (!previous || Number(item.createdAt || 0) >= Number(previous.createdAt || 0)) {
+      latestBySession.set(item.sessionId, item);
+    }
+  }
   return notifications
     .filter((item) => item && !item.read)
+    .filter((item) => !item.sessionId || latestBySession.get(item.sessionId) === item)
     .map((item, index) => ({ item, index }))
     .sort((left, right) => {
-      const timeDifference = Number(left.item.createdAt || 0) - Number(right.item.createdAt || 0);
+      const timeDifference = Number(right.item.createdAt || 0) - Number(left.item.createdAt || 0);
       return timeDifference || left.index - right.index;
     })
     .map(({ item }) => item);
+}
+
+function markSupersededNotificationsRead(notifications = []) {
+  const pending = new Set(pendingNotifications(notifications));
+  for (const item of notifications) {
+    if (item?.sessionId && !item.read && !pending.has(item)) item.read = true;
+  }
+  return notifications;
 }
 
 function nextCatchUp(notifications = []) {
@@ -24,9 +41,16 @@ function catchUpPrompt(notification, remainingCount = 0) {
     : 'This is the final pending update, so you may briefly ask what the user wants to do next.';
   return [
     'Give a concise, colloquial spoken summary for exactly this one pending update.',
+    'Only report a meaningful completed outcome, a failure or blocker, or a concrete request that needs the user\'s input.',
+    'Routine investigation, planning progress, repository inspection, and intermediate status are not updates.',
+    'If the latest evidence does not establish something worth interrupting the user for, reply with exactly NO_UPDATE.',
     'Use one or two plain-text sentences, no Markdown, and no more than 35 words.',
     queueInstruction
   ].join(' ');
 }
 
-module.exports = { catchUpPrompt, nextCatchUp, pendingNotifications };
+function isNoUpdateResponse(value) {
+  return String(value || '').trim().replace(/[.!]+$/, '').toUpperCase() === 'NO_UPDATE';
+}
+
+module.exports = { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications };

@@ -1,4 +1,5 @@
 const terminalElement = document.querySelector('#mobile-terminal');
+const VOICE_REPLY_WINDOW_MS = 30_000;
 const drawer = document.querySelector('#drawer');
 const shade = document.querySelector('#drawer-shade');
 const sessionList = document.querySelector('#mobile-sessions');
@@ -16,6 +17,13 @@ const mobileAgentChat = document.querySelector('#mobile-agent-chat');
 const mobileAgentForm = document.querySelector('#mobile-agent-form');
 const mobileAgentInput = document.querySelector('#mobile-agent-input');
 const mobileVoiceToggle = document.querySelector('#mobile-voice-toggle');
+const mobileCreateBackdrop = document.querySelector('#mobile-create-backdrop');
+const mobileCreateForm = document.querySelector('#mobile-create-sheet');
+const mobileCreateGroup = document.querySelector('#mobile-create-group');
+const mobileCreateGroupName = document.querySelector('#mobile-create-group-name');
+const mobileCreateName = document.querySelector('#mobile-create-name');
+const mobileCreateCwd = document.querySelector('#mobile-create-cwd');
+const mobileCreateSubmit = document.querySelector('#mobile-create-submit');
 const mobileSettingsBackdrop = document.querySelector('#mobile-settings-backdrop');
 const mobileSettingsForm = document.querySelector('#mobile-settings-sheet');
 const basePath = location.pathname.endsWith('/') ? location.pathname : `${location.pathname}/`;
@@ -23,6 +31,7 @@ const socketUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${locatio
 const unread = new Set();
 let socket;
 let reconnectTimer;
+let socketHasSnapshot = false;
 let activeId = null;
 let groups = [];
 let sessions = [];
@@ -36,8 +45,26 @@ let voiceStream = null;
 let voiceContext = null;
 let voiceRecorder = null;
 let voiceFrame = null;
+let mobileTranscriptionInFlight = false;
 let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
+let mobileReplyUntil = 0;
+let mobileAudioQueue = Promise.resolve(true);
+let mobileCreateKind = 'session';
+let pendingMobileCreateRequestId = '';
+let pendingCreatedSessionId = '';
+
+function queueMobileAudio(message) {
+  mobileAudioQueue = mobileAudioQueue
+    .catch(() => false)
+    .then(() => mobileVoiceMode ? playMobileAudio(message.audio) : false);
+  return mobileAudioQueue.then((speechCompleted) => {
+    if (!message.continueCatchUp) return speechCompleted;
+    if (!speechCompleted) releaseCatchUpQueue();
+    else requestNextCatchUp(message.catchUpHasMore);
+    return speechCompleted;
+  });
+}
 
 function releaseCatchUpQueue() {
   if (catchupRequested) send({ type: 'agent:catch-up-release' });
@@ -91,6 +118,11 @@ const terminal = new Terminal({
   }
 });
 terminal.open(terminalElement);
+const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
+  reset: () => terminal.reset(),
+  write: (data, callback) => terminal.write(data, callback),
+  scrollToBottom: () => terminal.scrollToBottom()
+});
 
 function resizeTerminal() {
   const width = Math.max(200, terminalElement.clientWidth - 14);
@@ -101,6 +133,37 @@ function resizeTerminal() {
 function setDrawer(open) {
   drawer.classList.toggle('open', open);
   shade.hidden = !open;
+}
+
+function closeMobileCreate() {
+  mobileCreateBackdrop.hidden = true;
+}
+
+function openMobileCreate(kind) {
+  mobileCreateKind = kind === 'group' ? 'group' : 'session';
+  setDrawer(false);
+  mobileCreateForm.reset();
+  mobileCreateGroup.replaceChildren();
+  for (const group of groups) {
+    const option = document.createElement('option');
+    option.value = group.id;
+    option.textContent = group.title || 'Group';
+    mobileCreateGroup.append(option);
+  }
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const activeGroup = groups.find((group) => group.sessionIds.includes(activeId));
+  mobileCreateGroup.value = activeGroup?.id || groups[0]?.id || '';
+  mobileCreateCwd.value = activeSession?.cwd || '';
+  const creatingGroup = mobileCreateKind === 'group';
+  document.querySelector('#mobile-create-title').textContent = creatingGroup ? 'New group' : 'New session';
+  document.querySelector('#mobile-create-subtitle').textContent = creatingGroup ? 'Start a group with its first terminal' : 'Create a terminal in an existing group';
+  document.querySelector('#mobile-create-group-name-row').hidden = !creatingGroup;
+  document.querySelector('#mobile-create-group-row').hidden = creatingGroup;
+  document.querySelector('#mobile-create-name-label').textContent = creatingGroup ? 'First session name (optional)' : 'Session name (optional)';
+  document.querySelector('#mobile-create-status').textContent = '';
+  mobileCreateSubmit.disabled = false;
+  mobileCreateBackdrop.hidden = false;
+  window.setTimeout(() => (creatingGroup ? mobileCreateGroupName : mobileCreateName).focus(), 40);
 }
 
 function send(payload) {
@@ -132,14 +195,14 @@ function selectSession(id) {
   if (!session) return;
   activeId = id;
   unread.delete(id);
-  terminal.reset();
-  terminal.write('\x1b[2mConnecting to session…\x1b[0m\r\n');
+  const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  terminalFrames.select(id, '\x1b[2mConnecting to session…\x1b[0m\n');
   mobileTitle.textContent = session.title;
   mobileSubtitle.textContent = session.subtitle || 'Terminal session';
   renderSessions();
   setDrawer(false);
   setView('terminal');
-  send({ type: 'select', id });
+  send({ type: 'select', id, requestId });
   window.setTimeout(() => terminal.focus(), 80);
 }
 
@@ -225,7 +288,7 @@ function renderAgentState(state) {
     row.append(copy, deny, approve);
     confirmations.append(row);
   }
-  if (agentState.enabled && unreadNotifications.length && !catchupRequested) {
+  if (agentState.enabled && agentState.status !== 'thinking' && unreadNotifications.length && !catchupRequested) {
     catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
   }
   if (viewMode === 'agent') setView('agent');
@@ -264,6 +327,7 @@ function renderSessions() {
 
 function connect() {
   window.clearTimeout(reconnectTimer);
+  socketHasSnapshot = false;
   connectionDetail.textContent = 'Connecting…';
   socket = new WebSocket(socketUrl);
   socket.addEventListener('open', () => {
@@ -275,23 +339,29 @@ function connect() {
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.type === 'snapshot') {
+      const shouldRestoreSelection = !socketHasSnapshot;
+      socketHasSnapshot = true;
       groups = message.groups || [];
       sessions = message.sessions || [];
       if (!sessions.some((session) => session.id === activeId)) activeId = null;
       renderSessions();
-      if (!activeId && sessions[0]) selectSession(sessions[0].id);
+      if (pendingCreatedSessionId && sessions.some((session) => session.id === pendingCreatedSessionId)) {
+        const createdId = pendingCreatedSessionId;
+        pendingCreatedSessionId = '';
+        selectSession(createdId);
+      } else if (!activeId && sessions[0]) selectSession(sessions[0].id);
+      else if (activeId && shouldRestoreSelection) selectSession(activeId);
     }
-    if (message.type === 'reset' && message.id === activeId) {
-      terminal.reset();
-      terminal.write(String(message.data || '').replace(/\n/g, '\r\n'));
-      terminal.scrollToBottom();
+    if ((message.type === 'terminal:frame' || message.type === 'reset') && message.id === activeId) {
+      terminalFrames.render(message.id, message.data);
     }
-    if (message.type === 'data') {
-      if (message.id === activeId) terminal.write(message.data);
-      else unread.add(message.id);
+    if (message.type === 'terminal:activity' && message.id !== activeId) {
+      unread.add(message.id);
       renderSessions();
     }
-    if (message.type === 'exit' && message.id === activeId) terminal.write(`\r\n\x1b[31m[Process exited with code ${message.exitCode}]\x1b[0m\r\n`);
+    if (message.type === 'exit' && message.id === activeId) {
+      mobileSubtitle.textContent = `Process exited with code ${message.exitCode}`;
+    }
     if (message.type === 'agent:state') renderAgentState(message.state);
     if (message.type === 'mobile:settings') {
       document.querySelector('#mobile-wake-word').value = message.settings?.wakeWord || 'Hey Agent';
@@ -303,11 +373,28 @@ function connect() {
     if (message.type === 'mobile:settings:error') {
       document.querySelector('#mobile-settings-status').textContent = message.message;
     }
+    if (message.type === 'mobile:create-result' && message.requestId === pendingMobileCreateRequestId) {
+      pendingMobileCreateRequestId = '';
+      mobileCreateSubmit.disabled = false;
+      if (message.error) {
+        document.querySelector('#mobile-create-status').textContent = message.error;
+      } else {
+        pendingCreatedSessionId = message.created?.id || '';
+        closeMobileCreate();
+        if (pendingCreatedSessionId && sessions.some((session) => session.id === pendingCreatedSessionId)) {
+          const createdId = pendingCreatedSessionId;
+          pendingCreatedSessionId = '';
+          selectSession(createdId);
+        }
+      }
+    }
     if (message.type === 'agent:error') {
       document.querySelector('#agent-mobile-detail').textContent = message.message;
       document.querySelector('#agent-mobile-dot').className = 'error';
     }
     if (message.type === 'voice:transcript') {
+      mobileTranscriptionInFlight = false;
+      if (!message.transcript.ignored) mobileReplyUntil = 0;
       document.querySelector('#mobile-wave-detail').textContent = message.transcript.ignored
         ? message.transcript.reason
         : message.transcript.text;
@@ -317,13 +404,10 @@ function connect() {
     if (message.type === 'voice:audio') {
       if (message.continueCatchUp && !mobileVoiceMode) {
         releaseCatchUpQueue();
-      } else void playMobileAudio(message.audio).then((speechCompleted) => {
-        if (!message.continueCatchUp) return;
-        if (!speechCompleted) releaseCatchUpQueue();
-        else requestNextCatchUp(message.catchUpHasMore);
-      });
+      } else void queueMobileAudio(message);
     }
     if (message.type === 'voice:error') {
+      mobileTranscriptionInFlight = false;
       document.querySelector('#agent-mobile-detail').textContent = message.message;
       if (message.continueCatchUp) releaseCatchUpQueue();
     }
@@ -353,10 +437,12 @@ async function playMobileAudio(audio) {
     mobileBargeInStartedAt = 0;
     player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
-    return await new Promise((resolve) => {
+    const completed = await new Promise((resolve) => {
       player.addEventListener('ended', () => resolve(true), { once: true });
       player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
     });
+    if (completed) mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    return completed;
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
     return false;
@@ -377,10 +463,17 @@ function interruptMobileVoicePlayback() {
 }
 
 async function submitVoiceBlob(blob, duration) {
-  if (!mobileVoiceMode || duration < 650 || blob.size < 1000) return;
+  if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
   document.querySelector('#mobile-wave-detail').textContent = 'Transcribing locally…';
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  send({ type: 'voice:transcribe', data: bytesToBase64(bytes), mimeType: blob.type, sendToAgent: true, speakResponse: true });
+  mobileTranscriptionInFlight = send({
+    type: 'voice:transcribe',
+    data: bytesToBase64(bytes),
+    mimeType: blob.type,
+    allowWithoutWakeWord: Date.now() <= mobileReplyUntil,
+    sendToAgent: true,
+    speakResponse: true
+  });
 }
 
 async function startMobileVoice() {
@@ -418,9 +511,6 @@ async function startMobileVoice() {
   document.querySelector('#mobile-waveform').hidden = false;
   mobileVoiceToggle.textContent = 'Voice on';
   mobileVoiceToggle.classList.add('active');
-  if (!catchupRequested && agentState.notifications.some((item) => !item.read)) {
-    catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
-  }
   const monitor = () => {
     if (!mobileVoiceMode || !voiceContext) return;
     analyser.getFloatTimeDomainData(samples);
@@ -463,6 +553,8 @@ async function startMobileVoice() {
 function stopMobileVoice() {
   interruptMobileVoicePlayback();
   mobileVoiceMode = false;
+  mobileTranscriptionInFlight = false;
+  mobileReplyUntil = 0;
   send({ type: 'voice:mode', enabled: false });
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
@@ -517,6 +609,35 @@ shade.addEventListener('click', () => setDrawer(false));
 document.querySelector('#mobile-settings-button').addEventListener('click', () => {
   setDrawer(false);
   mobileSettingsBackdrop.hidden = false;
+});
+document.querySelector('#mobile-new-group').addEventListener('click', () => openMobileCreate('group'));
+document.querySelector('#mobile-new-session').addEventListener('click', () => openMobileCreate('session'));
+document.querySelector('#mobile-create-close').addEventListener('click', closeMobileCreate);
+document.querySelector('#mobile-create-cancel').addEventListener('click', closeMobileCreate);
+mobileCreateBackdrop.addEventListener('click', (event) => {
+  if (event.target === mobileCreateBackdrop) closeMobileCreate();
+});
+mobileCreateForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (pendingMobileCreateRequestId) return;
+  const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  const payload = {
+    type: 'mobile:create',
+    requestId,
+    kind: mobileCreateKind,
+    groupId: mobileCreateGroup.value,
+    groupName: mobileCreateGroupName.value,
+    name: mobileCreateName.value,
+    cwd: mobileCreateCwd.value
+  };
+  mobileCreateSubmit.disabled = true;
+  document.querySelector('#mobile-create-status').textContent = 'Creating…';
+  if (send(payload)) {
+    pendingMobileCreateRequestId = requestId;
+  } else {
+    mobileCreateSubmit.disabled = false;
+    document.querySelector('#mobile-create-status').textContent = 'Connect to SideTerm first.';
+  }
 });
 document.querySelector('#mobile-settings-close').addEventListener('click', () => { mobileSettingsBackdrop.hidden = true; });
 document.querySelector('#mobile-tts-speed').addEventListener('input', (event) => {
