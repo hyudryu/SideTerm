@@ -19,9 +19,19 @@ test('restored attention sessions become unread supervisor notifications', () =>
   assert.equal(added.length, 1);
   assert.deepEqual(state.notifications[0], {
     id: 'notification-1', cycleId: 'cycle-1', sessionId: 'session-1', title: 'Codex',
+    kind: 'COMPLETED', priority: 2,
     summary: 'Tests finished', context: 'All checks passed.', cwd: '/repo',
     links: ['https://github.com/a/b/pull/1'], createdAt: 123, read: false
   });
+});
+
+test('restored urgent session outcomes retain live-event priority', () => {
+  const state = { notifications: [] };
+  reconcileAttentionNotifications(state, {
+    sessions: [{ id: 'blocked', notified: true, summary: 'Blocked and waiting for your input.' }]
+  }, { createId: () => 'urgent' });
+  assert.equal(state.notifications[0].kind, 'INPUT_REQUIRED');
+  assert.equal(state.notifications[0].priority, 0);
 });
 
 test('attention reconciliation is idempotent across workspace updates and restarts', () => {

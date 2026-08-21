@@ -95,8 +95,14 @@ class PriorityEventBus {
     return this.events.filter((item) => !item.read && item.state === 'queued').sort(compareEvents);
   }
 
-  next() {
-    return this.pending()[0] || null;
+  next(activeInteractionId = null) {
+    const pending = this.pending();
+    if (activeInteractionId === null) return pending[0] || null;
+    const activeId = String(activeInteractionId || '');
+    return pending.find((event) => {
+      const interactionId = String(event.payload?.interactionId || '');
+      return !interactionId || interactionId === activeId;
+    }) || null;
   }
 
   transition(id, state) {

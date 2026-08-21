@@ -20,3 +20,15 @@ test('approval answers are explicit and colloquial without guessing ambiguous sp
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'maybe after the tests'), false);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'yeah'), true);
 });
+
+test('failed approval execution restores the same interaction for retry', () => {
+  const interactions = [];
+  const manager = new PendingInteractionManager(interactions, { createId: () => 'approval' });
+  manager.create({ kind: 'approval', prompt: 'Post it?', state: 'awaiting_answer' });
+  manager.answer('yes');
+  manager.create({ id: 'later', kind: 'supervisor_question', prompt: 'Anything else?' });
+  const restored = manager.restore('approval');
+  assert.equal(restored.state, 'awaiting_answer');
+  assert.equal(manager.activeInteractionId, 'approval');
+  assert.equal(restored.answer, '');
+});
