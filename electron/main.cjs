@@ -9,7 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
-const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
+const { catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -54,7 +54,7 @@ const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
-const { WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
+const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 const { PerceptionRouter, requiresVisualEvidence } = require('./perception/router.cjs');
 const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
@@ -573,7 +573,7 @@ function cleanAgentEntry(value, limits = {}) {
 function readAgentState() {
   try {
     const parsed = JSON.parse(fs.readFileSync(agentStateFile(), 'utf8'));
-    return {
+    const state = {
       version: 2,
       messages: Array.isArray(parsed.messages) ? parsed.messages.slice(-240).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
@@ -653,6 +653,8 @@ function readAgentState() {
         createdAt: Number(item?.createdAt) || Date.now()
       })).filter((item) => item.name && item.description && item.instructions) : []
     };
+    migrateLegacyPullRequestWatches(state.watches, state.pullRequests);
+    return state;
   } catch {
     return emptyAgentState();
   }
@@ -1566,6 +1568,7 @@ async function runProactiveCatchUp() {
     if (!presentation) {
       let streamed = false;
       const sentences = new SentenceBuffer((sentence) => {
+        if (isAutomaticPresenterSentinel(sentence)) return;
         streamed = true;
         if (voice) void speakMobileVoiceUpdate(sentence);
       });
@@ -1626,7 +1629,8 @@ function scheduleProactiveCatchUp() {
 
 async function catchUpWithSupervisor({ voice = false } = {}) {
   const state = readAgentState();
-  const { notification, remainingCount } = nextCatchUp(state.notifications);
+  const notification = eventBusFor(state).next(state.activeInteractionId);
+  const remainingCount = Math.max(0, pendingNotifications(state.notifications).length - (notification ? 1 : 0));
   if (!notification) {
     return {
       response: '',

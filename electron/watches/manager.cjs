@@ -99,4 +99,25 @@ function watchIsDue(watch, now = Date.now()) {
   return Number(now) - (Number(watch.lastCheckedAt) || 0) >= Math.max(60, Number(watch.intervalSeconds) || 60) * 1000;
 }
 
-module.exports = { WatchManager, normalizeWatch, watchIsDue };
+function migrateLegacyPullRequestWatches(watches = [], pullRequests = [], options = {}) {
+  const manager = new WatchManager(watches, options);
+  const migrated = [];
+  for (const pull of pullRequests) {
+    if (String(pull?.state || '').toLowerCase() !== 'open') continue;
+    const match = String(pull.url || '').match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i);
+    if (!match) continue;
+    const [, repo, number] = match;
+    if (watches.some((watch) => watch.kind === 'github_codex_review'
+      && watch.repo === repo && Number(watch.prNumber) === Number(number))) continue;
+    const watch = manager.create({
+      kind: 'github_codex_review', repo, prNumber: Number(number), intervalSeconds: 60,
+      state: 'active', exitCondition: 'codex_thumbs_up', headSha: pull.headSha,
+      lastFingerprint: pull.fingerprint, lastCheckedAt: pull.lastCheckedAt,
+      createdAt: Number(pull.lastCheckedAt) || (options.now?.() ?? Date.now())
+    });
+    migrated.push(watch);
+  }
+  return migrated;
+}
+
+module.exports = { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue };
