@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { claimConfirmation, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
 
@@ -6,6 +8,17 @@ test('a confirmation can only be claimed once', () => {
   const state = { confirmations: [{ id: 'one', body: 'post once' }] };
   assert.equal(claimConfirmation(state, 'one').body, 'post once');
   assert.throws(() => claimConfirmation(state, 'one'), /no longer pending/);
+});
+
+test('cancelling a Codex watch also retires its merge interaction', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /watchCancel\(\{ watchId \}\)[\s\S]*retireMergeConfirmations\(state, `https:\/\/github\.com\/\$\{watch\.repo\}\/pull\/\$\{Number\(watch\.prNumber\)\}`\)/);
+});
+
+test('durable PR projections retain one record for every supported watch', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /parsed\.pullRequests\) \? parsed\.pullRequests\.slice\(-120\)/);
+  assert.match(main, /state\.pullRequests\.length > 120/);
 });
 
 test('a failed action restores its confirmation idempotently', () => {

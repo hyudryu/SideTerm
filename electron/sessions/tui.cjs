@@ -11,7 +11,7 @@ function tuiSnapshot(value, terminalId = '') {
   const text = cleanTerminalText(value).slice(-20_000);
   const options = [];
   let selectedIndex = -1;
-  for (const line of text.split('\n').slice(-80)) {
+  for (const line of text.split('\n')) {
     const match = line.match(/^\s*([>❯›]|\(\s*[xX ]?\s*\)|\[\s*[xX ]?\s*\]|\d+[.)])\s+(.{1,300})$/u);
     if (!match) continue;
     const index = options.length;
