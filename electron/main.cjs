@@ -1217,6 +1217,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
           title: item.title,
           summary: item.summary,
           busy: Boolean(item.busy),
+          status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
           needsAttention: Boolean(item.notified)
         })),
         supervisorStatus: agentStatus,

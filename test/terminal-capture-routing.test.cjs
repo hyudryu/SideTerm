@@ -48,6 +48,7 @@ test('whole-window capture preserves the dashboard while masking sensitive overl
 test('collection status inspection includes the bounded live session list', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /sessions: sessionId \? \[\] : mobileWorkspace\.sessions\.slice\(0, 200\)\.map/);
+  assert.match(main, /status: item\.busy \? 'running' : sessions\.has\(item\.id\) \? 'idle' : 'stopped'/);
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
 });
 
