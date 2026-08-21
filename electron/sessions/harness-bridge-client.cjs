@@ -1,3 +1,19 @@
+function waitForAbortableDelay(signal, delay) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delay);
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
+
 class HarnessBridgeClient {
   constructor(options = {}) {
     this.endpoint = new URL(options.endpoint || 'http://127.0.0.1:43111');
@@ -27,13 +43,6 @@ class HarnessBridgeClient {
 
   subscribe(topic, handler) {
     const controller = new AbortController();
-    const waitToReconnect = (delay) => new Promise((resolve) => {
-      const timer = setTimeout(resolve, delay);
-      controller.signal.addEventListener('abort', () => {
-        clearTimeout(timer);
-        resolve();
-      }, { once: true });
-    });
     void (async () => {
       let failures = 0;
       while (!controller.signal.aborted) {
@@ -63,7 +72,7 @@ class HarnessBridgeClient {
           if (controller.signal.aborted) break;
           failures += 1;
           handler({ topic: 'bridge/error', error: String(error?.message || error) });
-          await waitToReconnect(Math.min(10_000, this.reconnectDelayMs * (2 ** Math.min(failures - 1, 4))));
+          await waitForAbortableDelay(controller.signal, Math.min(10_000, this.reconnectDelayMs * (2 ** Math.min(failures - 1, 4))));
         }
       }
     })();
@@ -71,4 +80,4 @@ class HarnessBridgeClient {
   }
 }
 
-module.exports = { HarnessBridgeClient };
+module.exports = { HarnessBridgeClient, waitForAbortableDelay };

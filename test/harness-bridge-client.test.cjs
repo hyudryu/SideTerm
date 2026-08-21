@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { HarnessBridgeClient } = require('../electron/sessions/harness-bridge-client.cjs');
+const { getEventListeners } = require('node:events');
+const { HarnessBridgeClient, waitForAbortableDelay } = require('../electron/sessions/harness-bridge-client.cjs');
 
 test('Harness bridge accepts authenticated loopback endpoints only', () => {
   assert.throws(() => new HarnessBridgeClient({ endpoint: 'https://remote.example', token: 'a'.repeat(24) }), /loopback/);
@@ -49,4 +50,12 @@ test('Harness bridge sends one semantic RPC request with bearer authentication',
   assert.equal(received.url, 'http://127.0.0.1:43111/rpc');
   assert.equal(received.authorization, 'Bearer secret-secret-secret-secret');
   assert.equal(received.body.method, 'agents.followup');
+});
+
+test('completed reconnect delays remove their abort listener', async () => {
+  const controller = new AbortController();
+  const delay = waitForAbortableDelay(controller.signal, 10);
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 1);
+  await delay;
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
 });

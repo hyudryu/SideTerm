@@ -13,7 +13,7 @@ function agentRecord(agent, activityByAgent) {
     friendlyName: String(agent.session?.title || agent.options?.name || agent.id),
     cwd: String(agent.options?.cwd || ''),
     status: agent.status === 'running' ? 'running' : 'idle',
-    semanticState: agent.status === 'running' ? 'working' : undefined,
+    semanticState: agent.status === 'running' ? 'working' : null,
     currentTask: String(agent.options?.task || ''),
     lastActivityAt: activityByAgent.get(id)
       || Number(agent.session?.updatedAt || agent.session?.createdAt || agent.createdAt)

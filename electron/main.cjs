@@ -1208,6 +1208,7 @@ const supervisorActions = {
       if (!harnessBackend) throw new Error('The DeepSeek Harness bridge is not connected.');
       return harnessBackend.sendInstruction(sessionId, message, mode);
     }
+    if (!sessions.has(sessionId)) throw new Error('That session is no longer active. Call list_sessions to refresh the available sessions.');
     return supervisorActions.requestTerminalInput({ sessionId, input: message, submit: true, reason: reason || 'Send an instruction to this terminal session.' });
   },
   createSession(input) {
