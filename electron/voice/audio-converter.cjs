@@ -14,6 +14,12 @@ function audioFileExtension(mimeType) {
   return 'webm';
 }
 
+function canonicalCloudAudioFormat(provider) {
+  if (provider === 'aws') return 'pcm';
+  if (provider === 'google' || provider === 'azure') return 'wav';
+  return '';
+}
+
 function convertSpeechAudio(inputPath, outputPath, codecArgs, options = {}) {
   const executable = packagedExecutablePath(options.ffmpegPath || require('ffmpeg-static'));
   const spawnProcess = options.spawnProcess || spawn;
@@ -41,4 +47,4 @@ function convertToSpeechPcm(inputPath, outputPath, options = {}) {
   return convertSpeechAudio(inputPath, outputPath, ['-f', 's16le'], options);
 }
 
-module.exports = { audioFileExtension, convertToSpeechPcm, convertToSpeechWav, packagedExecutablePath };
+module.exports = { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav, packagedExecutablePath };

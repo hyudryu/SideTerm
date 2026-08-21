@@ -112,11 +112,39 @@ function awsCredentials(value) {
   return { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
 }
 
-async function* awsAudioEvents(audio, maximumChunkBytes = 16 * 1024) {
+function waitForAudioPacing(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    };
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      reject(signal.reason || new Error('Amazon transcription was cancelled.'));
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+
+async function* awsAudioEvents(audio, options = {}) {
   const source = Buffer.from(audio);
-  const size = Math.max(1, Math.min(32 * 1024, Number(maximumChunkBytes) || 16 * 1024));
+  const configuration = typeof options === 'number' ? { maximumChunkBytes: options } : options;
+  const sampleRate = Math.max(8_000, Number(configuration.sampleRate) || 16_000);
+  const bytesPerSample = Math.max(1, Number(configuration.bytesPerSample) || 2);
+  const chunkDurationMs = Math.max(20, Math.min(200, Number(configuration.chunkDurationMs) || 100));
+  const maximumChunkBytes = Math.max(1, Math.min(32 * 1024, Number(configuration.maximumChunkBytes) || 16 * 1024));
+  const size = Math.max(1, Math.min(maximumChunkBytes, Math.floor(sampleRate * bytesPerSample * chunkDurationMs / 1000)));
+  const sleep = configuration.sleep || ((delayMs) => waitForAudioPacing(delayMs, configuration.signal));
   for (let offset = 0; offset < source.length; offset += size) {
-    yield { AudioEvent: { AudioChunk: source.subarray(offset, offset + size) } };
+    const chunk = source.subarray(offset, offset + size);
+    yield { AudioEvent: { AudioChunk: chunk } };
+    if (offset + chunk.length < source.length) {
+      await sleep(chunk.length / (sampleRate * bytesPerSample) * 1000);
+    }
   }
 }
 
@@ -127,7 +155,8 @@ async function transcribeAws(audio, options) {
   const client = new TranscribeStreamingClient({ region: options.region, credentials: awsCredentials(options.credential) });
   try {
     const response = await client.send(new StartStreamTranscriptionCommand({
-      LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000, AudioStream: awsAudioEvents(audio)
+      LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000,
+      AudioStream: awsAudioEvents(audio, { signal: options.signal })
     }), { abortSignal: options.signal });
     let text = '';
     for await (const event of response.TranscriptResultStream || []) {
