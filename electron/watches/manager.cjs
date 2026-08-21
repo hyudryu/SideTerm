@@ -99,6 +99,11 @@ function watchIsDue(watch, now = Date.now()) {
   return Number(now) - (Number(watch.lastCheckedAt) || 0) >= Math.max(60, Number(watch.intervalSeconds) || 60) * 1000;
 }
 
+function watchLifecycleIsDue(watch, now = Date.now()) {
+  if (!watch || watch.cancelledAt || !['active', 'terminal'].includes(watch.state)) return false;
+  return Number(now) - (Number(watch.lastCheckedAt) || 0) >= Math.max(60, Number(watch.intervalSeconds) || 60) * 1000;
+}
+
 function migrateLegacyPullRequestWatches(watches = [], pullRequests = [], options = {}) {
   const manager = new WatchManager(watches, options);
   const migrated = [];
@@ -120,4 +125,4 @@ function migrateLegacyPullRequestWatches(watches = [], pullRequests = [], option
   return migrated;
 }
 
-module.exports = { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue };
+module.exports = { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue, watchLifecycleIsDue };
