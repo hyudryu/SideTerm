@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { WatchManager } = require('../electron/watches/manager.cjs');
+const { WatchManager, watchIsDue } = require('../electron/watches/manager.cjs');
 
 test('Codex watch terminates at approval and rearms for a new head', () => {
   const watches = [];
@@ -20,4 +20,17 @@ test('a cancelled watch is distinguishable from a met condition', () => {
   manager.cancel(watch.id);
   assert.equal(watch.state, 'terminal');
   assert.equal(watch.cancelledAt, 42);
+});
+
+test('explicit creation can reactivate a cancelled watch at its requested cadence', () => {
+  const watches = [];
+  const manager = new WatchManager(watches, { createId: () => 'watch-1', now: () => 120_000 });
+  const watch = manager.create({ kind: 'github_codex_review', repo: 'a/b', prNumber: 9, headSha: 'one' });
+  manager.cancel(watch.id);
+  manager.activate(watch.id, { headSha: 'one', intervalSeconds: 300 });
+  manager.markChecked(watch.id, 120_000);
+  assert.equal(watch.cancelledAt, 0);
+  assert.equal(watch.intervalSeconds, 300);
+  assert.equal(watchIsDue(watch, 419_999), false);
+  assert.equal(watchIsDue(watch, 420_000), true);
 });

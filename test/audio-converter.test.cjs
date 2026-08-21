@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
-const { audioFileExtension, convertToSpeechPcm, convertToSpeechWav, packagedExecutablePath } = require('../electron/voice/audio-converter.cjs');
+const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav, packagedExecutablePath } = require('../electron/voice/audio-converter.cjs');
 
 test('packaged ffmpeg executables are resolved outside the asar archive', () => {
   assert.equal(
@@ -14,6 +14,13 @@ test('recording MIME types retain a compatible file extension', () => {
   assert.equal(audioFileExtension('audio/mp4;codecs=mp4a.40.2'), 'm4a');
   assert.equal(audioFileExtension('audio/mpeg'), 'mp3');
   assert.equal(audioFileExtension('audio/ogg;codecs=opus'), 'ogg');
+});
+
+test('cloud providers with strict upload formats use canonical audio', () => {
+  assert.equal(canonicalCloudAudioFormat('aws'), 'pcm');
+  assert.equal(canonicalCloudAudioFormat('google'), 'wav');
+  assert.equal(canonicalCloudAudioFormat('azure'), 'wav');
+  assert.equal(canonicalCloudAudioFormat('deepgram'), '');
 });
 
 test('microphone recordings are converted to mono 16 kHz PCM WAV', async () => {

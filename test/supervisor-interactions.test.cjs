@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { interpretApprovalAnswer, PendingInteractionManager } = require('../electron/supervisor/interactions.cjs');
+const { interpretApprovalAnswer, PendingInteractionManager, shouldConsumeInteractionAnswer } = require('../electron/supervisor/interactions.cjs');
 
 test('new events do not steal an answer from the active interaction', () => {
   const interactions = [];
@@ -17,4 +17,6 @@ test('approval answers are explicit and colloquial without guessing ambiguous sp
   assert.equal(interpretApprovalAnswer('yeah'), true);
   assert.equal(interpretApprovalAnswer('nope'), false);
   assert.equal(interpretApprovalAnswer('maybe after the tests'), null);
+  assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'maybe after the tests'), false);
+  assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'yeah'), true);
 });

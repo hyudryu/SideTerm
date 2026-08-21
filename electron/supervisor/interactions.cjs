@@ -27,6 +27,10 @@ function interpretApprovalAnswer(value) {
   return null;
 }
 
+function shouldConsumeInteractionAnswer(interaction, text) {
+  return interaction?.kind !== 'approval' || interpretApprovalAnswer(text) !== null;
+}
+
 class PendingInteractionManager {
   constructor(interactions = [], options = {}) {
     this.interactions = interactions;
@@ -84,4 +88,4 @@ class PendingInteractionManager {
   }
 }
 
-module.exports = { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction };
+module.exports = { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };

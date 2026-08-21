@@ -39,10 +39,13 @@ test('Amazon credentials accept secure JSON or colon-separated values', () => {
 
 test('Amazon streaming audio events stay below the service size limit', async () => {
   const events = [];
-  for await (const event of awsAudioEvents(Buffer.alloc(70 * 1024))) events.push(event);
+  const delays = [];
+  for await (const event of awsAudioEvents(Buffer.alloc(70 * 1024), { sleep: async (delay) => delays.push(delay) })) events.push(event);
   assert.ok(events.length > 2);
-  assert.ok(events.every((event) => event.AudioEvent.AudioChunk.length <= 16 * 1024));
+  assert.ok(events.every((event) => event.AudioEvent.AudioChunk.length <= 3_200));
   assert.equal(events.reduce((total, event) => total + event.AudioEvent.AudioChunk.length, 0), 70 * 1024);
+  assert.equal(delays.length, events.length - 1);
+  assert.ok(delays.every((delay) => delay > 0 && delay <= 100));
 });
 
 test('cloud readiness includes each provider specific region requirement', () => {

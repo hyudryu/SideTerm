@@ -2902,6 +2902,11 @@ document.querySelector('#clear-vision-api-key').addEventListener('click', () => 
   document.querySelector('#clear-vision-api-key').hidden = true;
 });
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = 'Credential cleared for provider change';
+  document.querySelector('#clear-stt-credential').hidden = true;
   document.querySelector('#stt-endpoint').value = '';
   document.querySelector('#stt-region').value = '';
   syncSttProviderFields();
