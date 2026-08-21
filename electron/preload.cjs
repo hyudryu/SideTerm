@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   getTailscaleHttpsStatus: () => ipcRenderer.invoke('mobile:tailscale-https-status'),
   enableTailscaleHttps: () => ipcRenderer.invoke('mobile:enable-tailscale-https'),
   updateMobileWorkspace: (workspace) => ipcRenderer.send('mobile:update-workspace', workspace),
+  updateMobileActiveSession: (activeId) => ipcRenderer.send('mobile:update-active-session', activeId),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   acknowledgeSessionAttention: (sessionId, cycleId) => ipcRenderer.invoke('agent:acknowledge-session', { sessionId, cycleId }),
   chatWithAgent: (text, options = {}) => ipcRenderer.invoke('agent:chat', { text, ...options }),
