@@ -1220,7 +1220,7 @@ function handleProactiveMessages() {
     if (spokenProactiveMessageIds.has(message.id)) continue;
     spokenProactiveMessageIds.add(message.id);
     const brief = message.voiceSummary || message.text;
-    if (desktopVoiceMode) void queueAgentSpeech(brief);
+    if (desktopVoiceMode && !message.desktopSpeechPresented) void queueAgentSpeech(brief);
     else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
   }
 }
@@ -2847,6 +2847,8 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  document.querySelector('#stt-endpoint').value = '';
+  document.querySelector('#stt-region').value = '';
   syncSttProviderFields();
   document.querySelector('#stt-status').textContent = document.querySelector('#stt-provider').value === 'parakeet'
     ? 'LOCAL — Parakeet'

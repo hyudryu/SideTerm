@@ -20,3 +20,13 @@ test('cloud vision is opt-in and returns structured text only', async () => {
   assert.equal((await router.inspect()).source, 'none');
   assert.equal((await router.inspect({ allowCloudVision: true })).source, 'separate-vision');
 });
+
+test('perception continues after null and failed preferred sources', async () => {
+  const router = new PerceptionRouter({
+    structuredState: async () => null,
+    accessibility: async () => { throw new Error('unavailable'); },
+    terminalText: async () => ({ summary: 'Terminal is ready', confidence: 0.9 })
+  });
+  const result = await router.inspect();
+  assert.equal(result.source, 'terminal-text');
+});
