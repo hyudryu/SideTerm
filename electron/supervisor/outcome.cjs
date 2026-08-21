@@ -12,4 +12,10 @@ function inferEventKind(value = {}) {
   return 'COMPLETED';
 }
 
-module.exports = { inferEventKind, outcomeEvidence };
+function semanticStateForEvent(kind) {
+  return ({
+    INPUT_REQUIRED: 'input_required', BLOCKED: 'blocked', FAILED: 'failed', COMPLETED: 'completed'
+  })[String(kind || '').toUpperCase()] || 'completed';
+}
+
+module.exports = { inferEventKind, outcomeEvidence, semanticStateForEvent };

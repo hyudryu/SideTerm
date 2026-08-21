@@ -11,5 +11,8 @@ test('voice clarification replies stay bound to their own interaction without du
   assert.match(main, /clarification: \{ \.\.\.clarification, interactionId: interaction\.id \}/);
   assert.match(desktop, /voiceReplyInteractionId = transcript\.clarification\.interactionId/);
   assert.match(desktop, /submitAgentChat\(transcript\.text, \{ spokenRequest: true, interactionId \}\)/);
-  assert.match(mobile, /interactionId: mobileVoiceInteractionId/);
+  assert.match(desktop, /if \(!replyWindowActive\) voiceReplyInteractionId = ''/);
+  assert.match(desktop, /interactionId = replyWindowActive \? voiceReplyInteractionId : ''/);
+  assert.match(mobile, /if \(!replyWindowActive\) mobileVoiceInteractionId = ''/);
+  assert.match(mobile, /interactionId: replyWindowActive \? mobileVoiceInteractionId : ''/);
 });
