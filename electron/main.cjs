@@ -606,6 +606,7 @@ function readAgentState() {
         submit: item?.submit !== false,
         optionIndex: Math.max(0, Math.floor(Number(item?.optionIndex) || 0)),
         optionLabel: String(item?.optionLabel || '').slice(0, 300),
+        tuiKey: ['ENTER', 'SPACE'].includes(String(item?.tuiKey || '').toUpperCase()) ? String(item.tuiKey).toUpperCase() : 'ENTER',
         pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
         headSha: String(item?.headSha || '').slice(0, 100),
         body: String(item?.body || '').slice(0, 20_000),
@@ -883,6 +884,8 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
   const pullIsOpen = String(snapshot.state || '').toLowerCase() === 'open';
   if (!pullIsOpen) {
     watchManager.conditionMet(reviewWatch.id, `pull-request-${String(snapshot.state || 'closed').toLowerCase()}:${snapshot.headSha}`, snapshot.headSha);
+    retireMergeConfirmations(state, snapshot.url);
+  } else if (!approval.ready) {
     retireMergeConfirmations(state, snapshot.url);
   }
   let prNotificationAdded = false;
@@ -1244,7 +1247,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   };
 }
 
-async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '' }) {
+async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '', tuiKey = 'ENTER' }) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('That terminal session is not active.');
   const before = tuiSnapshot(captureSessionScreen(session), sessionId);
@@ -1252,23 +1255,29 @@ async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '' })
   if (expectedLabel && before.options[Math.floor(Number(optionIndex))]?.label !== expectedLabel) {
     throw new Error('The terminal menu changed before SideTerm could confirm the selected option.');
   }
-  const keys = selectionKeys(before, optionIndex);
-  for (const key of keys.slice(0, -1)) {
+  const navigationKeys = selectionKeys(before, optionIndex).slice(0, -1);
+  const submitKey = ['ENTER', 'SPACE'].includes(String(tuiKey || '').toUpperCase())
+    ? String(tuiKey).toUpperCase()
+    : 'ENTER';
+  const keys = [...navigationKeys, submitKey];
+  for (const key of navigationKeys) {
     const data = namedKeyData(key);
     send('terminal:remote-input', { id: sessionId, data });
     session.processHandle.write(data);
   }
   await new Promise((resolve) => setTimeout(resolve, 120));
   const beforeSubmit = tuiSnapshot(captureSessionScreen(session), sessionId);
-  if (beforeSubmit.selectedIndex !== Math.floor(Number(optionIndex))) {
-    return { accepted: false, keys: keys.slice(0, -1), before, beforeSubmit, after: beforeSubmit };
+  const targetIndex = Math.floor(Number(optionIndex));
+  if (beforeSubmit.selectedIndex !== targetIndex
+    || (expectedLabel && beforeSubmit.options[targetIndex]?.label !== expectedLabel)) {
+    return { accepted: false, submitted: false, keys: navigationKeys, before, beforeSubmit, after: beforeSubmit };
   }
-  const enter = namedKeyData('ENTER');
-  send('terminal:remote-input', { id: sessionId, data: enter });
-  session.processHandle.write(enter);
+  const submit = namedKeyData(submitKey);
+  send('terminal:remote-input', { id: sessionId, data: submit });
+  session.processHandle.write(submit);
   await new Promise((resolve) => setTimeout(resolve, 120));
   const after = tuiSnapshot(captureSessionScreen(session), sessionId);
-  return { accepted: tuiSelectionAccepted(beforeSubmit, after), keys, before, beforeSubmit, after };
+  return { accepted: tuiSelectionAccepted(beforeSubmit, after), submitted: true, keys, before, beforeSubmit, after };
 }
 
 const supervisorActions = {
@@ -1371,12 +1380,12 @@ const supervisorActions = {
     if (!canSubmitTuiKey(snapshot, normalized)) {
       throw new Error('SideTerm will not submit a key unless a structured TUI menu is visible.');
     }
-    if (normalized === 'ENTER') {
+    if (['ENTER', 'SPACE'].includes(normalized)) {
       const optionIndex = snapshot.selectedIndex;
       const optionLabel = snapshot.options[optionIndex]?.label || '';
       const decision = authorize({ kind: 'TUI_SAFE_SELECTION', sessionId, optionIndex, optionLabel });
       if (decision === ASK_USER) return queueAgentConfirmation({
-        kind: 'tui-selection', sessionId, optionIndex, optionLabel,
+        kind: 'tui-selection', sessionId, optionIndex, optionLabel, tuiKey: normalized,
         reason: `The selected terminal option may have consequential effects: ${optionLabel}`
       });
       if (decision !== ALLOW) throw new Error('SideTerm denied that TUI selection.');
@@ -1605,9 +1614,9 @@ function mobileSpeechPipeline(client) {
   const surface = ensureMobilePresentationSurface(client);
   let pending = Promise.resolve();
   return {
-    speak(text, { opensReplyWindow = false } = {}) {
+    speak(text, { opensReplyWindow = false, interactionId = '' } = {}) {
       pending = pending.then(() => presentationCoordinator.present(text, {
-        targets: [surface.id], opensReplyWindow
+        targets: [surface.id], opensReplyWindow, interactionId
       })).catch(() => {});
     },
     drain() {
@@ -1630,7 +1639,8 @@ function ensureMobilePresentationSurface(client) {
     const audio = await synthesizeSpeech(spokenText);
     if (!client.sideTermVoiceMode || client.readyState !== 1 || (typeof options.isCurrent === 'function' && !options.isCurrent(id))) return false;
     sendMobile(client, {
-      type: 'voice:audio', audio, opensReplyWindow: options.opensReplyWindow !== false, eventId: options.eventId || ''
+      type: 'voice:audio', audio, opensReplyWindow: options.opensReplyWindow !== false,
+      eventId: options.eventId || '', interactionId: options.interactionId || ''
     });
     return true;
   });
@@ -1658,9 +1668,10 @@ function voicePresentationSnapshot() {
   return { targets, isCurrent: (surfaceId) => Boolean(guards.get(surfaceId)?.()) };
 }
 
-async function speakMobileVoiceUpdate(text, snapshot = voicePresentationSnapshot()) {
+async function speakMobileVoiceUpdate(text, snapshot = voicePresentationSnapshot(), options = {}) {
   if (!snapshot.targets?.length || !text) return false;
   const results = await presentationCoordinator.present(text, {
+    ...options,
     targets: snapshot.targets,
     isCurrent: snapshot.isCurrent,
     opensReplyWindow: true
@@ -1743,12 +1754,16 @@ async function runProactiveCatchUp(activation = {}) {
   proactiveEventClaims.add(event.id);
   const voiceSnapshot = activation.targets?.length ? activation : voicePresentationSnapshot();
   const voice = voiceSnapshot.targets?.length > 0;
+  const presentationOptions = {
+    eventId: event.id,
+    interactionId: String(event.payload?.interactionId || '')
+  };
   let speechDelivery = Promise.resolve();
   let speechDelivered = true;
   const queueSpeech = (text) => {
     if (!voice || !text) return;
     speechDelivery = speechDelivery.then(async () => {
-      if (!await speakMobileVoiceUpdate(text, voiceSnapshot)) speechDelivered = false;
+      if (!await speakMobileVoiceUpdate(text, voiceSnapshot, presentationOptions)) speechDelivered = false;
     });
   };
   const acknowledge = (presentation = '') => {
@@ -1843,6 +1858,7 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
       response: '',
       state: publicAgentState(),
       processedNotificationId: null,
+      interactionId: '',
       remainingCount: 0,
       hasMore: false
     };
@@ -1868,6 +1884,7 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
   return {
     ...result,
     processedNotificationId: notification.id,
+    interactionId: String(notification.payload?.interactionId || ''),
     remainingCount: remaining,
     hasMore: remaining > 0
   };
@@ -1942,9 +1959,12 @@ async function resolveAgentConfirmation(id, approved) {
         : `The user approved the merge for ${confirmation.title}. GitHub accepted it but still reports ${merged.state.toLowerCase()}, so it may be queued or waiting for checks: ${merged.url}`;
     } else if (confirmation.kind === 'tui-selection') {
       const selection = await executeTuiSelection(confirmation);
-      if (!selection.accepted) throw new Error('The terminal menu changed before SideTerm could confirm the selected option.');
       actionCommitted = true;
-      resultText = `The user approved and SideTerm selected “${confirmation.optionLabel}” in ${confirmation.title}.`;
+      resultText = selection.accepted
+        ? `The user approved and SideTerm selected “${confirmation.optionLabel}” in ${confirmation.title}.`
+        : selection.submitted
+          ? `The user approved and SideTerm submitted “${confirmation.optionLabel}” in ${confirmation.title}, but the terminal did not visibly confirm it.`
+          : `The terminal menu changed before SideTerm could safely select “${confirmation.optionLabel}”; no option was submitted.`;
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
@@ -2471,6 +2491,7 @@ presentationCoordinator.registerSurface('desktop', async (text, options) => {
       text,
       acknowledgement: options.opensReplyWindow === false,
       eventId: options.eventId || '',
+      interactionId: options.interactionId || '',
       presentationId
     });
   });
@@ -2821,6 +2842,7 @@ async function startMobileServer({ persist = true } = {}) {
             type: 'agent:catch-up-result',
             response: result.response,
             speech: result.speech,
+            interactionId: result.interactionId,
             hasMore: result.hasMore,
             remainingCount: result.remainingCount
           });
@@ -2908,6 +2930,7 @@ async function startMobileServer({ persist = true } = {}) {
             type: 'voice:audio',
             audio: await synthesizeSpeech(message.text),
             opensReplyWindow: true,
+            interactionId: String(message.interactionId || ''),
             continueCatchUp: Boolean(message.continueCatchUp),
             catchUpHasMore: Boolean(message.catchUpHasMore)
           });

@@ -62,7 +62,10 @@ let pendingMobileCreateTimer = null;
 function queueMobileAudio(message) {
   mobileAudioQueue = mobileAudioQueue
     .catch(() => false)
-    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, { openReplyWindow: Boolean(message.opensReplyWindow) }) : false);
+    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, {
+      openReplyWindow: Boolean(message.opensReplyWindow),
+      interactionId: String(message.interactionId || '')
+    }) : false);
   return mobileAudioQueue.then((speechCompleted) => {
     if (!message.continueCatchUp) return speechCompleted;
     if (!speechCompleted) releaseCatchUpQueue();
@@ -102,6 +105,7 @@ async function handleCatchUpResult(message) {
       type: 'voice:synthesize',
       text: message.speech || message.response,
       continueCatchUp: true,
+      interactionId: message.interactionId || '',
       catchUpHasMore: Boolean(message.hasMore)
     });
     if (!sent) releaseCatchUpQueue();
@@ -468,7 +472,7 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-async function playMobileAudio(audio, { openReplyWindow = false } = {}) {
+async function playMobileAudio(audio, { openReplyWindow = false, interactionId = '' } = {}) {
   if (!audio?.data) return false;
   try {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
@@ -481,7 +485,10 @@ async function playMobileAudio(audio, { openReplyWindow = false } = {}) {
       player.addEventListener('ended', () => resolve(true), { once: true });
       player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
     });
-    if (completed && openReplyWindow) mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) {
+      mobileVoiceInteractionId = String(interactionId || '');
+      mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    }
     return completed;
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
