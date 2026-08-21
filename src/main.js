@@ -62,6 +62,7 @@ let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
+let sttCredentialRemovalIntent = false;
 let clearVisionApiKeyRequested = false;
 let clearHarnessBridgeTokenRequested = false;
 let visionKeyEndpointDraft = '';
@@ -446,6 +447,7 @@ function renderHotkeyInputs() {
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
   clearSttCredentialRequested = false;
+  sttCredentialRemovalIntent = false;
   clearVisionApiKeyRequested = false;
   clearHarnessBridgeTokenRequested = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
@@ -3074,6 +3076,7 @@ document.querySelector('#clear-vision-api-key').addEventListener('click', () => 
   document.querySelector('#clear-vision-api-key').hidden = true;
 });
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  sttCredentialRemovalIntent = true;
   clearSttCredentialRequested = true;
   document.querySelector('#stt-credential').value = '';
   document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
@@ -3087,9 +3090,10 @@ document.querySelector('#stt-provider').addEventListener('change', () => {
     : 'CLOUD — save settings to configure';
 });
 document.querySelector('#stt-credential').addEventListener('input', (event) => {
-  if (event.target.value) clearSttCredentialRequested = false;
+  clearSttCredentialRequested = sttCredentialRemovalIntent && !event.target.value.trim();
 });
 document.querySelector('#clear-stt-credential').addEventListener('click', () => {
+  sttCredentialRemovalIntent = true;
   clearSttCredentialRequested = true;
   document.querySelector('#stt-credential').value = '';
   document.querySelector('#stt-credential').placeholder = 'Credential will be removed on save';
