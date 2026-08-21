@@ -1815,7 +1815,10 @@ async function processVoiceUtterance(blob, durationMs) {
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
       voiceReplyInteractionId = transcript.clarification.interactionId || '';
-      await queueAgentSpeech(transcript.clarification.prompt, { openReplyWindow: true });
+      await queueAgentSpeech(transcript.clarification.prompt, {
+        openReplyWindow: true,
+        interactionId: transcript.clarification.interactionId || ''
+      });
       return;
     }
     voiceReplyUntil = 0;
