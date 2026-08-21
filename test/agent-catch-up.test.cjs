@@ -30,6 +30,17 @@ test('catch-up keeps only the newest unread correspondence for each terminal', (
   assert.deepEqual(notifications.map((item) => item.read), [true, false, false]);
 });
 
+test('catch-up preserves semantically distinct typed events from one session', () => {
+  const notifications = [
+    { id: 'failure', sessionId: 'one', kind: 'FAILED', createdAt: 10, read: false },
+    { id: 'review', sessionId: 'one', kind: 'REVIEW_RECEIVED', createdAt: 20, read: false },
+    { id: 'new-failure', sessionId: 'one', kind: 'FAILED', createdAt: 30, read: false }
+  ];
+  markSupersededNotificationsRead(notifications);
+  assert.deepEqual(pendingNotifications(notifications).map((item) => item.id), ['new-failure', 'review']);
+  assert.deepEqual(notifications.map((item) => item.read), [true, false, false]);
+});
+
 test('catch-up prompt limits the response to one generic update while more remain', () => {
   const prompt = catchUpPrompt({ id: 'one' }, 3);
   assert.match(prompt, /exactly this one pending update/);
