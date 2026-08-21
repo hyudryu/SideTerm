@@ -1,5 +1,32 @@
 const { visionEndpointConfigurationError } = require('./credentials.cjs');
 
+const MAX_VISION_RESPONSE_BYTES = 512 * 1024;
+
+async function readBoundedResponseText(response, maxBytes = MAX_VISION_RESPONSE_BYTES) {
+  const limit = Math.max(1024, Math.floor(Number(maxBytes) || MAX_VISION_RESPONSE_BYTES));
+  const declaredLength = Number(response?.headers?.get?.('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > limit) {
+    throw new Error(`Vision provider response exceeded ${limit} bytes.`);
+  }
+  if (!response?.body) return '';
+  const reader = response.body.getReader?.();
+  if (!reader) throw new Error('Vision provider response cannot be read safely.');
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    if (total > limit) {
+      void reader.cancel().catch(() => {});
+      throw new Error(`Vision provider response exceeded ${limit} bytes.`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
 function extractResponseText(payload = {}) {
   const content = payload.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
@@ -92,7 +119,13 @@ async function analyzeScreenshot(image, options = {}) {
             ]
           })
         });
-        const providerPayload = await providerResponse.json().catch(() => ({}));
+        const responseText = await readBoundedResponseText(providerResponse);
+        let providerPayload = {};
+        try {
+          providerPayload = JSON.parse(responseText);
+        } catch {
+          providerPayload = {};
+        }
         return { response: providerResponse, payload: providerPayload };
       })(),
       new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }))
@@ -107,4 +140,4 @@ async function analyzeScreenshot(image, options = {}) {
   return parseStructuredPerception(extractResponseText(payload));
 }
 
-module.exports = { analyzeScreenshot, extractResponseText, parseStructuredPerception };
+module.exports = { MAX_VISION_RESPONSE_BYTES, analyzeScreenshot, extractResponseText, parseStructuredPerception, readBoundedResponseText };

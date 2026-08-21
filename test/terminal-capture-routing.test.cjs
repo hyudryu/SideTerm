@@ -26,15 +26,18 @@ test('terminal capture hides credential-bearing and nonterminal overlays', () =>
   assert.match(renderer, /querySelectorAll\('\.settings-backdrop, \.link-popover, \.toast-region'\)/);
   assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = true/);
   assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = overlay\.hidden/);
+  assert.match(renderer, /querySelectorAll\('input\[type="password"\]'\)[\s\S]*credential\.element\.value = '••••••••'/);
   assert.match(renderer, /supervisorDashboard\.hidden = true/);
 });
 
-test('whole-window capture uses the same overlay hide and restore lifecycle', () => {
+test('whole-window capture preserves observable overlays and restores masked credentials', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(main, /requestRendererAction\('prepare-window-capture'/);
   assert.match(main, /prepare-window-capture'[\s\S]*capturePage\(\)[\s\S]*finally \{[\s\S]*restore-terminal-capture/);
-  assert.match(renderer, /type === 'prepare-window-capture'[\s\S]*hideNonterminalCaptureOverlays\(\{ hideDashboard: false \}\)/);
+  assert.match(renderer, /type === 'prepare-window-capture'[\s\S]*hideNonterminalCaptureOverlays\(\{ hideDashboard: false, preserveOverlays: true \}\)/);
+  assert.match(renderer, /if \(!preserveOverlays\) \{[\s\S]*overlay\.element\.hidden = true/);
+  assert.match(renderer, /credential\.element\.value = credential\.value/);
 });
 
 test('session capture restores the live active session without dropping PTY output', () => {
@@ -47,7 +50,7 @@ test('session capture restores the live active session without dropping PTY outp
 
 test('whole-window capture preserves the dashboard while masking sensitive overlays', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  assert.match(renderer, /hideNonterminalCaptureOverlays\(\{ hideDashboard = true \} = \{\}\)/);
+  assert.match(renderer, /hideNonterminalCaptureOverlays\(\{ hideDashboard = true, preserveOverlays = false \} = \{\}\)/);
   assert.match(renderer, /if \(hideDashboard\) \{[\s\S]*supervisorDashboard\.hidden = true/);
 });
 
