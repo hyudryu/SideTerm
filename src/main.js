@@ -63,6 +63,7 @@ let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
 let clearVisionApiKeyRequested = false;
+let visionKeyEndpointDraft = '';
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -98,6 +99,7 @@ let linkPopoverTimer = null;
 let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
 let agentCatchUpInFlight = false;
 let supervisorDashboardActive = false;
+let terminalCaptureRestore = null;
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
@@ -449,6 +451,7 @@ function populateSettingsPanel() {
   document.querySelector('#vision-enabled').checked = Boolean(settings.visionEnabled);
   document.querySelector('#vision-use-supervisor-model').checked = settings.visionUseSupervisorModel !== false;
   document.querySelector('#vision-api-url').value = settings.visionApiUrl || '';
+  visionKeyEndpointDraft = settings.visionApiUrl || '';
   document.querySelector('#vision-model').value = settings.visionModel || '';
   document.querySelector('#vision-api-key').value = '';
   document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
@@ -1497,8 +1500,54 @@ async function submitAgentChat(text, { spokenRequest = false } = {}) {
   }
 }
 
+function restoreTerminalVisualCapture() {
+  const restore = terminalCaptureRestore;
+  terminalCaptureRestore = null;
+  restore?.();
+}
+
 async function handleAgentAction({ requestId, type, payload }) {
   try {
+    if (type === 'prepare-terminal-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The session is no longer available.');
+      const activePanes = [...document.querySelectorAll('.terminal-pane.active')];
+      const dashboardWasHidden = supervisorDashboard.hidden;
+      const supervisorWasActive = shellElement.classList.contains('supervisor-active');
+      terminalCaptureRestore = () => {
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
+        for (const pane of activePanes) pane.classList.add('active');
+        supervisorDashboard.hidden = dashboardWasHidden;
+        shellElement.classList.toggle('supervisor-active', supervisorWasActive);
+        requestAnimationFrame(fitActive);
+      };
+      try {
+        for (const pane of activePanes) pane.classList.remove('active');
+        session.pane.classList.add('active');
+        supervisorDashboard.hidden = true;
+        shellElement.classList.remove('supervisor-active');
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        session.fit.fit();
+        const rect = session.pane.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The terminal has no visible capture area.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
+    if (type === 'restore-terminal-capture') {
+      restoreTerminalVisualCapture();
+      api.resolveAgentAction(requestId, { restored: true });
+      return;
+    }
     if (type === 'create-session') {
       let group = payload.createGroup
         ? null
@@ -2891,6 +2940,19 @@ document.querySelector('#install-stt').addEventListener('click', () => void inst
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#vision-enabled').addEventListener('change', syncVisionFields);
 document.querySelector('#vision-use-supervisor-model').addEventListener('change', syncVisionFields);
+document.querySelector('#vision-api-url').addEventListener('change', (event) => {
+  const origin = (value) => {
+    try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
+  };
+  if (origin(event.target.value) !== origin(visionKeyEndpointDraft)) {
+    clearVisionApiKeyRequested = true;
+    document.querySelector('#vision-api-key').value = '';
+    document.querySelector('#vision-api-key').placeholder = 'Enter a key for this endpoint';
+    document.querySelector('#vision-key-state').textContent = 'Key cleared for endpoint change';
+    document.querySelector('#clear-vision-api-key').hidden = true;
+  }
+  visionKeyEndpointDraft = event.target.value;
+});
 document.querySelector('#vision-api-key').addEventListener('input', (event) => {
   if (event.target.value) clearVisionApiKeyRequested = false;
 });

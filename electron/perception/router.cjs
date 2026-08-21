@@ -16,6 +16,10 @@ function normalizePerception(value = {}, source = 'unknown') {
   };
 }
 
+function requiresVisualEvidence(question) {
+  return /\b(?:color|colour|highlight(?:ed)?|selected|selection|cursor|layout|position|icon|image|screenshot|look(?:s|ing)?|visible|visual|red|green|blue)\b/i.test(String(question || ''));
+}
+
 class PerceptionRouter {
   constructor(providers = {}) {
     this.providers = providers;
@@ -49,4 +53,4 @@ class PerceptionRouter {
   }
 }
 
-module.exports = { PerceptionRouter, normalizePerception };
+module.exports = { PerceptionRouter, normalizePerception, requiresVisualEvidence };
