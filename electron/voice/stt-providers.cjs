@@ -21,6 +21,13 @@ function providerConfigurationError(id, options = {}) {
   if (!options.credential) return `${descriptor.name} credentials are not configured.`;
   if (id === 'azure' && !options.region && !options.endpoint) return 'Azure Speech requires a region or endpoint.';
   if (id === 'aws' && !options.region) return 'Amazon Transcribe requires a region.';
+  if (id === 'aws') {
+    try {
+      awsCredentials(options.credential);
+    } catch (error) {
+      return error.message;
+    }
+  }
   return '';
 }
 

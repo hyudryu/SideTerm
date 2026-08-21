@@ -60,7 +60,12 @@ test('cloud readiness includes each provider specific region requirement', () =>
   assert.match(providerConfigurationError('azure', { credential: 'secret' }), /region or endpoint/);
   assert.equal(providerConfigurationError('azure', { credential: 'secret', endpoint: 'https://example.test' }), '');
   assert.match(providerConfigurationError('aws', { credential: 'id:secret' }), /region/);
+  assert.match(providerConfigurationError('aws', { credential: 'secret', region: 'us-west-2' }), /accessKeyId:secretAccessKey/);
+  assert.match(providerConfigurationError('aws', { credential: '{}', region: 'us-west-2' }), /accessKeyId:secretAccessKey/);
   assert.equal(providerConfigurationError('aws', { credential: 'id:secret', region: 'us-west-2' }), '');
+  assert.equal(providerConfigurationError('aws', {
+    credential: '{"accessKeyId":"id","secretAccessKey":"secret"}', region: 'us-west-2'
+  }), '');
 });
 
 test('Google joins every final recognition segment', async (context) => {
