@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PerceptionRouter, requiresVisualEvidence, structuredStateSufficient } = require('../electron/perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('../electron/perception/router.cjs');
+const { fitSessionCollection } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
   let cloudCalled = false;
@@ -64,4 +65,27 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('Summarize this session.'), true);
   assert.equal(structuredStateSufficient('What command is running in this session?'), false);
   assert.equal(structuredStateSufficient('What is visible in the window?'), false);
+});
+
+test('structured collection payloads remain valid within the router summary limit', () => {
+  const candidates = Array.from({ length: 200 }, (_, index) => ({
+    id: `session-${index}`,
+    title: `Session ${index}`,
+    summary: 'x'.repeat(160),
+    status: 'idle'
+  }));
+  const result = fitSessionCollection({
+    sessionCollection: { total: 300, running: 1, idle: 199, stopped: 100 },
+    supervisorStatus: 'idle'
+  }, candidates);
+  assert.ok(result.summary.length <= 3900);
+  assert.deepEqual(JSON.parse(result.summary), result.payload);
+  assert.equal(result.payload.sessionCollection.total, 300);
+  assert.equal(result.payload.sessionCollection.truncated, true);
+});
+
+test('truncated collections lower confidence only when the full member list is required', () => {
+  assert.equal(structuredCollectionRequiresCompleteList('How many sessions are active?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('List all session names'), true);
+  assert.equal(structuredCollectionRequiresCompleteList('Which sessions are busy?'), true);
 });

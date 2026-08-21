@@ -50,7 +50,7 @@ test('collection status inspection includes the bounded live session list', () =
   assert.match(main, /const listedSessions = sessionId \? \[\] : workspaceSessions\.slice\(0, 200\)\.map/);
   assert.match(main, /status: item\.busy \? 'running' : sessions\.has\(item\.id\) \? 'idle' : 'stopped'/);
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
-  assert.match(main, /sessionCollection: \{[\s\S]*\.\.\.sessionCounts[\s\S]*returned: listedSessions\.length[\s\S]*truncated:/);
+  assert.match(main, /fitSessionCollection\(\{[\s\S]*sessionCollection: \{[\s\S]*\.\.\.sessionCounts/);
   assert.match(main, /session: metadata \? \{[\s\S]*needsAttention: Boolean\(metadata\.notified\)/);
 });
 
