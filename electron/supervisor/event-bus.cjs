@@ -105,6 +105,18 @@ class PriorityEventBus {
     }) || null;
   }
 
+  claimNext(activeInteractionId = null) {
+    const event = this.next(activeInteractionId);
+    if (!event) return null;
+    return this.transition(event.id, 'presented');
+  }
+
+  releaseClaim(id) {
+    const event = this.events.find((item) => item.id === String(id));
+    if (!event || event.read || event.state !== 'presented') return null;
+    return this.transition(event.id, 'queued');
+  }
+
   transition(id, state) {
     const event = this.events.find((item) => item.id === id);
     if (!event) return null;

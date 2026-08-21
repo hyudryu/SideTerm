@@ -43,6 +43,15 @@ test('catch-up selection can use the event bus priority order', () => {
   assert.equal(bus.next('').id, 'old-failure');
 });
 
+test('claiming hides an event from competing presenters and a failed claim can be released', () => {
+  const bus = new PriorityEventBus([]);
+  bus.enqueue({ id: 'completion', kind: 'COMPLETED' });
+  assert.equal(bus.claimNext('').id, 'completion');
+  assert.equal(bus.claimNext(''), null);
+  assert.equal(bus.releaseClaim('completion').state, 'queued');
+  assert.equal(bus.claimNext('').id, 'completion');
+});
+
 test('resolved interactions acknowledge every bound event', () => {
   const events = [];
   const bus = new PriorityEventBus(events);
