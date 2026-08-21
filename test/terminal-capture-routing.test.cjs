@@ -14,3 +14,11 @@ test('visual inspection captures the styled live terminal and preserves fallback
   assert.match(renderer, /session\.fit\.fit\(\);[\s\S]*await waitForTerminalCaptureRepaint\(\)/);
   assert.match(renderer, /window\.setTimeout\(done, 80\)/);
 });
+
+test('terminal capture hides credential-bearing and nonterminal overlays', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(renderer, /querySelectorAll\('\.settings-backdrop, \.link-popover, \.toast-region'\)/);
+  assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = true/);
+  assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = overlay\.hidden/);
+  assert.match(renderer, /supervisorDashboard\.hidden = true/);
+});
