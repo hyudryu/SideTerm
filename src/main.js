@@ -1560,9 +1560,12 @@ async function handleAgentAction({ requestId, type, payload }) {
       const activePanes = [...document.querySelectorAll('.terminal-pane.active')];
       const dashboardWasHidden = supervisorDashboard.hidden;
       const supervisorWasActive = shellElement.classList.contains('supervisor-active');
+      const overlayStates = [...document.querySelectorAll('.settings-backdrop, .link-popover, .toast-region')]
+        .map((element) => ({ element, hidden: element.hidden }));
       terminalCaptureRestore = () => {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         for (const pane of activePanes) pane.classList.add('active');
+        for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
         supervisorDashboard.hidden = dashboardWasHidden;
         shellElement.classList.toggle('supervisor-active', supervisorWasActive);
         requestAnimationFrame(fitActive);
@@ -1572,6 +1575,7 @@ async function handleAgentAction({ requestId, type, payload }) {
         session.pane.classList.add('active');
         supervisorDashboard.hidden = true;
         shellElement.classList.remove('supervisor-active');
+        for (const overlay of overlayStates) overlay.element.hidden = true;
         session.fit.fit();
         await waitForTerminalCaptureRepaint();
         const rect = session.pane.getBoundingClientRect();
