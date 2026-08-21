@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
 
@@ -53,6 +55,11 @@ test('automatic presenter sentinels are never spoken as updates', () => {
 test('final catch-up may ask what to do next', () => {
   assert.match(catchUpPrompt({ id: 'last' }, 0), /final pending update/);
   assert.equal(catchUpPrompt(null), '');
+});
+
+test('proactive enrichment yields to higher-priority user work', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /if \(result\.needsEnrichment\) \{[\s\S]*?notificationIds: \[event\.id\],[\s\S]*?interruptible: true/);
 });
 
 test('persisted unread updates are scheduled once after workspace restoration', () => {

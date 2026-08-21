@@ -259,7 +259,23 @@ async function mergePullRequest(value, options = {}) {
   const headSha = String(options.headSha || '');
   if (!/^[0-9a-f]{7,40}$/i.test(headSha)) throw new Error('The approved pull-request revision is missing or invalid. Refresh the pull request before merging.');
   const execute = options.runGh || runGh;
-  await execute(['pr', 'merge', ref.url, '--merge', '--match-head-commit', headSha], { owner: ref.owner, timeout: 120_000 });
+  let strategy = '--merge';
+  try {
+    const output = await execute(['api', `repos/${ref.owner}/${ref.repo}`], { owner: ref.owner, timeout: 20_000 });
+    const repository = JSON.parse(output || '{}');
+    strategy = repository.allow_merge_commit
+      ? '--merge'
+      : repository.allow_squash_merge
+        ? '--squash'
+        : repository.allow_rebase_merge
+          ? '--rebase'
+          : '';
+    if (!strategy) throw new Error('This repository does not have an enabled pull-request merge strategy.');
+  } catch (error) {
+    if (/does not have an enabled/.test(String(error?.message || ''))) throw error;
+    throw new Error(`SideTerm could not determine the repository's enabled merge strategy: ${String(error?.message || error)}`);
+  }
+  await execute(['pr', 'merge', ref.url, strategy, '--match-head-commit', headSha], { owner: ref.owner, timeout: 120_000 });
   let state = 'UNKNOWN';
   try {
     const output = await execute(['pr', 'view', ref.url, '--json', 'state'], { owner: ref.owner, timeout: 20_000 });
