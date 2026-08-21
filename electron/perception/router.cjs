@@ -2,7 +2,7 @@ function normalizePerception(value = {}, source = 'unknown') {
   return {
     source,
     summary: String(value.summary || '').slice(0, 4000),
-    visibleText: Array.isArray(value.visibleText) ? value.visibleText.map(String).slice(0, 200) : [],
+    visibleText: Array.isArray(value.visibleText) ? value.visibleText.map((item) => String(item).slice(0, 1000)).slice(0, 200) : [],
     controls: Array.isArray(value.controls) ? value.controls.slice(0, 200).map((control) => ({
       type: String(control?.type || '').slice(0, 100),
       label: String(control?.label || '').slice(0, 300),
@@ -11,13 +11,13 @@ function normalizePerception(value = {}, source = 'unknown') {
         ? { x: control.bounds.x, y: control.bounds.y, width: control.bounds.width, height: control.bounds.height }
         : undefined
     })) : [],
-    errors: Array.isArray(value.errors) ? value.errors.map(String).slice(0, 50) : [],
+    errors: Array.isArray(value.errors) ? value.errors.map((item) => String(item).slice(0, 500)).slice(0, 50) : [],
     confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0))
   };
 }
 
 function requiresVisualEvidence(question) {
-  return /\b(?:color|colour|highlight(?:ed)?|selected|selection|cursor|layout|position|icon|image|screenshot|look(?:s|ing)?|visible|visual|red|green|blue)\b/i.test(String(question || ''));
+  return /\b(?:background|bold|color|colour|contrast|dark|font|foreground|highlight(?:ed)?|icon|image|italic|layout|light|look(?:s|ing)?|position|screenshot|selected|selection|style|styled|styling|theme|underline|visible|visual|red|green|blue)\b/i.test(String(question || ''));
 }
 
 function structuredStateSufficient(question) {

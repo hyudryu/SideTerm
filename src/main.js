@@ -1121,6 +1121,7 @@ function persistWorkspaceNow() {
   });
   api.updateMobileWorkspace({
     groups: mobileGroups,
+    activeId,
     sessions: savedSessions.map((session) => ({
       id: session.id,
       groupId: session.groupId,

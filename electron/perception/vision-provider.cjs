@@ -19,7 +19,7 @@ function parseStructuredPerception(text) {
     }
     const summary = typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 4000) : '';
     const visibleText = Array.isArray(parsed.visibleText)
-      ? parsed.visibleText.filter((item) => ['string', 'number'].includes(typeof item)).map(String).map((item) => item.trim()).filter(Boolean).slice(0, 200)
+      ? parsed.visibleText.filter((item) => ['string', 'number'].includes(typeof item)).map(String).map((item) => item.trim().slice(0, 1000)).filter(Boolean).slice(0, 200)
       : [];
     const controls = Array.isArray(parsed.controls)
       ? parsed.controls.filter((item) => item && typeof item === 'object' && (
@@ -30,7 +30,7 @@ function parseStructuredPerception(text) {
       )).slice(0, 200)
       : [];
     const errors = Array.isArray(parsed.errors)
-      ? parsed.errors.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 50)
+      ? parsed.errors.map(String).map((item) => item.trim().slice(0, 500)).filter(Boolean).slice(0, 50)
       : [];
     const hasEvidence = Boolean(summary || visibleText.length || controls.length);
     return {

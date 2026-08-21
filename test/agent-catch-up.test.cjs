@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, latestNotificationsBySession, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
 
 test('catch-up processes newest unread notifications first without mutating input', () => {
   const notifications = [
@@ -41,6 +41,14 @@ test('catch-up preserves semantically distinct typed events from one session', (
   assert.deepEqual(notifications.map((item) => item.read), [true, false, false]);
 });
 
+test('session state uses the newest retained event across distinct kinds', () => {
+  const notifications = [
+    { id: 'older-completion', sessionId: 'one', kind: 'COMPLETED', createdAt: 10, read: false },
+    { id: 'newer-failure', sessionId: 'one', kind: 'FAILED', createdAt: 20, read: false }
+  ];
+  assert.equal(latestNotificationsBySession(notifications).get('one').id, 'newer-failure');
+});
+
 test('catch-up prompt limits the response to one generic update while more remain', () => {
   const prompt = catchUpPrompt({ id: 'one' }, 3);
   assert.match(prompt, /exactly this one pending update/);
@@ -61,6 +69,11 @@ test('automatic presenter sentinels are never spoken as updates', () => {
   assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
   assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
   assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
+});
+
+test('proactive enrichment also suppresses presenter sentinels', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /const presenterSentinel = automatic \|\| proactive \? automaticPresenterSentinel\(result\.text\) : ''/);
 });
 
 test('final catch-up may ask what to do next', () => {

@@ -10,7 +10,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
-const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -85,7 +85,7 @@ let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
-let mobileWorkspace = { groups: [], sessions: [] };
+let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
 let agentStatus = 'idle';
@@ -674,7 +674,7 @@ function readAgentState() {
         createdAt: Number(item?.createdAt) || Date.now()
       })).filter((item) => item.name && item.description && item.instructions) : []
     };
-    reconcileConfirmationInteractions(state);
+    reconcileConfirmationInteractions(state, { migrateLegacy: Number(parsed.version || 1) < 2 });
     migrateLegacyPullRequestWatches(state.watches, state.pullRequests);
     return state;
   } catch {
@@ -1268,6 +1268,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         summary: String(item.summary || '').slice(0, 160),
         busy: Boolean(item.busy),
         status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
+        active: item.id === mobileWorkspace.activeId,
         needsAttention: Boolean(item.notified)
       }));
       const fitted = fitSessionCollection({
@@ -1280,6 +1281,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         sessionCollection: {
           ...sessionCounts
         },
+        activeSessionId: mobileWorkspace.activeId,
         supervisorStatus: agentStatus,
         activeInteractionId: readAgentState().activeInteractionId
       }, listedSessions, { includeSessions: !sessionId });
@@ -1344,9 +1346,7 @@ async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '', t
 const supervisorActions = {
   listSessions({ includeArchived = true } = {}) {
     const state = readAgentState();
-    const latestAttentionBySession = new Map(pendingNotifications(state.notifications)
-      .filter((notification) => notification.sessionId)
-      .map((notification) => [notification.sessionId, notification]));
+    const latestAttentionBySession = latestNotificationsBySession(state.notifications);
     const liveIds = new Set();
     for (const item of mobileWorkspace.sessions) {
       liveIds.add(item.id);
@@ -1626,7 +1626,7 @@ async function performSupervisorChat(text, {
         && ['queued', 'presented', 'awaiting_answer'].includes(item.state)
         && latest.confirmations.some((confirmation) => confirmation.id === item.id))
       .sort((left, right) => right.createdAt - left.createdAt)[0];
-    const presenterSentinel = automatic ? automaticPresenterSentinel(result.text) : '';
+    const presenterSentinel = automatic || proactive ? automaticPresenterSentinel(result.text) : '';
     const needsEnrichment = presenterSentinel === 'NEEDS_ENRICHMENT';
     const suppressed = Boolean(presenterSentinel);
     if (!suppressed) {
@@ -1968,7 +1968,7 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
     return {
       ...result,
       processedNotificationId: notification.id,
-      interactionId: String(notification.payload?.interactionId || ''),
+      interactionId: String(result.interactionId || notification.payload?.interactionId || ''),
       remainingCount: remaining,
       hasMore: remaining > 0
     };
@@ -2634,7 +2634,8 @@ function sanitizeMobileWorkspace(value) {
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
-  return { groups, sessions: workspaceSessions };
+  const activeId = String(value?.activeId || '').slice(0, 100);
+  return { groups, sessions: workspaceSessions, activeId: workspaceSessions.some((session) => session.id === activeId) ? activeId : '' };
 }
 
 function mobileSessionSnapshot() {
