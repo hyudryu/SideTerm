@@ -24,6 +24,8 @@ function fitSessionCollection(payload = {}, candidates = [], options = {}) {
       break;
     }
     fitted.sessionCollection.truncated = fitted.sessions.length < total;
+  } else {
+    fitted.sessionCollection.truncated = total > 0;
   }
   const summary = JSON.stringify(fitted);
   if (summary.length > maxChars) throw new Error('Structured session metadata exceeds the perception limit.');

@@ -26,9 +26,10 @@ function structuredStateSufficient(question) {
   if (/\bactive interaction\b/i.test(text)) return true;
   if (/(?:\b(?:supervisor|agent)\b[^?.]*\bstatus\b|\bstatus\b[^?.]*\b(?:supervisor|agent)\b)/i.test(text)) return true;
   if (!/\bsessions?\b/i.test(text)) return false;
+  if (/\bcommand\b/i.test(text)) return false;
   if (/\bsessions\b/i.test(text)
     && /\b(?:list|count|how many|status|busy|working|running|idle|active|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text)) return true;
-  return /\b(?:status|busy|working|idle|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text);
+  return /\b(?:status|busy|working|running|idle|stopped|active|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text);
 }
 
 function structuredCollectionRequiresCompleteList(question) {
