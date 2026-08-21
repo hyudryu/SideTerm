@@ -1388,7 +1388,9 @@ async function runAgentCatchUpQueue() {
         if (result.hasMore) continue;
         break;
       }
-      const speechCompleted = await queueAgentSpeech(result.speech || result.response);
+      const speechCompleted = await queueAgentSpeech(result.speech || result.response, {
+        interactionId: result.interactionId || ''
+      });
       if (!speechCompleted) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
@@ -1565,11 +1567,14 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text, { openReplyWindow = true } = {}) {
+async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}) {
   if (!desktopVoiceMode) return true;
   try {
     const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
-    if (completed && openReplyWindow) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) {
+      voiceReplyInteractionId = String(interactionId || '');
+      voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    }
     return completed;
   } catch (error) {
     showToast(`Voice: ${error.message}`);
@@ -2853,8 +2858,11 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
+api.onAgentVoicePing(({ text, acknowledgement, interactionId } = {}) => {
+  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), {
+    openReplyWindow: !acknowledgement,
+    interactionId: String(interactionId || '')
+  });
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
