@@ -47,7 +47,7 @@ Voice mode is off until explicitly enabled from an agent dashboard. NVIDIA Parak
 
 ## Optional DeepSeek Harness bridge
 
-The installable bundle lives at `plugins/dsh-sideterm-bridge`. Install it into the Harness profile you use, then configure the same random bridge token in that profile and in **SideTerm Settings → Supervisor**:
+The installable bundle lives at `plugins/dsh-sideterm-bridge` in a source checkout. The `.deb` installs it at `/opt/SideTerm/resources/plugins/dsh-sideterm-bridge`. For an AppImage, run `./SideTerm-*.AppImage --appimage-extract` once and use `./squashfs-root/resources/plugins/dsh-sideterm-bridge`. Install the matching path into the Harness profile you use, then configure the same random bridge token in that profile and in **SideTerm Settings → Supervisor**:
 
 ```bash
 dsh plugin --profile demo add ./plugins/dsh-sideterm-bridge

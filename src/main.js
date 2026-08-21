@@ -1586,7 +1586,7 @@ function renderSpeechStatus(status) {
   const tts = document.querySelector('#tts-status');
   if (stt) {
     stt.textContent = status.sttLocation === 'cloud'
-      ? status.sttInstalled ? `Configured · CLOUD — ${status.sttProviderName}` : `Needs credential · CLOUD — ${status.sttProviderName}`
+      ? status.sttInstalled ? `Configured · CLOUD — ${status.sttProviderName}` : `Needs setup · CLOUD — ${status.sttProviderName}`
       : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
     stt.classList.remove('install-error');
     stt.removeAttribute('title');
@@ -3036,6 +3036,10 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', persistWorkspaceNow);
+api.onWindowWillHide(() => {
+  if (desktopVoiceMode) stopDesktopVoiceMode();
+  persistWorkspaceNow();
+});
 window.setInterval(() => void refreshRuntimeStateAndPersist(), 2_000);
 
 async function restoreSavedWorkspace() {

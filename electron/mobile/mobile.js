@@ -49,6 +49,7 @@ let mobileTranscriptionInFlight = false;
 let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
+let mobileSttLocation = 'local';
 let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
@@ -418,6 +419,7 @@ function connect() {
         ? message.transcript.reason
         : message.transcript.text;
     }
+    if (message.type === 'voice:status') mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
     if (message.type === 'agent:catch-up-result') void handleCatchUpResult(message);
     if (message.type === 'agent:catch-up-busy') catchupRequested = false;
     if (message.type === 'voice:audio') {
