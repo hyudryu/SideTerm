@@ -7,6 +7,7 @@ import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, 
 import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES, shouldRearmAiSummary } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
 import { sessionDisplayLabels } from './session-labels.js';
+import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -2249,6 +2250,10 @@ async function addSession(cwd, options = {}) {
     letterSpacing: 0.1,
     lineHeight: 1.15,
     scrollback: 10000,
+    linkHandler: {
+      activate: (event, text) => openTerminalLink(event, text, api.openExternal),
+      allowNonHttpProtocols: false
+    },
     theme: {
       background: '#0c0c0c', foreground: '#f2f2f2', cursor: '#f2f2f2', cursorAccent: '#0c0c0c', selectionBackground: '#264f78',
       black: '#0c0c0c', red: '#c50f1f', green: '#13a10e', yellow: '#c19c00', blue: '#0037da', magenta: '#881798', cyan: '#3a96dd', white: '#cccccc',
@@ -2258,6 +2263,7 @@ async function addSession(cwd, options = {}) {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open(pane);
+  terminal.registerLinkProvider(createTerminalLinkProvider(terminal, api.openExternal));
 
   const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
   const session = {
