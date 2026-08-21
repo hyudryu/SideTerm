@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { claimConfirmation, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
+const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
 
 test('a confirmation can only be claimed once', () => {
   const state = { confirmations: [{ id: 'one', body: 'post once' }] };
@@ -37,4 +37,34 @@ test('closing a pull request retires only its merge confirmations', () => {
   ] };
   assert.deepEqual(retirePullRequestConfirmations(state, 'https://github.com/acme/repo/pull/1').map((item) => item.id), ['merge-1']);
   assert.deepEqual(state.confirmations.map((item) => item.id), ['merge-2', 'comment']);
+});
+
+test('orphaned approval interactions and their events are retired together', () => {
+  const state = {
+    confirmations: [{ id: 'evicted-confirmation' }, { id: 'kept' }],
+    interactions: [
+      { id: 'evicted', kind: 'approval', state: 'awaiting_answer', priority: 0, createdAt: 1 },
+      { id: 'kept', kind: 'approval', state: 'queued', priority: 1, createdAt: 2 }
+    ],
+    notifications: [{ id: 'event', state: 'queued', read: false, payload: { interactionId: 'evicted' } }],
+    activeInteractionId: 'evicted'
+  };
+  assert.deepEqual([...reconcileConfirmationInteractions(state)], ['evicted-confirmation', 'evicted']);
+  assert.deepEqual(state.confirmations.map((item) => item.id), ['kept']);
+  assert.deepEqual(state.interactions.map((item) => item.id), ['kept']);
+  assert.equal(state.notifications[0].state, 'acknowledged');
+  assert.equal(state.notifications[0].read, true);
+  assert.equal(state.activeInteractionId, 'kept');
+  assert.equal(state.interactions[0].state, 'presented');
+});
+
+test('an answered approval stays paired while its action is in flight', () => {
+  const state = {
+    confirmations: [],
+    interactions: [{ id: 'claimed', kind: 'approval', state: 'answered' }],
+    notifications: [],
+    activeInteractionId: ''
+  };
+  reconcileConfirmationInteractions(state);
+  assert.equal(state.interactions[0].id, 'claimed');
 });
