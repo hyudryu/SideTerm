@@ -10,3 +10,9 @@ test('session index keeps canonical identity and monotonic revisions', () => {
   assert.equal(second.semanticState, 'input_required');
   assert.ok(second.revision > first.revision);
 });
+
+test('session index clears a semantic state when the new projection acknowledges it', () => {
+  const index = new SessionIndex([{ id: 'a', semanticState: 'completed' }]);
+  const current = index.upsert({ id: 'a', semanticState: undefined });
+  assert.equal(current.semanticState, undefined);
+});

@@ -14,7 +14,9 @@ function normalizeSessionRecord(value = {}, previous = {}) {
     branch: String(value.branch || previous.branch || '').slice(0, 300),
     prNumber: Math.max(0, Number(value.prNumber || previous.prNumber) || 0),
     status: SESSION_STATUSES.has(value.status) ? value.status : previous.status || 'idle',
-    semanticState: SEMANTIC_STATES.has(value.semanticState) ? value.semanticState : previous.semanticState,
+    semanticState: Object.hasOwn(value, 'semanticState')
+      ? (SEMANTIC_STATES.has(value.semanticState) ? value.semanticState : undefined)
+      : previous.semanticState,
     currentTask: String(value.currentTask || previous.currentTask || '').slice(0, 1000),
     lastActivityAt: Number(value.lastActivityAt) || previous.lastActivityAt || Date.now(),
     revision: Math.max((Number(previous.revision) || 0) + 1, Number(value.revision) || 1)

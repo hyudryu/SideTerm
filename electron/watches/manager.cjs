@@ -11,6 +11,7 @@ function normalizeWatch(value = {}, options = {}) {
     exitCondition: String(value.exitCondition || '').slice(0, 100),
     lastFingerprint: String(value.lastFingerprint || '').slice(0, 500),
     headSha: String(value.headSha || '').slice(0, 100),
+    cancelledAt: Number(value.cancelledAt) || 0,
     createdAt: Number(value.createdAt) || (options.now?.() ?? Date.now()),
     updatedAt: Number(value.updatedAt) || (options.now?.() ?? Date.now())
   };
@@ -49,6 +50,7 @@ class WatchManager {
     if (!watch) return null;
     if (watch.headSha === String(headSha || '')) return watch;
     watch.state = 'active';
+    watch.cancelledAt = 0;
     watch.headSha = String(headSha || '').slice(0, 100);
     watch.lastFingerprint = '';
     watch.updatedAt = this.now();
@@ -60,6 +62,7 @@ class WatchManager {
     const watch = this.watches.find((item) => item.id === String(id));
     if (!watch) return false;
     watch.state = 'terminal';
+    watch.cancelledAt = this.now();
     watch.updatedAt = this.now();
     this.onChange(this.watches);
     return true;

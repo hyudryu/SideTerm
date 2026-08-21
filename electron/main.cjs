@@ -39,6 +39,7 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
+const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
@@ -48,7 +49,7 @@ const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
-const { namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
+const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
 const { WatchManager, normalizeWatch } = require('./watches/manager.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -591,6 +592,9 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false, 
   const watchManager = watchManagerFor(state);
   const repository = snapshot.url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i)?.[1] || '';
   let reviewWatch = state.watches.find((item) => item.kind === 'github_codex_review' && item.repo === repository && item.prNumber === snapshot.number);
+  // A fetch that was already in flight when the user cancelled the watch must
+  // not silently recreate its pull-request queue entry.
+  if (reviewWatch?.cancelledAt) return publicAgentState();
   if (!reviewWatch) {
     reviewWatch = watchManager.create({
       kind: 'github_codex_review', repo: repository, prNumber: snapshot.number, intervalSeconds: 60,
@@ -728,20 +732,24 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
       const state = readAgentState();
       const linkedPull = { ...snapshot, sessionId };
       const queuedPull = state.pullRequests.find((pull) => pull.url === snapshot.url);
-      const codexComments = snapshot.comments.filter(isActionableCodexComment);
+      const codexActors = readSettingsRecord().githubCodexActorLogins;
+      const codexComments = snapshot.comments.filter((comment) => isActionableCodexComment(comment, codexActors));
       const codexCount = codexComments.length;
-      if (codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
+      if (queuedPull && codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
         queuedPull.handledCodexComments = codexComments.map(commentRevisionKey).slice(-1000);
         const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
         addAgentMessage(state, 'event', `SideTerm told ${metadata?.title || sessionId} to address the existing Codex comments on PR #${snapshot.number}.`);
       }
-      if (queuedPull && reconcileCodexApproval(queuedPull, queuedPull).shouldPrompt) {
+      let mergeReadyAdded = false;
+      if (queuedPull && reconcileCodexApproval(queuedPull, queuedPull, '', codexActors).shouldPrompt) {
         queuedPull.mergePrompted = true;
         queuedPull.mergePromptedHeadSha = queuedPull.headSha;
         addMergeReadyMessage(state, snapshot);
+        mergeReadyAdded = true;
       }
       writeAgentState(state);
       broadcastAgentState();
+      if (mergeReadyAdded) scheduleProactiveCatchUp();
     }
   } catch {
     // A push can target a branch without an open PR. Monitoring starts once one can be discovered.
@@ -942,7 +950,7 @@ const supervisorActions = {
     if (['CTRL_C', 'CTRL_D'].includes(normalized)) throw new Error('Interrupt and EOF keys require direct user confirmation.');
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    if (['ENTER', 'SPACE'].includes(normalized) && tuiSnapshot(captureSessionScreen(session), sessionId).confidence < 0.8) {
+    if (!canSubmitTuiKey(tuiSnapshot(captureSessionScreen(session), sessionId), normalized)) {
       throw new Error('SideTerm will not submit a key unless a structured TUI menu is visible.');
     }
     const data = namedKeyData(normalized);
@@ -977,8 +985,15 @@ const supervisorActions = {
   },
   watchCancel({ watchId }) {
     const state = readAgentState();
+    const watch = state.watches.find((item) => item.id === String(watchId));
     const cancelled = watchManagerFor(state).cancel(watchId);
     if (!cancelled) throw new Error('Watch not found.');
+    if (watch?.kind === 'github_codex_review') {
+      state.pullRequests = state.pullRequests.filter((pull) => {
+        const repository = pull.url?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i)?.[1] || '';
+        return repository !== watch.repo || Number(pull.number) !== Number(watch.prNumber);
+      });
+    }
     writeAgentState(state);
     broadcastAgentState();
     return { cancelled: true, watchId };
@@ -1114,7 +1129,7 @@ function chatWithSupervisor(text, options = {}) {
   return supervisorActor.enqueue(
     () => performSupervisorChat(text, options),
     {
-      priority: options.proactive ? 2 : 0,
+      priority: options.automatic || options.proactive ? 2 : 0,
       interruptible: Boolean(options.automatic),
       cancel: () => supervisorRuntime?.cancelAutomatic?.()
     }
@@ -1512,13 +1527,15 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
   const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${extension}`);
+  const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
   fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
   speechTranscriptionInFlight = true;
   try {
     const settings = readSettingsRecord();
+    await convertToSpeechWav(inputPath, wavPath);
     const transcript = await getSpeechWorker().request('transcribe', {
       model: settings.sttModel,
-      input: inputPath,
+      input: wavPath,
       language: 'en',
       initialPrompt: `English conversation with a coding assistant. The wake phrase is "${settings.wakeWord || 'Hey Agent'}".`
     });
@@ -1552,6 +1569,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   } finally {
     speechTranscriptionInFlight = false;
     try { fs.unlinkSync(inputPath); } catch {}
+    try { fs.unlinkSync(wavPath); } catch {}
   }
 }
 
