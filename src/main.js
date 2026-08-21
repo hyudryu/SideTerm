@@ -1525,11 +1525,15 @@ function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
   if (stt) {
+    const configurationError = String(status.sttConfigurationError || '').trim();
     stt.textContent = status.sttLocation === 'cloud'
-      ? status.sttInstalled ? `Configured · CLOUD — ${status.sttProviderName}` : `Needs setup · CLOUD — ${status.sttProviderName}`
+      ? status.sttInstalled
+        ? `Configured · CLOUD — ${status.sttProviderName}`
+        : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
       : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
-    stt.classList.remove('install-error');
-    stt.removeAttribute('title');
+    stt.classList.toggle('install-error', Boolean(configurationError));
+    if (configurationError) stt.title = configurationError;
+    else stt.removeAttribute('title');
   }
   if (tts) {
     tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
