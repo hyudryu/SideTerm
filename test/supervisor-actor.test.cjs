@@ -25,3 +25,17 @@ test('higher-priority work cancels interruptible automatic work', async () => {
   assert.equal(cancelled, true);
   await Promise.all([automatic, user]);
 });
+
+test('an activation task can be cancelled by identity', async () => {
+  const actor = new SupervisorActor();
+  let release;
+  let cancelled = false;
+  const task = actor.enqueue(
+    () => new Promise((resolve) => { release = resolve; }),
+    { id: 'activation-1', interruptible: true, cancel: () => { cancelled = true; release('late'); } }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(actor.cancel('activation-1'), true);
+  await assert.rejects(task, { name: 'AbortError' });
+  assert.equal(cancelled, true);
+});

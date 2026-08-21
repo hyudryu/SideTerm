@@ -24,6 +24,11 @@ test('mobile voice mode is reannounced after a WebSocket reconnect', () => {
   assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId \}\)/);
 });
 
+test('mobile refreshes both speech provider location and name', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /message\.type === 'voice:status'[\s\S]*mobileSttLocation[\s\S]*mobileSttProviderName/);
+});
+
 test('mobile creation and suppressed catch-up recover without a reload', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
   assert.match(script, /resetPendingMobileCreate\('Connection was interrupted/);

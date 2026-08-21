@@ -36,6 +36,7 @@ class PresentationCoordinator {
       if (targets && !targets.has(id)) continue;
       const queuedAt = Date.now();
       surface.pending = surface.pending.catch(() => false).then(async () => {
+        if (typeof options.isCurrent === 'function' && !options.isCurrent(id)) return false;
         this.onMetric({ type: 'presentation-start', surfaceId: id, queuedAt, startedAt: Date.now(), eventId: options.eventId || '' });
         return surface.present(content, options);
       });

@@ -87,6 +87,8 @@ let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
 let agentStatus = 'idle';
 let supervisorVoiceMode = false;
+let desktopVoiceActivationGeneration = 0;
+let desktopVoiceActivationTaskId = '';
 let proactiveScheduler = null;
 let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
@@ -96,7 +98,7 @@ const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
 const mobilePresentationSurfaces = new WeakMap();
-const mobileVoiceActivationIds = new Map();
+const completedMobileVoiceActivationIds = new Map();
 const sessionIndex = new SessionIndex();
 let harnessBackend = null;
 let harnessBridgeDisposers = [];
@@ -1443,8 +1445,9 @@ function chatWithSupervisor(text, options = {}) {
     () => performSupervisorChat(text, options),
     {
       priority: options.automatic || options.proactive ? 2 : 0,
-      interruptible: Boolean(options.automatic),
-      cancel: () => supervisorRuntime?.cancelAutomatic?.()
+      id: options.taskId,
+      interruptible: Boolean(options.automatic || options.interruptible),
+      cancel: () => options.automatic ? supervisorRuntime?.cancelAutomatic?.() : supervisorRuntime?.cancel?.()
     }
   );
 }
@@ -1510,17 +1513,29 @@ async function speakMobileVoiceUpdate(text) {
   await presentationCoordinator.present(text, { targets, opensReplyWindow: true });
 }
 
-async function performVoiceActivationUpdate(targets) {
+function activationStillCurrent(targets, isCurrent) {
+  return typeof isCurrent !== 'function' || targets.every((target) => isCurrent(target));
+}
+
+function staleActivationError() {
+  return Object.assign(new Error('Voice activation ended.'), { name: 'AbortError' });
+}
+
+async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model || !targets.length) return;
+  const present = (text, options = {}) => presentationCoordinator.present(text, { ...options, targets, isCurrent });
+  if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
   if (eventBusFor(readAgentState()).next()) {
-    await presentationCoordinator.present('I’ve got an update—one sec.', { targets, opensReplyWindow: false });
+    await present('I’ve got an update—one sec.', { opensReplyWindow: false });
+    if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
     if (eventBusFor(readAgentState()).next()) {
       const outcome = await runProactiveCatchUp();
       if (outcome === 'ran') return;
       if (outcome === 'failed') throw new Error('the queued update could not be processed');
     }
   }
+  if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
   const acknowledgement = 'I’m checking the latest.';
   const result = await chatWithSupervisor(
     'Voice mode was just enabled. Give the user the latest useful status across active sessions. Be concise; if nothing needs attention, say they are caught up.',
@@ -1528,21 +1543,28 @@ async function performVoiceActivationUpdate(targets) {
       synthetic: true,
       notificationIds: [],
       voice: true,
-      onAccepted: () => void presentationCoordinator.present(acknowledgement, { targets, opensReplyWindow: false })
+      taskId,
+      interruptible: true,
+      onAccepted: () => void present(acknowledgement, { opensReplyWindow: false })
     }
   );
-  if (result.speech) await presentationCoordinator.present(result.speech, { targets, opensReplyWindow: true });
+  if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
+  if (result.speech) await present(result.speech, { opensReplyWindow: true });
 }
 
-async function requestVoiceActivationUpdate(targets) {
+async function requestVoiceActivationUpdate(targets, activation = {}) {
   try {
-    await performVoiceActivationUpdate(targets);
+    await performVoiceActivationUpdate(targets, activation);
+    return activationStillCurrent(targets, activation.isCurrent);
   } catch (error) {
+    if (error?.name === 'AbortError' || !activationStillCurrent(targets, activation.isCurrent)) return false;
     const reason = String(error?.message || error || 'unknown error').replace(/\s+/g, ' ').slice(0, 180);
     await presentationCoordinator.present(`I couldn’t get the latest update. ${reason}.`, {
       targets,
-      opensReplyWindow: true
+      opensReplyWindow: true,
+      isCurrent: activation.isCurrent
     });
+    return true;
   }
 }
 
@@ -1550,8 +1572,11 @@ async function runProactiveCatchUp() {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
   const state = readAgentState();
-  const event = eventBusFor(state).next();
+  const bus = eventBusFor(state);
+  const event = bus.next();
   if (!event) return 'skipped';
+  bus.transition(event.id, 'presented');
+  writeAgentState(state);
   try {
     const voice = anyVoiceSurfaceOn();
     const presentation = deterministicPresentation(event);
@@ -1570,6 +1595,11 @@ async function runProactiveCatchUp() {
         onTextDelta: (delta) => sentences.push(delta)
       });
       sentences.flush();
+      if (!result.needsEnrichment) {
+        const completedState = readAgentState();
+        eventBusFor(completedState).transition(event.id, 'acknowledged');
+        writeAgentState(completedState);
+      }
       if (voice && result.speech && !streamed) void speakMobileVoiceUpdate(result.speech);
       if (!voice && result.response) notifyHiddenSupervisorUpdate(result.response);
       if (result.needsEnrichment) {
@@ -1580,10 +1610,18 @@ async function runProactiveCatchUp() {
           automatic: false,
           voice
         }).then((enriched) => {
+          const completedState = readAgentState();
+          eventBusFor(completedState).transition(event.id, 'acknowledged');
+          writeAgentState(completedState);
           if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech);
           if (!voice && enriched.response) notifyHiddenSupervisorUpdate(enriched.response);
           return null;
-        }).catch(() => {});
+        }).catch(() => {
+          const retryState = readAgentState();
+          eventBusFor(retryState).transition(event.id, 'queued');
+          writeAgentState(retryState);
+          scheduleProactiveCatchUp();
+        });
       }
       if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
       return 'ran';
@@ -1601,6 +1639,9 @@ async function runProactiveCatchUp() {
     if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
   } catch (error) {
+    const retryState = readAgentState();
+    eventBusFor(retryState).transition(event.id, 'queued');
+    writeAgentState(retryState);
     return 'failed';
   }
 }
@@ -2468,6 +2509,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, mobileVoiceSettings());
     sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
+      if (client.sideTermVoiceActivationTaskId) supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
       mobilePresentationSurfaces.get(client)?.dispose();
       mobilePresentationSurfaces.delete(client);
       if (mobileCatchUpCoordinator.release(client)) broadcastAgentState();
@@ -2562,18 +2604,33 @@ async function startMobileServer({ persist = true } = {}) {
       if (message.type === 'voice:mode') {
         const wasEnabled = Boolean(client.sideTermVoiceMode);
         client.sideTermVoiceMode = Boolean(message.enabled);
+        client.sideTermVoiceActivationGeneration = Number(client.sideTermVoiceActivationGeneration || 0) + 1;
+        if (client.sideTermVoiceActivationTaskId) {
+          supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
+          client.sideTermVoiceActivationTaskId = '';
+        }
         if (client.sideTermVoiceMode) {
           const activationId = String(message.activationId || '').slice(0, 100);
           const now = Date.now();
-          for (const [id, seenAt] of mobileVoiceActivationIds) {
-            if (now - seenAt > 24 * 60 * 60 * 1000) mobileVoiceActivationIds.delete(id);
+          for (const [id, completedAt] of completedMobileVoiceActivationIds) {
+            if (now - completedAt > 24 * 60 * 60 * 1000) completedMobileVoiceActivationIds.delete(id);
           }
-          const isNewActivation = !wasEnabled && (!activationId || !mobileVoiceActivationIds.has(activationId));
-          if (activationId) mobileVoiceActivationIds.set(activationId, now);
+          const isNewActivation = !wasEnabled && (!activationId || !completedMobileVoiceActivationIds.has(activationId));
           void warmTextToSpeech().catch(() => {});
           if (isNewActivation) {
             const surface = ensureMobilePresentationSurface(client);
-            void requestVoiceActivationUpdate([surface.id]);
+            const generation = client.sideTermVoiceActivationGeneration;
+            const taskId = `voice-activation:${surface.id}:${generation}`;
+            const isCurrent = (surfaceId) => surfaceId === surface.id
+              && client.sideTermVoiceMode
+              && client.sideTermVoiceActivationGeneration === generation
+              && client.readyState === 1;
+            client.sideTermVoiceActivationTaskId = taskId;
+            void requestVoiceActivationUpdate([surface.id], { taskId, isCurrent }).then((completed) => {
+              if (completed && activationId) completedMobileVoiceActivationIds.set(activationId, Date.now());
+            }).finally(() => {
+              if (client.sideTermVoiceActivationTaskId === taskId) client.sideTermVoiceActivationTaskId = '';
+            });
           }
         }
         return;
@@ -2894,10 +2951,23 @@ function registerIpc() {
   ));
   ipcMain.on('agent:voice-mode', (_event, enabled) => {
     const wasEnabled = supervisorVoiceMode;
+    if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
+    desktopVoiceActivationTaskId = '';
+    desktopVoiceActivationGeneration += 1;
     supervisorVoiceMode = Boolean(enabled);
     if (supervisorVoiceMode) {
       void warmTextToSpeech().catch(() => {});
-      if (!wasEnabled) void requestVoiceActivationUpdate(['desktop']);
+      if (!wasEnabled) {
+        const generation = desktopVoiceActivationGeneration;
+        const taskId = `voice-activation:desktop:${generation}`;
+        const isCurrent = (surfaceId) => surfaceId === 'desktop'
+          && supervisorVoiceMode
+          && desktopVoiceActivationGeneration === generation;
+        desktopVoiceActivationTaskId = taskId;
+        void requestVoiceActivationUpdate(['desktop'], { taskId, isCurrent }).finally(() => {
+          if (desktopVoiceActivationTaskId === taskId) desktopVoiceActivationTaskId = '';
+        });
+      }
     }
   });
   ipcMain.handle('agent:chat', (_event, payload) => {

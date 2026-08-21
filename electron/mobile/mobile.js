@@ -419,7 +419,10 @@ function connect() {
         ? message.transcript.reason
         : message.transcript.text;
     }
-    if (message.type === 'voice:status') mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
+    if (message.type === 'voice:status') {
+      mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
+      mobileSttProviderName = message.status?.sttProviderName || 'NVIDIA Parakeet';
+    }
     if (message.type === 'agent:catch-up-result') void handleCatchUpResult(message);
     if (message.type === 'agent:catch-up-busy') catchupRequested = false;
     if (message.type === 'voice:audio') {
