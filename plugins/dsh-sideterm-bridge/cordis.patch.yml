@@ -1,0 +1,7 @@
+- insert:
+    - id: sideterm-bridge
+      name: dsh-sideterm-bridge
+      config:
+        host: 127.0.0.1
+        port: 43111
+        token: ''

@@ -20,6 +20,17 @@ export function createSessionTools(actions) {
       callback: ({ sessionId: id }) => actions.getSessionContext(id)
     }),
     tool({
+      name: 'session_send',
+      description: 'Send an instruction through the session backend. Harness sessions use followup, steer, or inject and never receive PTY typing; generic terminal sessions retain SideTerm confirmation policy.',
+      inputSchema: z.object({
+        sessionId,
+        message: z.string().trim().min(1).max(65536),
+        mode: z.enum(['auto', 'followup', 'steer', 'inject']).optional().default('auto'),
+        reason: z.string().trim().max(300).optional().default('')
+      }),
+      callback: (input) => actions.sendSessionInstruction(input)
+    }),
+    tool({
       name: 'create_session',
       description: 'Create a new visible terminal session and give it a short, relevant name. Optionally place it in an existing or new group.',
       inputSchema: z.object({

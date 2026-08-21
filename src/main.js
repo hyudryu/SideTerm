@@ -63,6 +63,7 @@ let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
 let clearVisionApiKeyRequested = false;
+let clearHarnessBridgeTokenRequested = false;
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -79,6 +80,9 @@ let settings = {
   visionApiUrl: '',
   visionModel: '',
   hasVisionApiKey: false,
+  harnessBridgeEnabled: false,
+  harnessBridgeEndpoint: 'http://127.0.0.1:43111',
+  hasHarnessBridgeToken: false,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
@@ -269,6 +273,13 @@ document.querySelector('#app').innerHTML = `
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
               <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
+              <label class="toggle-row">
+                <span><strong>Connect DeepSeek Harness</strong><small>Use the authenticated local SideTerm bridge and semantic agent delivery instead of PTY typing.</small></span>
+                <input id="harness-bridge-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="field-row" id="harness-endpoint-row"><span>Harness bridge endpoint</span><input id="harness-bridge-endpoint" type="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:43111"></label>
+              <label class="field-row" id="harness-token-row"><span>Harness bridge token</span><input id="harness-bridge-token" type="password" autocomplete="off" placeholder="Shared local bridge token"></label>
+              <div class="credential-actions" id="harness-token-actions"><span id="harness-token-state">No bridge token configured</span><button id="clear-harness-bridge-token" type="button">Clear token</button></div>
               <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
             </section>
             <section class="settings-section">
@@ -433,6 +444,7 @@ function populateSettingsPanel() {
   clearApiKeyRequested = false;
   clearSttCredentialRequested = false;
   clearVisionApiKeyRequested = false;
+  clearHarnessBridgeTokenRequested = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -454,6 +466,12 @@ function populateSettingsPanel() {
   document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
   document.querySelector('#vision-key-state').textContent = settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
   document.querySelector('#clear-vision-api-key').hidden = !settings.hasVisionApiKey;
+  document.querySelector('#harness-bridge-enabled').checked = Boolean(settings.harnessBridgeEnabled);
+  document.querySelector('#harness-bridge-endpoint').value = settings.harnessBridgeEndpoint || 'http://127.0.0.1:43111';
+  document.querySelector('#harness-bridge-token').value = '';
+  document.querySelector('#harness-bridge-token').placeholder = settings.hasHarnessBridgeToken ? 'Encrypted token configured' : 'Shared local bridge token';
+  document.querySelector('#harness-token-state').textContent = settings.hasHarnessBridgeToken ? 'Encrypted token configured' : 'No bridge token configured';
+  document.querySelector('#clear-harness-bridge-token').hidden = !settings.hasHarnessBridgeToken;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
   document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
@@ -479,6 +497,7 @@ function populateSettingsPanel() {
   void refreshSpeechStatus();
   syncSttProviderFields();
   syncVisionFields();
+  syncHarnessBridgeFields();
 }
 
 async function openSettingsPanel() {
@@ -516,6 +535,13 @@ function syncVisionFields() {
   }
 }
 
+function syncHarnessBridgeFields() {
+  const enabled = document.querySelector('#harness-bridge-enabled').checked;
+  for (const id of ['harness-endpoint-row', 'harness-token-row', 'harness-token-actions']) {
+    document.querySelector(`#${id}`).hidden = !enabled;
+  }
+}
+
 function settingsPayload() {
   const hotkeys = {};
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
@@ -536,6 +562,10 @@ function settingsPayload() {
     visionModel: document.querySelector('#vision-model').value,
     visionApiKey: document.querySelector('#vision-api-key').value,
     clearVisionApiKey: clearVisionApiKeyRequested,
+    harnessBridgeEnabled: document.querySelector('#harness-bridge-enabled').checked,
+    harnessBridgeEndpoint: document.querySelector('#harness-bridge-endpoint').value,
+    harnessBridgeToken: document.querySelector('#harness-bridge-token').value,
+    clearHarnessBridgeToken: clearHarnessBridgeTokenRequested,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
     githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
@@ -2889,6 +2919,17 @@ document.querySelector('#install-stt').addEventListener('click', () => void inst
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#vision-enabled').addEventListener('change', syncVisionFields);
 document.querySelector('#vision-use-supervisor-model').addEventListener('change', syncVisionFields);
+document.querySelector('#harness-bridge-enabled').addEventListener('change', syncHarnessBridgeFields);
+document.querySelector('#harness-bridge-token').addEventListener('input', (event) => {
+  if (event.target.value) clearHarnessBridgeTokenRequested = false;
+});
+document.querySelector('#clear-harness-bridge-token').addEventListener('click', () => {
+  clearHarnessBridgeTokenRequested = true;
+  document.querySelector('#harness-bridge-token').value = '';
+  document.querySelector('#harness-bridge-token').placeholder = 'Token will be removed on save';
+  document.querySelector('#harness-token-state').textContent = 'Token will be removed';
+  document.querySelector('#clear-harness-bridge-token').hidden = true;
+});
 document.querySelector('#vision-api-key').addEventListener('input', (event) => {
   if (event.target.value) clearVisionApiKeyRequested = false;
 });

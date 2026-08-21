@@ -50,6 +50,8 @@ const { deterministicPresentation, PresentationCoordinator } = require('./superv
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
+const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
+const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
 const { WatchManager, normalizeWatch } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 const { PerceptionRouter } = require('./perception/router.cjs');
@@ -92,6 +94,9 @@ const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
 const mobilePresentationSurfaces = new WeakMap();
 const sessionIndex = new SessionIndex();
+let harnessBackend = null;
+let harnessBridgeDisposers = [];
+let harnessRefreshTimer = null;
 let speechWorker = null;
 let speechTranscriptionInFlight = false;
 const ownsSingleInstanceLock = app.requestSingleInstanceLock();
@@ -128,6 +133,8 @@ const DEFAULT_SETTINGS = {
   visionUseSupervisorModel: true,
   visionApiUrl: '',
   visionModel: '',
+  harnessBridgeEnabled: false,
+  harnessBridgeEndpoint: 'http://127.0.0.1:43111',
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: 'Confirm terminal input before sending it. Give factual, concise updates and mention verified pull request titles when available.',
   wakeWord: 'Hey Agent',
@@ -211,6 +218,10 @@ function readSettingsRecord() {
       visionUseSupervisorModel: typeof parsed.visionUseSupervisorModel === 'boolean' ? parsed.visionUseSupervisorModel : true,
       visionApiUrl: typeof parsed.visionApiUrl === 'string' ? parsed.visionApiUrl.slice(0, 1000) : '',
       visionModel: typeof parsed.visionModel === 'string' ? parsed.visionModel.slice(0, 160) : '',
+      harnessBridgeEnabled: Boolean(parsed.harnessBridgeEnabled),
+      harnessBridgeEndpoint: typeof parsed.harnessBridgeEndpoint === 'string'
+        ? parsed.harnessBridgeEndpoint.slice(0, 1000)
+        : DEFAULT_SETTINGS.harnessBridgeEndpoint,
       personality: typeof parsed.personality === 'string' ? parsed.personality.slice(0, 2000) : DEFAULT_SETTINGS.personality,
       agentInstructions: typeof parsed.agentInstructions === 'string' ? parsed.agentInstructions.slice(0, 8000) : DEFAULT_SETTINGS.agentInstructions,
       wakeWord: typeof parsed.wakeWord === 'string' ? parsed.wakeWord.slice(0, 80) : DEFAULT_SETTINGS.wakeWord,
@@ -239,12 +250,14 @@ function publicSettings(record = readSettingsRecord()) {
     encryptedApiKey: _encryptedApiKey,
     encryptedSttCredential: _encryptedSttCredential,
     encryptedVisionApiKey: _encryptedVisionApiKey,
+    encryptedHarnessBridgeToken: _encryptedHarnessBridgeToken,
     mobileToken: _mobileToken,
     ...settings
   } = record;
   return {
     ...settings, appVersion: app.getVersion(), hasApiKey: Boolean(record.encryptedApiKey),
     hasSttCredential: Boolean(record.encryptedSttCredential), hasVisionApiKey: Boolean(record.encryptedVisionApiKey),
+    hasHarnessBridgeToken: Boolean(record.encryptedHarnessBridgeToken),
     sttProviders: Object.values(STT_PROVIDERS)
   };
 }
@@ -270,6 +283,12 @@ function saveSettings(update = {}) {
     : current.visionUseSupervisorModel;
   const visionApiUrl = typeof update.visionApiUrl === 'string' ? update.visionApiUrl.trim() : current.visionApiUrl;
   const visionModel = typeof update.visionModel === 'string' ? update.visionModel.trim() : current.visionModel;
+  const harnessBridgeEnabled = typeof update.harnessBridgeEnabled === 'boolean'
+    ? update.harnessBridgeEnabled
+    : current.harnessBridgeEnabled;
+  const harnessBridgeEndpoint = typeof update.harnessBridgeEndpoint === 'string'
+    ? update.harnessBridgeEndpoint.trim()
+    : current.harnessBridgeEndpoint;
   const aiInitialContextEnabled = typeof update.aiInitialContextEnabled === 'boolean'
     ? update.aiInitialContextEnabled
     : current.aiInitialContextEnabled;
@@ -298,6 +317,13 @@ function saveSettings(update = {}) {
       throw new Error('Set a separate vision API key before enabling visual inspection.');
     }
   }
+  if (harnessBridgeEnabled) {
+    const suppliesToken = typeof update.harnessBridgeToken === 'string' && Boolean(update.harnessBridgeToken.trim());
+    if (!suppliesToken && (!current.encryptedHarnessBridgeToken || update.clearHarnessBridgeToken)) {
+      throw new Error('Set the Harness bridge token before enabling the bridge.');
+    }
+    new HarnessBridgeClient({ endpoint: harnessBridgeEndpoint, token: suppliesToken ? update.harnessBridgeToken.trim() : readHarnessBridgeToken(current) });
+  }
   const personality = typeof update.personality === 'string' ? update.personality.trim() : current.personality;
   const agentInstructions = typeof update.agentInstructions === 'string' ? update.agentInstructions.trim() : current.agentInstructions;
   const wakeWord = typeof update.wakeWord === 'string' ? update.wakeWord.trim() : current.wakeWord;
@@ -318,6 +344,8 @@ function saveSettings(update = {}) {
     visionUseSupervisorModel,
     visionApiUrl: visionApiUrl.slice(0, 1000),
     visionModel: visionModel.slice(0, 160),
+    harnessBridgeEnabled,
+    harnessBridgeEndpoint: harnessBridgeEndpoint.slice(0, 1000),
     personality,
     agentInstructions,
     wakeWord,
@@ -352,6 +380,11 @@ function saveSettings(update = {}) {
     next.encryptedVisionApiKey = safeStorage.encryptString(update.visionApiKey.trim()).toString('base64');
   }
   if (update.clearVisionApiKey) delete next.encryptedVisionApiKey;
+  if (typeof update.harnessBridgeToken === 'string' && update.harnessBridgeToken.trim()) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
+    next.encryptedHarnessBridgeToken = safeStorage.encryptString(update.harnessBridgeToken.trim()).toString('base64');
+  }
+  if (update.clearHarnessBridgeToken) delete next.encryptedHarnessBridgeToken;
 
   writeSettingsRecord(next);
   return publicSettings(next);
@@ -382,6 +415,84 @@ function readVisionApiKey(record) {
     return safeStorage.decryptString(Buffer.from(record.encryptedVisionApiKey, 'base64'));
   } catch {
     return null;
+  }
+}
+
+function readHarnessBridgeToken(record) {
+  if (!record.encryptedHarnessBridgeToken || !safeStorage.isEncryptionAvailable()) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(record.encryptedHarnessBridgeToken, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
+function stopHarnessBridge() {
+  if (harnessRefreshTimer) clearInterval(harnessRefreshTimer);
+  harnessRefreshTimer = null;
+  for (const dispose of harnessBridgeDisposers.splice(0)) dispose();
+  harnessBackend = null;
+}
+
+async function refreshHarnessSessions() {
+  if (!harnessBackend) return;
+  const records = await harnessBackend.listSessions();
+  const liveIds = new Set();
+  for (const record of Array.isArray(records) ? records : []) {
+    liveIds.add(String(record.id));
+    sessionIndex.upsert({ ...record, id: String(record.id), backend: 'deepseek-harness' });
+  }
+  for (const record of sessionIndex.list()) {
+    if (record.backend === 'deepseek-harness' && !liveIds.has(record.id)) sessionIndex.remove(record.id);
+  }
+  broadcastAgentState();
+}
+
+function handleHarnessSessionEvent(message) {
+  if (message?.topic !== 'session/event') return;
+  const event = message.event || {};
+  const sessionId = String(message.sessionId || '');
+  if (!sessionId) return;
+  if (event.type === 'turn/start' || event.type === 'step/start') {
+    sessionIndex.upsert({ id: sessionId, backend: 'deepseek-harness', status: 'running', semanticState: 'working' });
+  }
+  if (event.type === 'turn/end') {
+    const detail = JSON.stringify(event.data || {});
+    const kind = inferEventKind({ summary: detail, context: detail });
+    const record = sessionIndex.upsert({
+      id: sessionId,
+      backend: 'deepseek-harness',
+      status: 'idle',
+      semanticState: kind.toLowerCase(),
+      lastActivityAt: Date.now()
+    });
+    const state = readAgentState();
+    enqueueSupervisorEvent(state, {
+      kind,
+      sessionId,
+      title: record.friendlyName,
+      summary: kind === 'COMPLETED' ? 'Harness agent finished its turn.' : `Harness agent ended with ${kind.toLowerCase().replace('_', ' ')}.`,
+      context: detail.slice(0, 3000),
+      dedupeKey: `harness:${sessionId}:${String(event.id || event.sequence || record.revision)}`
+    });
+    writeAgentState(state);
+    scheduleProactiveCatchUp();
+  }
+  void refreshHarnessSessions().catch(() => {});
+}
+
+function configureHarnessBridge(settings = readSettingsRecord()) {
+  stopHarnessBridge();
+  if (!settings.harnessBridgeEnabled) return;
+  try {
+    const client = new HarnessBridgeClient({ endpoint: settings.harnessBridgeEndpoint, token: readHarnessBridgeToken(settings) });
+    harnessBackend = new DeepSeekHarnessBackend(client);
+    harnessBridgeDisposers.push(harnessBackend.subscribe(handleHarnessSessionEvent));
+    harnessBridgeDisposers.push(client.subscribe('agent/status', () => void refreshHarnessSessions().catch(() => {})));
+    harnessRefreshTimer = setInterval(() => void refreshHarnessSessions().catch(() => {}), 10_000);
+    void refreshHarnessSessions().catch(() => {});
+  } catch {
+    harnessBackend = null;
   }
 }
 
@@ -1035,7 +1146,17 @@ const supervisorActions = {
     }
     const archived = readAgentState().archivedSessions.find((item) => item.id === id);
     if (archived) return archived;
+    const indexed = sessionIndex.get(id);
+    if (indexed?.backend === 'deepseek-harness' && harnessBackend) return harnessBackend.getSession(id);
     throw new Error('Session not found. Call list_sessions to get an exact session ID.');
+  },
+  sendSessionInstruction({ sessionId, message, mode = 'auto', reason = '' }) {
+    const record = sessionIndex.get(sessionId);
+    if (record?.backend === 'deepseek-harness') {
+      if (!harnessBackend) throw new Error('The DeepSeek Harness bridge is not connected.');
+      return harnessBackend.sendInstruction(sessionId, message, mode);
+    }
+    return supervisorActions.requestTerminalInput({ sessionId, input: message, submit: true, reason: reason || 'Send an instruction to this terminal session.' });
   },
   createSession(input) {
     return requestRendererAction('create-session', input);
@@ -2553,6 +2674,7 @@ function registerIpc() {
   ipcMain.handle('settings:save', (_event, update) => {
     const saved = saveSettings(update);
     syncBackgroundTray(saved);
+    configureHarnessBridge(readSettingsRecord());
     broadcastAgentState();
     return saved;
   });
@@ -2722,6 +2844,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
   registerIpc();
   createWindow();
   syncBackgroundTray();
+  configureHarnessBridge();
   githubMonitorTimer = setInterval(() => void pollMonitoredPullRequests(), 60_000);
   void pollMonitoredPullRequests();
   if (readSettingsRecord().mobileEnabled) void startMobileServer({ persist: false }).catch(() => {});
@@ -2744,6 +2867,7 @@ app.on('will-quit', () => {
   if (githubMonitorTimer) clearInterval(githubMonitorTimer);
   githubMonitorTimer = null;
   destroyBackgroundTray();
+  stopHarnessBridge();
   detachAllSessions();
 });
 

@@ -60,6 +60,10 @@
       {
         "from": "vendor/tmux",
         "to": "tmux"
+      },
+      {
+        "from": "plugins/dsh-sideterm-bridge",
+        "to": "plugins/dsh-sideterm-bridge"
       }
     ],
     "directories": {
