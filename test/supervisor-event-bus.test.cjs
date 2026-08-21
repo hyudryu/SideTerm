@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PriorityEventBus, normalizeSupervisorEvent } = require('../electron/supervisor/event-bus.cjs');
+const { PriorityEventBus, normalizeSupervisorEvent, recoverAbandonedEvents } = require('../electron/supervisor/event-bus.cjs');
 
 test('priority event bus presents urgent work before completions', () => {
   const events = [];
@@ -25,5 +25,10 @@ test('legacy notification records migrate into typed events', () => {
   const event = normalizeSupervisorEvent({ id: 'legacy', title: 'API', summary: 'Done', read: false });
   assert.equal(event.kind, 'INFO');
   assert.equal(event.priority, 3);
+  assert.equal(event.state, 'queued');
+});
+
+test('unfinished persisted presentation claims return to the queue', () => {
+  const [event] = recoverAbandonedEvents([{ id: 'a', state: 'presented', read: false }]);
   assert.equal(event.state, 'queued');
 });

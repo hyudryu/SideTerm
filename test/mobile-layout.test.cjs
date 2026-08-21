@@ -29,6 +29,13 @@ test('mobile refreshes both speech provider location and name', () => {
   assert.match(script, /message\.type === 'voice:status'[\s\S]*mobileSttLocation[\s\S]*mobileSttProviderName/);
 });
 
+test('mobile activation completion waits for guarded speech delivery', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /runProactiveCatchUp\(\{ taskId, targets, isCurrent \}\)/);
+  assert.match(main, /await speechDelivery;[\s\S]*if \(voice && !speechDelivered\) throw staleActivationError\(\);[\s\S]*acknowledge\(\)/);
+  assert.match(main, /requestVoiceActivationUpdate\([\s\S]*\.then\(\(completed\) => \{[\s\S]*completedMobileVoiceActivationIds\.set/);
+});
+
 test('mobile creation and suppressed catch-up recover without a reload', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
   assert.match(script, /resetPendingMobileCreate\('Connection was interrupted/);

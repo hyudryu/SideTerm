@@ -44,7 +44,7 @@ const { transcriptClarification } = require('./voice/transcript-clarification.cj
 const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
-const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
+const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
 const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
@@ -98,6 +98,7 @@ const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
 const mobilePresentationSurfaces = new WeakMap();
+const proactiveEventClaims = new Set();
 const completedMobileVoiceActivationIds = new Map();
 const sessionIndex = new SessionIndex();
 let harnessBackend = null;
@@ -588,7 +589,7 @@ function readAgentState() {
         desktopSpeechPresented: Boolean(item?.desktopSpeechPresented)
       })) : [],
       notifications: Array.isArray(parsed.notifications)
-        ? markSupersededNotificationsRead(parsed.notifications.slice(-240).map((item) => normalizeSupervisorEvent(item)))
+        ? recoverAbandonedEvents(markSupersededNotificationsRead(parsed.notifications.slice(-240).map((item) => normalizeSupervisorEvent(item))))
         : [],
       archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions.slice(-160).map((item) => ({
         ...cleanAgentEntry(item, { id: 100, title: 100, group: 80, outcome: 24, summary: 500, context: 12_000 }),
@@ -1516,10 +1517,6 @@ function mobileVoiceClients() {
   return [...mobileSocketServer.clients].filter((client) => client.sideTermVoiceMode);
 }
 
-function anyVoiceSurfaceOn() {
-  return supervisorVoiceMode || mobileVoiceClients().length > 0;
-}
-
 function ensureMobilePresentationSurface(client) {
   let surface = mobilePresentationSurfaces.get(client);
   if (surface) return surface;
@@ -1527,6 +1524,7 @@ function ensureMobilePresentationSurface(client) {
   const dispose = presentationCoordinator.registerSurface(id, async (spokenText, options) => {
     if (!client.sideTermVoiceMode || client.readyState !== 1) return false;
     const audio = await synthesizeSpeech(spokenText);
+    if (!client.sideTermVoiceMode || client.readyState !== 1 || (typeof options.isCurrent === 'function' && !options.isCurrent(id))) return false;
     sendMobile(client, {
       type: 'voice:audio', audio, opensReplyWindow: options.opensReplyWindow !== false, eventId: options.eventId || ''
     });
@@ -1537,15 +1535,33 @@ function ensureMobilePresentationSurface(client) {
   return surface;
 }
 
-async function speakMobileVoiceUpdate(text) {
+function voicePresentationSnapshot() {
   const targets = [];
+  const guards = new Map();
   for (const client of mobileVoiceClients()) {
     const surface = ensureMobilePresentationSurface(client);
     targets.push(surface.id);
+    const generation = Number(client.sideTermVoiceActivationGeneration || 0);
+    guards.set(surface.id, () => client.sideTermVoiceMode
+      && client.sideTermVoiceActivationGeneration === generation
+      && client.readyState === 1);
   }
-  if (supervisorVoiceMode) targets.push('desktop');
-  if (!targets.length || !text) return;
-  await presentationCoordinator.present(text, { targets, opensReplyWindow: true });
+  if (supervisorVoiceMode) {
+    const generation = desktopVoiceActivationGeneration;
+    targets.push('desktop');
+    guards.set('desktop', () => supervisorVoiceMode && desktopVoiceActivationGeneration === generation);
+  }
+  return { targets, isCurrent: (surfaceId) => Boolean(guards.get(surfaceId)?.()) };
+}
+
+async function speakMobileVoiceUpdate(text, snapshot = voicePresentationSnapshot()) {
+  if (!snapshot.targets?.length || !text) return false;
+  const results = await presentationCoordinator.present(text, {
+    targets: snapshot.targets,
+    isCurrent: snapshot.isCurrent,
+    opensReplyWindow: true
+  });
+  return results.some((result) => result.status === 'fulfilled' && result.value === true);
 }
 
 function activationStillCurrent(targets, isCurrent) {
@@ -1565,7 +1581,7 @@ async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } 
     await present('I’ve got an update—one sec.', { opensReplyWindow: false });
     if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
     if (eventBusFor(readAgentState()).next()) {
-      const outcome = await runProactiveCatchUp();
+      const outcome = await runProactiveCatchUp({ taskId, targets, isCurrent });
       if (outcome === 'ran') return;
       if (outcome === 'failed') throw new Error('the queued update could not be processed');
     }
@@ -1603,23 +1619,36 @@ async function requestVoiceActivationUpdate(targets, activation = {}) {
   }
 }
 
-async function runProactiveCatchUp() {
+async function runProactiveCatchUp(activation = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
   const state = readAgentState();
   const bus = eventBusFor(state);
-  const event = bus.next();
+  const event = bus.pending().find((item) => !proactiveEventClaims.has(item.id));
   if (!event) return 'skipped';
-  bus.transition(event.id, 'presented');
-  writeAgentState(state);
+  proactiveEventClaims.add(event.id);
+  const voiceSnapshot = activation.targets?.length ? activation : voicePresentationSnapshot();
+  const voice = voiceSnapshot.targets?.length > 0;
+  let speechDelivery = Promise.resolve();
+  let speechDelivered = true;
+  const queueSpeech = (text) => {
+    if (!voice || !text) return;
+    speechDelivery = speechDelivery.then(async () => {
+      if (!await speakMobileVoiceUpdate(text, voiceSnapshot)) speechDelivered = false;
+    });
+  };
+  const acknowledge = () => {
+    const completedState = readAgentState();
+    eventBusFor(completedState).transition(event.id, 'acknowledged');
+    writeAgentState(completedState);
+  };
   try {
-    const voice = anyVoiceSurfaceOn();
     const presentation = deterministicPresentation(event);
     if (!presentation) {
       let streamed = false;
       const sentences = new SentenceBuffer((sentence) => {
         streamed = true;
-        if (voice) void speakMobileVoiceUpdate(sentence);
+        queueSpeech(sentence);
       });
       const result = await chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
         synthetic: true,
@@ -1627,37 +1656,29 @@ async function runProactiveCatchUp() {
         proactive: true,
         automatic: true,
         voice,
+        taskId: activation.taskId,
         onTextDelta: (delta) => sentences.push(delta)
       });
       sentences.flush();
-      if (!result.needsEnrichment) {
-        const completedState = readAgentState();
-        eventBusFor(completedState).transition(event.id, 'acknowledged');
-        writeAgentState(completedState);
-      }
-      if (voice && result.speech && !streamed) void speakMobileVoiceUpdate(result.speech);
+      if (voice && result.speech && !streamed) queueSpeech(result.speech);
       if (!voice && result.response) notifyHiddenSupervisorUpdate(result.response);
       if (result.needsEnrichment) {
-        void chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
+        if (!activationStillCurrent(voiceSnapshot.targets, voiceSnapshot.isCurrent)) throw staleActivationError();
+        const enriched = await chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
           synthetic: true,
           notificationIds: [event.id],
           proactive: true,
           automatic: false,
-          voice
-        }).then((enriched) => {
-          const completedState = readAgentState();
-          eventBusFor(completedState).transition(event.id, 'acknowledged');
-          writeAgentState(completedState);
-          if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech);
-          if (!voice && enriched.response) notifyHiddenSupervisorUpdate(enriched.response);
-          return null;
-        }).catch(() => {
-          const retryState = readAgentState();
-          eventBusFor(retryState).transition(event.id, 'queued');
-          writeAgentState(retryState);
-          scheduleProactiveCatchUp();
+          voice,
+          taskId: activation.taskId,
+          interruptible: true
         });
+        if (voice && enriched.speech) queueSpeech(enriched.speech);
+        if (!voice && enriched.response) notifyHiddenSupervisorUpdate(enriched.response);
       }
+      await speechDelivery;
+      if (voice && !speechDelivered) throw staleActivationError();
+      acknowledge();
       if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
       return 'ran';
     }
@@ -1666,18 +1687,24 @@ async function runProactiveCatchUp() {
       voiceSummary: presentation,
       desktopSpeechPresented: voice && supervisorVoiceMode
     });
-    eventBusFor(state).transition(event.id, 'acknowledged');
     writeAgentState(state);
     broadcastAgentState();
-    if (voice) void speakMobileVoiceUpdate(presentation);
+    if (voice) queueSpeech(presentation);
     else notifyHiddenSupervisorUpdate(presentation);
+    await speechDelivery;
+    if (voice && !speechDelivered) throw staleActivationError();
+    acknowledge();
     if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
   } catch (error) {
     const retryState = readAgentState();
+    const retryEvent = retryState.notifications.find((item) => item.id === event.id);
+    if (retryEvent) retryEvent.read = false;
     eventBusFor(retryState).transition(event.id, 'queued');
     writeAgentState(retryState);
     return 'failed';
+  } finally {
+    proactiveEventClaims.delete(event.id);
   }
 }
 
