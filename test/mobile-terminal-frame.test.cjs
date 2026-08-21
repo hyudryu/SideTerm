@@ -49,3 +49,28 @@ test('terminal frame writer ignores another session and invalidates an old write
   callbacks.shift()();
   assert.equal(scrolls, 1);
 });
+
+test('live frames preserve a reader position while selected sessions start at the bottom', () => {
+  const callbacks = [];
+  const restored = [];
+  let scrolls = 0;
+  let captures = 0;
+  const writer = new TerminalFrameWriter({
+    reset() {},
+    write(_value, callback) { callbacks.push(callback); },
+    scrollToBottom() { scrolls += 1; },
+    captureViewport() { captures += 1; return { atBottom: false, distanceFromBottom: 24 }; },
+    restoreViewport(viewport) { restored.push(viewport); }
+  });
+
+  writer.select('one', 'connecting');
+  callbacks.shift()();
+  assert.equal(scrolls, 1);
+  writer.render('one', 'updated frame');
+  writer.render('one', 'newer frame');
+  callbacks.shift()();
+  callbacks.shift()();
+  assert.deepEqual(restored, [{ atBottom: false, distanceFromBottom: 24 }]);
+  assert.equal(captures, 1);
+  assert.equal(scrolls, 1);
+});

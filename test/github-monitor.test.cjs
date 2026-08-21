@@ -11,11 +11,13 @@ const {
   githubCliAvailable,
   githubRepositoryOwner,
   hasCodexThumbsUp,
+  isActionableCodexComment,
   isCodexAuthor,
   parsePullRequestUrl,
   parseJsonLines,
   pullRequestChanged,
   reactionSummary,
+  reconcileCodexApproval,
   shouldPollPullRequest,
   successfulGitCommit
 } = require('../electron/github/pr-monitor.cjs');
@@ -54,9 +56,46 @@ test('new and edited comments are detected without replaying unchanged comments'
   assert.equal(commentRevisionKey(next.comments[0]), commentRevisionKey({ ...next.comments[0] }));
 });
 
+test('approval prompts are tied to the approved remote head and reset when withdrawn', () => {
+  const approved = { headSha: 'aaaa1111', reactions: [{ name: '+1', count: 1, authors: ['codex[bot]'] }] };
+  const initial = reconcileCodexApproval(null, approved);
+  assert.equal(initial.shouldPrompt, true);
+
+  const prompted = { ...approved, ...initial, mergePrompted: true, mergePromptedHeadSha: approved.headSha };
+  assert.equal(reconcileCodexApproval(prompted, approved).shouldPrompt, false);
+
+  const withdrawn = { ...approved, reactions: [] };
+  const reset = reconcileCodexApproval(prompted, withdrawn);
+  assert.equal(reset.mergePrompted, false);
+  const restored = reconcileCodexApproval({ ...withdrawn, ...reset }, approved);
+  assert.equal(restored.shouldPrompt, true);
+});
+
+test('an approval on the remote revision is not offered while a local commit is unpushed', () => {
+  const oldHead = { headSha: 'aaaa1111', reactions: [{ name: '+1', count: 1, authors: ['codex[bot]'] }] };
+  const pending = reconcileCodexApproval(null, oldHead, 'bbbb2222');
+  assert.equal(pending.shouldPrompt, false);
+  assert.equal(pending.pendingLocalHeadSha, 'bbbb2222');
+
+  const newHead = { ...oldHead, headSha: 'bbbb2222' };
+  const synchronized = reconcileCodexApproval({ ...oldHead, ...pending }, newHead);
+  assert.equal(synchronized.pendingLocalHeadSha, '');
+  assert.equal(synchronized.shouldPrompt, false, 'the old reaction is not treated as approval of the new head');
+
+  const removed = reconcileCodexApproval({ ...newHead, ...synchronized }, { ...newHead, reactions: [] });
+  const reapproved = reconcileCodexApproval({ ...newHead, reactions: [], ...removed }, newHead);
+  assert.equal(reapproved.shouldPrompt, true);
+});
+
+test('approval-only Codex reviews are not actionable fix requests', () => {
+  assert.equal(isActionableCodexComment({ author: 'chatgpt-codex-connector', kind: 'review', state: 'APPROVED', body: '' }), false);
+  assert.equal(isActionableCodexComment({ author: 'chatgpt-codex-connector', kind: 'review', state: 'APPROVED', body: 'Looks good' }), false);
+  assert.equal(isActionableCodexComment({ author: 'chatgpt-codex-connector', kind: 'review-comment', body: 'Handle the null case.' }), true);
+});
+
 test('successful git commit output can enroll its branch pull request', () => {
-  assert.match(successfulGitCommit('[main abc1234] Ship voice fixes\n 2 files changed'), /abc1234/);
-  assert.match(successfulGitCommit('[feature (root-commit) abcdef123456] Initial commit'), /abcdef123456/);
+  assert.equal(successfulGitCommit('[main abc1234] Ship voice fixes\n 2 files changed'), 'abc1234');
+  assert.equal(successfulGitCommit('[feature (root-commit) abcdef123456] Initial commit'), 'abcdef123456');
   assert.equal(successfulGitCommit('nothing to commit, working tree clean'), '');
 });
 

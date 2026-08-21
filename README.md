@@ -68,7 +68,7 @@ SIDETERM_DEV_URL=http://127.0.0.1:5173 npm start
 
 ```bash
 npm run dist
-sudo apt install ./release/SideTerm-0.2.7-amd64.deb
+sudo apt install ./release/SideTerm-0.2.8-amd64.deb
 ```
 
 After installation, open the Ubuntu app grid, search for **SideTerm**, launch it, then right-click its dock icon and choose **Pin to Dash** / **Add to Favorites**. The AppImage in `release/` can also run without installation after `chmod +x`.

@@ -23,3 +23,16 @@ test('mobile voice mode is reannounced after a WebSocket reconnect', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
   assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true \}\)/);
 });
+
+test('mobile creation and suppressed catch-up recover without a reload', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /resetPendingMobileCreate\('Connection was interrupted/);
+  assert.match(script, /Creation timed out\. Please try again\./);
+  assert.match(script, /if \(message\.hasMore\) requestNextCatchUp\(true\)/);
+});
+
+test('only final mobile speech opens the wake-word-free reply window', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /completed && openReplyWindow/);
+  assert.match(script, /openReplyWindow: Boolean\(message\.opensReplyWindow\)/);
+});

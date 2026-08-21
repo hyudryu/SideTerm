@@ -53,11 +53,12 @@ let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
+let pendingMobileCreateTimer = null;
 
 function queueMobileAudio(message) {
   mobileAudioQueue = mobileAudioQueue
     .catch(() => false)
-    .then(() => mobileVoiceMode ? playMobileAudio(message.audio) : false);
+    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, { openReplyWindow: Boolean(message.opensReplyWindow) }) : false);
   return mobileAudioQueue.then((speechCompleted) => {
     if (!message.continueCatchUp) return speechCompleted;
     if (!speechCompleted) releaseCatchUpQueue();
@@ -88,7 +89,8 @@ async function handleCatchUpResult(message) {
     return;
   }
   if (!message.response) {
-    releaseCatchUpQueue();
+    if (message.hasMore) requestNextCatchUp(true);
+    else releaseCatchUpQueue();
     return;
   }
   if (mobileVoiceMode) {
@@ -121,7 +123,15 @@ terminal.open(terminalElement);
 const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
   reset: () => terminal.reset(),
   write: (data, callback) => terminal.write(data, callback),
-  scrollToBottom: () => terminal.scrollToBottom()
+  scrollToBottom: () => terminal.scrollToBottom(),
+  captureViewport: () => {
+    const buffer = terminal.buffer.active;
+    return { atBottom: buffer.viewportY >= buffer.baseY, distanceFromBottom: Math.max(0, buffer.baseY - buffer.viewportY) };
+  },
+  restoreViewport: ({ distanceFromBottom }) => {
+    const buffer = terminal.buffer.active;
+    terminal.scrollToLine(Math.max(0, buffer.baseY - Math.max(0, Number(distanceFromBottom) || 0)));
+  }
 });
 
 function resizeTerminal() {
@@ -334,6 +344,8 @@ function connect() {
     connectionDot.classList.add('online');
     connectionDetail.textContent = 'Connected securely';
     catchupRequested = false;
+    mobileTranscriptionInFlight = false;
+    resetPendingMobileCreate('Connection restored. Please try again.');
     if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true });
   });
   socket.addEventListener('message', (event) => {
@@ -375,6 +387,8 @@ function connect() {
       document.querySelector('#mobile-settings-status').textContent = message.message;
     }
     if (message.type === 'mobile:create-result' && message.requestId === pendingMobileCreateRequestId) {
+      window.clearTimeout(pendingMobileCreateTimer);
+      pendingMobileCreateTimer = null;
       pendingMobileCreateRequestId = '';
       mobileCreateSubmit.disabled = false;
       if (message.error) {
@@ -416,6 +430,8 @@ function connect() {
   socket.addEventListener('close', () => {
     connectionDot.classList.remove('online');
     connectionDetail.textContent = 'Disconnected · retrying';
+    mobileTranscriptionInFlight = false;
+    resetPendingMobileCreate('Connection was interrupted. Please try again after reconnecting.');
     reconnectTimer = window.setTimeout(connect, 1_500);
   });
   socket.addEventListener('error', () => socket.close());
@@ -429,7 +445,7 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-async function playMobileAudio(audio) {
+async function playMobileAudio(audio, { openReplyWindow = false } = {}) {
   if (!audio?.data) return false;
   try {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
@@ -442,7 +458,7 @@ async function playMobileAudio(audio) {
       player.addEventListener('ended', () => resolve(true), { once: true });
       player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
     });
-    if (completed) mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
     return completed;
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
@@ -618,6 +634,15 @@ document.querySelector('#mobile-create-cancel').addEventListener('click', closeM
 mobileCreateBackdrop.addEventListener('click', (event) => {
   if (event.target === mobileCreateBackdrop) closeMobileCreate();
 });
+function resetPendingMobileCreate(status = '') {
+  window.clearTimeout(pendingMobileCreateTimer);
+  pendingMobileCreateTimer = null;
+  if (!pendingMobileCreateRequestId) return;
+  pendingMobileCreateRequestId = '';
+  mobileCreateSubmit.disabled = false;
+  document.querySelector('#mobile-create-status').textContent = status;
+}
+
 mobileCreateForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (pendingMobileCreateRequestId) return;
@@ -635,6 +660,9 @@ mobileCreateForm.addEventListener('submit', (event) => {
   document.querySelector('#mobile-create-status').textContent = 'Creating…';
   if (send(payload)) {
     pendingMobileCreateRequestId = requestId;
+    pendingMobileCreateTimer = window.setTimeout(() => {
+      resetPendingMobileCreate('Creation timed out. Please try again.');
+    }, 15_000);
   } else {
     mobileCreateSubmit.disabled = false;
     document.querySelector('#mobile-create-status').textContent = 'Connect to SideTerm first.';

@@ -1,5 +1,9 @@
 export const MAX_AI_SUMMARY_FAILURES = 3;
 
+export function shouldRearmAiSummary(failureCount, failureRevision, contextRevision, maxFailures = MAX_AI_SUMMARY_FAILURES) {
+  return Number(failureCount) >= maxFailures && Number(failureRevision) !== Number(contextRevision);
+}
+
 export function aiSummaryRetryDelay(failureCount, {
   baseDelayMs,
   cooldownDelayMs = 0,

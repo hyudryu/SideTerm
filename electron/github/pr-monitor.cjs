@@ -155,7 +155,46 @@ function hasCodexThumbsUp(pull) {
 
 function successfulGitCommit(output) {
   const plain = String(output || '').replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '');
-  return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+[0-9a-f]{7,40}\]\s+[^\r\n]+/i)?.[0]?.trim() || '';
+  return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+([0-9a-f]{7,40})\]\s+[^\r\n]+/i)?.[1] || '';
+}
+
+function isActionableCodexComment(comment) {
+  if (!isCodexAuthor(comment?.author) || !String(comment?.body || '').trim()) return false;
+  return comment.kind !== 'review' || String(comment.state || '').toUpperCase() !== 'APPROVED';
+}
+
+function sameGitRevision(left, right) {
+  const first = String(left || '').toLowerCase();
+  const second = String(right || '').toLowerCase();
+  return Boolean(first && second && (first === second || first.startsWith(second) || second.startsWith(first)));
+}
+
+function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '') {
+  const approved = hasCodexThumbsUp(snapshot);
+  const wasApproved = hasCodexThumbsUp(previous);
+  let approvalHeadSha = String(previous?.codexApprovalHeadSha || '');
+  let promptedHeadSha = String(previous?.mergePromptedHeadSha || (previous?.mergePrompted ? previous?.headSha : '') || '');
+  let pendingHeadSha = String(pendingLocalHeadSha || previous?.pendingLocalHeadSha || '');
+
+  if (pendingHeadSha && sameGitRevision(pendingHeadSha, snapshot?.headSha)) pendingHeadSha = '';
+  if (!approved) {
+    approvalHeadSha = '';
+    promptedHeadSha = '';
+  } else if (!wasApproved) {
+    approvalHeadSha = String(snapshot?.headSha || '');
+  } else if (!approvalHeadSha) {
+    approvalHeadSha = String(previous?.headSha || snapshot?.headSha || '');
+  }
+
+  const ready = Boolean(approved && !pendingHeadSha && sameGitRevision(approvalHeadSha, snapshot?.headSha));
+  return {
+    codexApprovalHeadSha: approvalHeadSha,
+    mergePromptedHeadSha: promptedHeadSha,
+    mergePrompted: Boolean(promptedHeadSha),
+    pendingLocalHeadSha: pendingHeadSha,
+    ready,
+    shouldPrompt: ready && !sameGitRevision(promptedHeadSha, snapshot?.headSha)
+  };
 }
 
 async function fetchPullRequest(value) {
@@ -171,7 +210,7 @@ async function fetchPullRequest(value) {
   const comments = [
     ...(issueComments || []).map((item) => cleanComment(item, 'conversation')),
     ...(reviewComments || []).map((item) => cleanComment(item, 'review-comment')),
-    ...(reviews || []).filter((item) => item.body || item.state).map((item) => cleanComment(item, 'review'))
+    ...(reviews || []).filter((item) => String(item.body || '').trim()).map((item) => cleanComment(item, 'review'))
   ].sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)) || left.id.localeCompare(right.id));
   const result = {
     url: ref.url,
@@ -236,12 +275,15 @@ module.exports = {
   githubCliAvailable,
   githubRepositoryOwner,
   isCodexAuthor,
+  isActionableCodexComment,
   hasCodexThumbsUp,
   parsePullRequestUrl,
   parseJsonLines,
   postPullRequestComment,
   pullRequestChanged,
   reactionSummary,
+  reconcileCodexApproval,
+  sameGitRevision,
   shouldPollPullRequest,
   successfulGitCommit
 };

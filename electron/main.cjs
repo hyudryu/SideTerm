@@ -18,12 +18,16 @@ const {
   fetchPullRequest,
   githubCliAvailable,
   hasCodexThumbsUp,
+  isActionableCodexComment,
   isCodexAuthor,
   postPullRequestComment,
   pullRequestChanged,
+  reconcileCodexApproval,
+  sameGitRevision,
   shouldPollPullRequest,
   successfulGitCommit
 } = require('./github/pr-monitor.cjs');
+const { isIdleCodingAgentPrompt } = require('./agent/coding-agent-prompt.cjs');
 const { acknowledgeAttentionNotification, reconcileAttentionNotifications } = require('./agent/attention.cjs');
 const { ProactiveCatchUpScheduler } = require('./agent/proactive.cjs');
 const { composeSubmittedInput, sendSubmittedInput } = require('./agent/terminal-input.cjs');
@@ -362,6 +366,10 @@ function readAgentState() {
         commentFingerprint: String(item?.commentFingerprint || '').slice(0, 100),
         handledCodexComments: Array.isArray(item?.handledCodexComments) ? item.handledCodexComments.map(String).slice(-1000) : [],
         mergePrompted: Boolean(item?.mergePrompted),
+        mergePromptedHeadSha: String(item?.mergePromptedHeadSha || '').slice(0, 100),
+        codexApprovalHeadSha: String(item?.codexApprovalHeadSha || '').slice(0, 100),
+        pendingLocalHeadSha: String(item?.pendingLocalHeadSha || '').slice(0, 100),
+        headSha: String(item?.headSha || '').slice(0, 100),
         updatedAt: String(item?.updatedAt || '').slice(0, 100),
         lastCheckedAt: Number(item?.lastCheckedAt) || 0,
         reactions: Array.isArray(item?.reactions) ? item.reactions.slice(0, 20).map((reaction) => ({
@@ -465,6 +473,21 @@ function countTerminalWords(input) {
 function sendCodexFixRequest(pull, commentCount) {
   const session = sessions.get(pull.sessionId);
   if (!session) return false;
+  const metadata = mobileWorkspace.sessions.find((item) => item.id === pull.sessionId);
+  let currentCommand = '';
+  if (session.tmux && session.tmuxSession) {
+    try {
+      currentCommand = runTmux(session.tmux, ['display-message', '-p', '-t', session.tmuxSession, '#{pane_current_command}'], { capture: true }).trim();
+    } catch {
+      return false;
+    }
+  }
+  if (!isIdleCodingAgentPrompt({
+    agent: metadata?.agent,
+    busy: metadata?.busy,
+    currentCommand,
+    screen: captureSessionScreen(session)
+  })) return false;
   const input = [
     `Codex left ${commentCount} new or updated review comment${commentCount === 1 ? '' : 's'} on ${pull.url}.`,
     'Please inspect the latest Codex review comments, address every valid finding, run the relevant tests, commit the fixes, and push the branch.',
@@ -484,29 +507,31 @@ function addMergeReadyMessage(state, pull) {
   if (mobileVoiceClients().length) void speakMobileVoiceUpdate(text);
 }
 
-function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false } = {}) {
+function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false, pendingLocalHeadSha = '' } = {}) {
   const state = readAgentState();
   const index = state.pullRequests.findIndex((item) => item.url === snapshot.url);
   const previous = index >= 0 ? state.pullRequests[index] : null;
+  const approval = reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha);
   const next = {
     ...snapshot,
     sessionId: sessionId || previous?.sessionId || '',
     handledCodexComments: [...(previous?.handledCodexComments || [])],
-    mergePrompted: Boolean(previous?.mergePrompted),
+    ...approval,
     lastCheckedAt: Date.now()
   };
   let prNotificationAdded = false;
   if (notify && previous) {
     const handled = new Set(next.handledCodexComments);
-    const pendingCodexComments = next.comments.filter((comment) => isCodexAuthor(comment.author) && !handled.has(commentRevisionKey(comment)));
+    const pendingCodexComments = next.comments.filter((comment) => isActionableCodexComment(comment) && !handled.has(commentRevisionKey(comment)));
     const codexRequestSent = pendingCodexComments.length > 0 && sendCodexFixRequest(next, pendingCodexComments.length);
     if (codexRequestSent) {
       next.handledCodexComments = [...handled, ...pendingCodexComments.map(commentRevisionKey)].slice(-1000);
       const metadata = mobileWorkspace.sessions.find((item) => item.id === next.sessionId);
       addAgentMessage(state, 'event', `SideTerm told ${metadata?.title || next.sessionId} to address the latest Codex comments on PR #${next.number}.`);
     }
-    if (hasCodexThumbsUp(next) && !next.mergePrompted) {
+    if (approval.shouldPrompt) {
       next.mergePrompted = true;
+      next.mergePromptedHeadSha = next.headSha;
       addMergeReadyMessage(state, next);
     }
   }
@@ -516,7 +541,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false }
     const summary = changed.length
       ? `${changed.length} new or updated PR comment${changed.length === 1 ? '' : 's'}${codexCount ? `, including ${codexCount} from Codex${next.handledCodexComments.length > (previous?.handledCodexComments?.length || 0) ? '; SideTerm told the linked chat to address them' : '; the linked chat was unavailable'}` : ''}.`
       : 'Pull request reactions or review status changed.';
-    const approvalOnly = !changed.length && hasCodexThumbsUp(next) && !previous?.mergePrompted;
+    const approvalOnly = !changed.length && approval.shouldPrompt;
     if (!approvalOnly) {
       state.notifications.push({
         id: crypto.randomUUID(), cycleId: `github:${next.url}:${next.fingerprint}`, sessionId: next.sessionId,
@@ -555,6 +580,24 @@ async function monitorPullRequest(url, sessionId = '', options = {}) {
   return snapshot;
 }
 
+async function discoverPullRequestForMonitoring(details = {}) {
+  try {
+    return await discoverPullRequest(details.cwd || os.homedir());
+  } catch (discoveryError) {
+    const candidates = [...new Set((details.links || []).map(String))].reverse();
+    for (const candidate of candidates) {
+      try {
+        const snapshot = await fetchPullRequest(candidate);
+        if (shouldPollPullRequest(snapshot)
+          && (!details.pendingLocalHeadSha || sameGitRevision(snapshot.headSha, details.pendingLocalHeadSha))) return snapshot.url;
+      } catch {
+        // Captured terminal URLs are untrusted until GitHub validates them.
+      }
+    }
+    throw discoveryError;
+  }
+}
+
 async function pollMonitoredPullRequests() {
   if (githubMonitorInFlight || !readSettingsRecord().agentEnabled) return;
   const pulls = readAgentState().pullRequests.filter(shouldPollPullRequest);
@@ -589,22 +632,26 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
     return;
   }
   try {
-    const url = await discoverPullRequest(details.cwd || os.homedir());
+    const url = await discoverPullRequestForMonitoring(details);
     const alreadyQueued = readAgentState().pullRequests.some((pull) => pull.url === url);
-    const snapshot = await monitorPullRequest(url, sessionId, { notify: false });
+    const snapshot = await monitorPullRequest(url, sessionId, {
+      notify: false,
+      pendingLocalHeadSha: String(details.pendingLocalHeadSha || '')
+    });
     if (!alreadyQueued) {
       const state = readAgentState();
       const linkedPull = { ...snapshot, sessionId };
       const queuedPull = state.pullRequests.find((pull) => pull.url === snapshot.url);
-      const codexComments = snapshot.comments.filter((comment) => isCodexAuthor(comment.author));
+      const codexComments = snapshot.comments.filter(isActionableCodexComment);
       const codexCount = codexComments.length;
       if (codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
         queuedPull.handledCodexComments = codexComments.map(commentRevisionKey).slice(-1000);
         const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
         addAgentMessage(state, 'event', `SideTerm told ${metadata?.title || sessionId} to address the existing Codex comments on PR #${snapshot.number}.`);
       }
-      if (hasCodexThumbsUp(snapshot)) {
+      if (queuedPull && reconcileCodexApproval(queuedPull, queuedPull).shouldPrompt) {
         queuedPull.mergePrompted = true;
+        queuedPull.mergePromptedHeadSha = queuedPull.headSha;
         addMergeReadyMessage(state, snapshot);
       }
       writeAgentState(state);
@@ -626,7 +673,12 @@ function observePotentialGitPush(sessionId, data) {
     if (session.lastGithubCommitFingerprint !== fingerprint) {
       session.lastGithubCommitFingerprint = fingerprint;
       const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
-      void beginPullRequestMonitoring(sessionId, { cwd: metadata?.cwd, links: metadata?.links });
+      void beginPullRequestMonitoring(sessionId, {
+        cwd: metadata?.cwd,
+        links: metadata?.links,
+        pendingLocalHeadSha: commit
+      });
+      session.pendingLocalHeadSha = commit;
     }
   }
   session.githubPushOutput = `${session.githubPushOutput || ''}${String(data || '')}`.slice(-5000);
@@ -639,9 +691,13 @@ function observePotentialGitPush(sessionId, data) {
   const success = output.match(/\bTo (?:https:\/\/github\.com\/|(?:git@)?github\.com:)[^\s]+[\s\S]{0,2000}(?:->|Everything up-to-date)/i);
   if (success) {
     const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
-    const details = session.pendingGithubPush || { cwd: metadata?.cwd, links: metadata?.links };
+    const details = {
+      ...(session.pendingGithubPush || { cwd: metadata?.cwd, links: metadata?.links }),
+      pendingLocalHeadSha: session.pendingLocalHeadSha || ''
+    };
     const fingerprint = crypto.createHash('sha256').update(success[0]).digest('hex');
     session.pendingGithubPush = null;
+    session.pendingLocalHeadSha = '';
     session.githubPushOutput = '';
     if (session.lastGithubPushFingerprint === fingerprint) return;
     session.lastGithubPushFingerprint = fingerprint;
@@ -895,10 +951,10 @@ const PROACTIVE_CATCH_UP_PROMPT = [
 function mobileSpeechPipeline(client) {
   let pending = Promise.resolve();
   return {
-    speak(text) {
+    speak(text, { opensReplyWindow = false } = {}) {
       pending = pending.then(async () => {
         const audio = await synthesizeSpeech(text);
-        sendMobile(client, { type: 'voice:audio', audio });
+        sendMobile(client, { type: 'voice:audio', audio, opensReplyWindow });
       }).catch(() => {});
     },
     drain() {
@@ -921,7 +977,7 @@ async function speakMobileVoiceUpdate(text) {
   if (!clients.length || !text) return;
   try {
     const audio = await synthesizeSpeech(text);
-    for (const client of clients) sendMobile(client, { type: 'voice:audio', audio });
+    for (const client of clients) sendMobile(client, { type: 'voice:audio', audio, opensReplyWindow: true });
   } catch {
     // A speech-runtime hiccup should not break background supervision.
   }
@@ -1733,7 +1789,7 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, { type: 'agent:response', response: result.response });
           if (message.voiceMode) {
             await speech.drain();
-            speech.speak(result.speech);
+            speech.speak(result.speech, { opensReplyWindow: true });
           }
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
@@ -1795,7 +1851,7 @@ async function startMobileServer({ persist = true } = {}) {
             sendMobile(client, { type: 'agent:response', response: result.response });
             if (message.speakResponse) {
               await speech.drain();
-              speech.speak(result.speech);
+              speech.speak(result.speech, { opensReplyWindow: true });
             }
           }
         } catch (error) {
@@ -1807,6 +1863,7 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, {
             type: 'voice:audio',
             audio: await synthesizeSpeech(message.text),
+            opensReplyWindow: true,
             continueCatchUp: Boolean(message.continueCatchUp),
             catchUpHasMore: Boolean(message.catchUpHasMore)
           });
@@ -1895,6 +1952,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     pendingGithubPush: null,
     githubPushOutput: '',
     githubActivityOutput: '',
+    pendingLocalHeadSha: '',
     lastGithubPushFingerprint: '',
     lastGithubCommitFingerprint: ''
   };

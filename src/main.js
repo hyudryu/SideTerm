@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, isForegroundSession, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
-import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES } from './ai-summary.js';
+import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES, shouldRearmAiSummary } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
 import { sessionDisplayLabels } from './session-labels.js';
 import {
@@ -692,6 +692,9 @@ function appendSessionContext(session, text) {
   if (!plain) return;
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
   session.contextRevision += 1;
+  if (shouldRearmAiSummary(session.aiSummaryFailureCount, session.aiSummaryFailureRevision, session.contextRevision)) {
+    scheduleAiSummary(session);
+  }
   const agent = detectedAgent(plain);
   if (agent) session.agent = agent;
 }
@@ -1545,11 +1548,11 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text) {
+async function speakAgentResponse(text, { openReplyWindow = true } = {}) {
   if (!desktopVoiceMode) return true;
   try {
     const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
-    if (completed) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
     return completed;
   } catch (error) {
     showToast(`Voice: ${error.message}`);
@@ -1557,12 +1560,12 @@ async function speakAgentResponse(text) {
   }
 }
 
-function queueAgentSpeech(text) {
+function queueAgentSpeech(text, options = {}) {
   const spokenText = String(text || '').trim();
   if (!spokenText) return Promise.resolve(true);
   agentSpeechQueue = agentSpeechQueue
     .catch(() => false)
-    .then(() => desktopVoiceMode ? speakAgentResponse(spokenText) : true);
+    .then(() => desktopVoiceMode ? speakAgentResponse(spokenText, options) : true);
   return agentSpeechQueue;
 }
 
@@ -2002,12 +2005,7 @@ function activateSession(id) {
       renderGroups();
     }
   }
-  const acknowledgedNotification = next.notified;
-  const acknowledgedCycleId = next.attentionCycleId;
-  next.notified = false;
-  next.attentionCycleId = '';
-  next.notifyWhenIdle = false;
-  if (acknowledgedNotification && !next.busy) next.activityArmed = false;
+  acknowledgeSessionNotification(next);
   activeTitle.textContent = sessionDisplayLabels(next, settings.llmEnabled && settings.apiUrl && settings.model).primary;
   activeSubtitle.textContent = next.exited
     ? `${next.shell} · stopped · ${next.cwd}`
@@ -2015,9 +2013,6 @@ function activateSession(id) {
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
   schedulePersist();
-  if (acknowledgedNotification && acknowledgedCycleId) {
-    void api.acknowledgeSessionAttention(next.id, acknowledgedCycleId).catch(() => {});
-  }
   requestAnimationFrame(() => {
     fitSession(next);
     next.terminal.focus();
@@ -2083,6 +2078,26 @@ function markSessionNotification(session) {
   updateSessionItem(session);
   updateVisualState();
   schedulePersist();
+}
+
+function acknowledgeSessionNotification(session) {
+  if (!session) return false;
+  session.notifyWhenIdle = false;
+  if (!session.notified) return false;
+  const cycleId = session.attentionCycleId;
+  session.notified = false;
+  session.attentionCycleId = '';
+  if (!session.busy) session.activityArmed = false;
+  updateSessionItem(session);
+  updateVisualState();
+  schedulePersist();
+  if (cycleId) void api.acknowledgeSessionAttention(session.id, cycleId).catch(() => {});
+  return true;
+}
+
+function acknowledgeActiveSessionOnFocus() {
+  const session = sessions.get(activeId);
+  if (session && isSessionForeground(session)) acknowledgeSessionNotification(session);
 }
 
 function visibleTerminalText(terminal) {
@@ -2626,6 +2641,10 @@ api.onExit(({ id, exitCode }) => {
 
 new ResizeObserver(fitActive).observe(terminalStack);
 window.addEventListener('resize', fitActive);
+window.addEventListener('focus', acknowledgeActiveSessionOnFocus);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') acknowledgeActiveSessionOnFocus();
+});
 collapseButton.addEventListener('click', toggleSidebar);
 newSessionButton.addEventListener('click', () => void addSession(sessions.get(activeId)?.cwd, { groupId: activeGroupId }));
 document.querySelector('#new-group').addEventListener('click', () => void createNewGroup());
@@ -2790,8 +2809,8 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''));
+api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
+  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
