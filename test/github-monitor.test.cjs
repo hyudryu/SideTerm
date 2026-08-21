@@ -33,13 +33,24 @@ test('GitHub monitor accepts only canonical pull request URLs', () => {
 test('approved merge actions execute the canonical pull request once', async () => {
   const calls = [];
   const result = await mergePullRequest('https://github.com/hyudryu/SideTerm/pull/11', {
-    runGh: async (args, options) => { calls.push({ args, options }); return ''; }
+    headSha: 'abcdef1234567890',
+    runGh: async (args, options) => {
+      calls.push({ args, options });
+      return args[1] === 'view' ? '{"state":"OPEN"}' : '';
+    }
   });
-  assert.deepEqual(result, { merged: true, url: 'https://github.com/hyudryu/SideTerm/pull/11', number: 11 });
-  assert.deepEqual(calls, [{
-    args: ['pr', 'merge', 'https://github.com/hyudryu/SideTerm/pull/11', '--merge'],
+  assert.deepEqual(result, {
+    merged: false, submitted: true, state: 'OPEN', url: 'https://github.com/hyudryu/SideTerm/pull/11',
+    number: 11, headSha: 'abcdef1234567890'
+  });
+  assert.deepEqual(calls[0], {
+    args: ['pr', 'merge', 'https://github.com/hyudryu/SideTerm/pull/11', '--merge', '--match-head-commit', 'abcdef1234567890'],
     options: { owner: 'hyudryu', timeout: 120_000 }
-  }]);
+  });
+  assert.deepEqual(calls[1].args, ['pr', 'view', 'https://github.com/hyudryu/SideTerm/pull/11', '--json', 'state']);
+  await assert.rejects(mergePullRequest('https://github.com/hyudryu/SideTerm/pull/11', {
+    runGh: async () => ''
+  }), /approved pull-request revision/);
 });
 
 test('GitHub main-post reactions retain emoji, counts, and authors', () => {

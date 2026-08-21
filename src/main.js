@@ -1759,10 +1759,12 @@ async function processVoiceUtterance(blob, durationMs) {
     ? 'Transcribing with the selected cloud provider…'
     : 'Transcribing locally…';
   try {
+    const replyWindowActive = Date.now() <= voiceReplyUntil;
+    if (!replyWindowActive) voiceReplyInteractionId = '';
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
-      Date.now() <= voiceReplyUntil
+      replyWindowActive
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
@@ -1775,7 +1777,7 @@ async function processVoiceUtterance(blob, durationMs) {
       return;
     }
     voiceReplyUntil = 0;
-    const interactionId = voiceReplyInteractionId;
+    const interactionId = replyWindowActive ? voiceReplyInteractionId : '';
     voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
     await submitAgentChat(transcript.text, { spokenRequest: true, interactionId });

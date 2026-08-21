@@ -9,7 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
-const { catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -50,7 +50,7 @@ const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInte
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
-const { inferEventKind } = require('./supervisor/outcome.cjs');
+const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
@@ -452,6 +452,7 @@ function readAgentState() {
         input: String(item?.input || '').slice(0, 65_536),
         submit: item?.submit !== false,
         pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
+        headSha: String(item?.headSha || '').slice(0, 100),
         body: String(item?.body || '').slice(0, 20_000),
         reason: String(item?.reason || '').slice(0, 300),
         summary: String(item?.summary || '').slice(0, 500),
@@ -649,7 +650,8 @@ function addMergeReadyMessage(state, pull) {
   const text = `Codex gave PR #${pull.number} — ${pull.title} — a thumbs-up. Would you like me to merge it?`;
   const confirmation = {
     id: crypto.randomUUID(), kind: 'merge-pull-request', sessionId: pull.sessionId,
-    title: `PR #${pull.number} · ${pull.title}`, pullRequestUrl: pull.url, createdAt: Date.now()
+    title: `PR #${pull.number} · ${pull.title}`, pullRequestUrl: pull.url,
+    headSha: pull.headSha, createdAt: Date.now()
   };
   state.confirmations.push(confirmation);
   const interaction = interactionManagerFor(state).create({
@@ -1059,6 +1061,9 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
 const supervisorActions = {
   listSessions({ includeArchived = true } = {}) {
     const state = readAgentState();
+    const latestAttentionBySession = new Map(pendingNotifications(state.notifications)
+      .filter((notification) => notification.sessionId)
+      .map((notification) => [notification.sessionId, notification]));
     const liveIds = new Set();
     for (const item of mobileWorkspace.sessions) {
       liveIds.add(item.id);
@@ -1068,7 +1073,11 @@ const supervisorActions = {
         friendlyName: item.title,
         cwd: item.cwd,
         status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
-        semanticState: item.busy ? 'working' : item.notified ? 'completed' : undefined,
+        semanticState: item.busy
+          ? 'working'
+          : item.notified
+            ? semanticStateForEvent(latestAttentionBySession.get(item.id)?.kind)
+            : undefined,
         currentTask: item.summary,
         lastActivityAt: item.lastActivityAt
       });
@@ -1307,8 +1316,9 @@ async function performSupervisorChat(text, {
     const runtime = await getSupervisorRuntime();
     const result = await runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta });
     const latest = readAgentState();
-    const needsEnrichment = automatic && result.text.trim() === 'NEEDS_ENRICHMENT';
-    const suppressed = automatic && (isNoUpdateResponse(result.text) || needsEnrichment);
+    const presenterSentinel = automatic ? automaticPresenterSentinel(result.text) : '';
+    const needsEnrichment = presenterSentinel === 'NEEDS_ENRICHMENT';
+    const suppressed = Boolean(presenterSentinel);
     if (!suppressed) {
       addAgentMessage(latest, 'assistant', result.text, proactive ? {
         proactive: true,
@@ -1578,10 +1588,12 @@ async function resolveAgentConfirmation(id, approved) {
       refreshPullRequestUrl = confirmation.pullRequestUrl;
       resultText = `The user approved the GitHub comment and SideTerm posted it: ${posted.url}`;
     } else if (confirmation.kind === 'merge-pull-request') {
-      const merged = await mergePullRequest(confirmation.pullRequestUrl);
+      const merged = await mergePullRequest(confirmation.pullRequestUrl, { headSha: confirmation.headSha });
       actionCommitted = true;
       refreshPullRequestUrl = confirmation.pullRequestUrl;
-      resultText = `The user approved the merge and SideTerm merged ${confirmation.title}: ${merged.url}`;
+      resultText = merged.merged
+        ? `The user approved the merge and SideTerm merged ${confirmation.title}: ${merged.url}`
+        : `The user approved the merge for ${confirmation.title}. GitHub accepted it but still reports ${merged.state.toLowerCase()}, so it may be queued or waiting for checks: ${merged.url}`;
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
