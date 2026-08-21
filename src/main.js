@@ -1545,18 +1545,22 @@ function restoreTerminalVisualCapture() {
   restore?.();
 }
 
-function hideNonterminalCaptureOverlays() {
+function hideNonterminalCaptureOverlays({ hideDashboard = true } = {}) {
   const dashboardWasHidden = supervisorDashboard.hidden;
   const supervisorWasActive = shellElement.classList.contains('supervisor-active');
   const overlayStates = [...document.querySelectorAll('.settings-backdrop, .link-popover, .toast-region')]
     .map((element) => ({ element, hidden: element.hidden }));
-  supervisorDashboard.hidden = true;
-  shellElement.classList.remove('supervisor-active');
+  if (hideDashboard) {
+    supervisorDashboard.hidden = true;
+    shellElement.classList.remove('supervisor-active');
+  }
   for (const overlay of overlayStates) overlay.element.hidden = true;
   return () => {
     for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
-    supervisorDashboard.hidden = dashboardWasHidden;
-    shellElement.classList.toggle('supervisor-active', supervisorWasActive);
+    if (hideDashboard) {
+      supervisorDashboard.hidden = dashboardWasHidden;
+      shellElement.classList.toggle('supervisor-active', supervisorWasActive);
+    }
   };
 }
 
@@ -1590,8 +1594,6 @@ async function handleAgentAction({ requestId, type, payload }) {
       try {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         session.pane.classList.add('active');
-        session.busySuppressedUntil = Math.max(session.busySuppressedUntil, Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS);
-        session.captureRedrawSuppressedUntil = Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS;
         session.fit.fit();
         await waitForTerminalCaptureRepaint();
         const rect = session.pane.getBoundingClientRect();
@@ -1610,7 +1612,7 @@ async function handleAgentAction({ requestId, type, payload }) {
     }
     if (type === 'prepare-window-capture') {
       restoreTerminalVisualCapture();
-      const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false });
       terminalCaptureRestore = () => {
         restoreOverlays();
         requestAnimationFrame(fitActive);
@@ -2520,7 +2522,6 @@ async function addSession(cwd, options = {}) {
     busy: false,
     busyTimer: null,
     busySuppressedUntil: Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS,
-    captureRedrawSuppressedUntil: 0,
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
@@ -2848,11 +2849,7 @@ sessionList.addEventListener('dragend', cleanupDrag);
 api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
-  const captureOnlyRedraw = Date.now() < session.captureRedrawSuppressedUntil;
-  session.terminal.write(data, () => {
-    if (!captureOnlyRedraw) noteSessionBusy(session, data);
-  });
-  if (captureOnlyRedraw) return;
+  session.terminal.write(data, () => noteSessionBusy(session, data));
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
