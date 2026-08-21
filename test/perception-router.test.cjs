@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PerceptionRouter } = require('../electron/perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence } = require('../electron/perception/router.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
   let cloudCalled = false;
@@ -51,4 +51,9 @@ test('perception continues after null and failed preferred sources', async () =>
   });
   const result = await router.inspect();
   assert.equal(result.source, 'terminal-text');
+});
+
+test('visual questions fall through terminal text to styled capture', () => {
+  assert.equal(requiresVisualEvidence('Which option is highlighted in red?'), true);
+  assert.equal(requiresVisualEvidence('What command finished?'), false);
 });
