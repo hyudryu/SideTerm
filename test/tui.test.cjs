@@ -44,6 +44,9 @@ test('cursor navigation alone does not prove Enter submitted a selection', () =>
 
 test('main-process TUI submission gates Space and revalidates the authorized label', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function captureSessionViewport\(session\)[\s\S]*\['capture-pane', '-p', '-t', session\.tmuxSession\]/);
+  assert.doesNotMatch(main, /tuiSnapshot\(captureSessionScreen/);
+  assert.match(main, /tuiSnapshot\(captureSessionViewport/);
   assert.match(main, /\['ENTER', 'SPACE'\]\.includes\(normalized\)/);
   assert.match(main, /beforeSubmit\.options\[targetIndex\]\?\.label !== expectedLabel/);
   assert.match(main, /kind: 'tui-selection', sessionId, optionIndex, optionLabel, tuiKey: normalized/);

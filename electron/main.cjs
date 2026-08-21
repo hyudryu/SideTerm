@@ -4,6 +4,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
@@ -97,6 +98,7 @@ const pendingRendererActions = new Map();
 const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
+const supervisorTurnContext = new AsyncLocalStorage();
 const mobilePresentationSurfaces = new WeakMap();
 const sessionIndex = new SessionIndex();
 let harnessBackend = null;
@@ -630,7 +632,7 @@ function readAgentState() {
         terminalInputsApproved: Math.max(0, Math.floor(Number(parsed.metrics?.terminalInputsApproved) || 0)),
         terminalWordsEntered: Math.max(0, Math.floor(Number(parsed.metrics?.terminalWordsEntered) || 0))
       },
-      pullRequests: Array.isArray(parsed.pullRequests) ? parsed.pullRequests.slice(-40).map((item) => ({
+      pullRequests: Array.isArray(parsed.pullRequests) ? parsed.pullRequests.slice(-120).map((item) => ({
         url: String(item?.url || '').slice(0, 1000),
         number: Math.max(0, Number(item?.number) || 0),
         sessionId: String(item?.sessionId || '').slice(0, 100),
@@ -827,6 +829,8 @@ function addMergeReadyMessage(state, pull) {
     headSha: pull.headSha, createdAt: Date.now()
   };
   state.confirmations.push(confirmation);
+  const turn = supervisorTurnContext.getStore();
+  if (turn) turn.confirmationIds.push(confirmation.id);
   const interaction = interactionManagerFor(state).create({
     id: confirmation.id,
     sessionId: pull.sessionId,
@@ -948,7 +952,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
   }
   if (index >= 0) state.pullRequests[index] = next;
   else state.pullRequests.push(next);
-  if (state.pullRequests.length > 40) state.pullRequests.splice(0, state.pullRequests.length - 40);
+  if (state.pullRequests.length > 120) state.pullRequests.splice(0, state.pullRequests.length - 120);
   if (state.notifications.length > 240) state.notifications.splice(0, state.notifications.length - 240);
   writeAgentState(state);
   if (prNotificationAdded) scheduleProactiveCatchUp();
@@ -1293,7 +1297,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
 async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '', tuiKey = 'ENTER' }) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('That terminal session is not active.');
-  const before = tuiSnapshot(captureSessionScreen(session), sessionId);
+  const before = tuiSnapshot(captureSessionViewport(session), sessionId);
   const expectedLabel = String(optionLabel || '');
   if (expectedLabel && before.options[Math.floor(Number(optionIndex))]?.label !== expectedLabel) {
     throw new Error('The terminal menu changed before SideTerm could confirm the selected option.');
@@ -1309,7 +1313,7 @@ async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '', t
     session.processHandle.write(data);
   }
   await new Promise((resolve) => setTimeout(resolve, 120));
-  const beforeSubmit = tuiSnapshot(captureSessionScreen(session), sessionId);
+  const beforeSubmit = tuiSnapshot(captureSessionViewport(session), sessionId);
   const targetIndex = Math.floor(Number(optionIndex));
   if (beforeSubmit.selectedIndex !== targetIndex
     || (expectedLabel && beforeSubmit.options[targetIndex]?.label !== expectedLabel)) {
@@ -1319,7 +1323,7 @@ async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '', t
   send('terminal:remote-input', { id: sessionId, data: submit });
   session.processHandle.write(submit);
   await new Promise((resolve) => setTimeout(resolve, 120));
-  const after = tuiSnapshot(captureSessionScreen(session), sessionId);
+  const after = tuiSnapshot(captureSessionViewport(session), sessionId);
   return { accepted: tuiSelectionAccepted(beforeSubmit, after), submitted: true, keys, before, beforeSubmit, after };
 }
 
@@ -1397,12 +1401,12 @@ const supervisorActions = {
   tuiSnapshot({ sessionId }) {
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    return tuiSnapshot(captureSessionScreen(session), sessionId);
+    return tuiSnapshot(captureSessionViewport(session), sessionId);
   },
   async tuiSelect({ sessionId, optionIndex }) {
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    const before = tuiSnapshot(captureSessionScreen(session), sessionId);
+    const before = tuiSnapshot(captureSessionViewport(session), sessionId);
     const index = Math.floor(Number(optionIndex));
     selectionKeys(before, index);
     const optionLabel = before.options[index]?.label || '';
@@ -1419,7 +1423,7 @@ const supervisorActions = {
     if (['CTRL_C', 'CTRL_D'].includes(normalized)) throw new Error('Interrupt and EOF keys require direct user confirmation.');
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    const snapshot = tuiSnapshot(captureSessionScreen(session), sessionId);
+    const snapshot = tuiSnapshot(captureSessionViewport(session), sessionId);
     if (!canSubmitTuiKey(snapshot, normalized)) {
       throw new Error('SideTerm will not submit a key unless a structured TUI menu is visible.');
     }
@@ -1479,6 +1483,7 @@ const supervisorActions = {
     const cancelled = watchManagerFor(state).cancel(watchId);
     if (!cancelled) throw new Error('Watch not found.');
     if (watch?.kind === 'github_codex_review') {
+      retireMergeConfirmations(state, `https://github.com/${watch.repo}/pull/${Number(watch.prNumber)}`);
       state.pullRequests = state.pullRequests.filter((pull) => {
         const repository = pull.url?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i)?.[1] || '';
         return repository !== watch.repo || Number(pull.number) !== Number(watch.prNumber);
@@ -1565,7 +1570,6 @@ async function performSupervisorChat(text, {
     state = readAgentState();
   }
   if (answeredInteraction) queueMicrotask(scheduleProactiveCatchUp);
-  const interactionIdsBeforeTurn = new Set(state.interactions.map((item) => item.id));
   agentStatus = 'thinking';
   broadcastAgentState();
   try {
@@ -1597,10 +1601,14 @@ async function performSupervisorChat(text, {
       voice ? `\n${VOICE_MODE_INSTRUCTION}` : ''
     ].filter(Boolean).join('\n');
     const runtime = await getSupervisorRuntime();
-    const result = await runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta });
+    const turn = { confirmationIds: [] };
+    const result = await supervisorTurnContext.run(turn, () => (
+      runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta })
+    ));
     const latest = readAgentState();
+    const turnConfirmationIds = new Set(turn.confirmationIds);
     const turnInteraction = latest.interactions
-      .filter((item) => !interactionIdsBeforeTurn.has(item.id)
+      .filter((item) => turnConfirmationIds.has(item.id)
         && ['queued', 'presented', 'awaiting_answer'].includes(item.state)
         && latest.confirmations.some((confirmation) => confirmation.id === item.id))
       .sort((left, right) => right.createdAt - left.createdAt)[0];
@@ -2502,6 +2510,18 @@ function captureSessionScreen(session) {
   }
 }
 
+function captureSessionViewport(session) {
+  if (session?.tmux && session.tmuxSession) {
+    try {
+      return runTmux(session.tmux, ['capture-pane', '-p', '-t', session.tmuxSession], { capture: true }).slice(-100_000);
+    } catch {
+      return '';
+    }
+  }
+  const rows = Math.max(1, Math.floor(Number(session?.rows) || 30));
+  return String(session?.mobileOutputBuffer || '').split('\n').slice(-rows).join('\n');
+}
+
 function sendMobileTerminalFrame(client, id, requestId) {
   const session = sessions.get(id);
   if (!session || client?.sideTermSessionId !== id) return;
@@ -2898,6 +2918,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     processHandle,
     tmux,
     tmuxSession,
+    rows: Math.max(1, Math.floor(rows)),
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3009,8 +3030,9 @@ function registerIpc() {
   ipcMain.on('terminal:resize', (_event, { id, cols, rows }) => {
     const session = sessions.get(id);
     if (!session || !Number.isFinite(cols) || !Number.isFinite(rows)) return;
+    session.rows = Math.max(1, Math.floor(rows));
     try {
-      session.processHandle.resize(Math.max(2, Math.floor(cols)), Math.max(1, Math.floor(rows)));
+      session.processHandle.resize(Math.max(2, Math.floor(cols)), session.rows);
     } catch {
       // Ignore resize races while a process is exiting.
     }
