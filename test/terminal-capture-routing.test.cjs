@@ -15,6 +15,12 @@ test('visual inspection captures the styled live terminal and preserves fallback
   assert.match(renderer, /window\.setTimeout\(done, 80\)/);
 });
 
+test('retained stopped sessions remain eligible for structured and visual inspection', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.doesNotMatch(main, /sessionId && !session\) throw new Error\('That session is stopped/);
+  assert.match(main, /const screenshot = async \(\) => \{[\s\S]*if \(sessionId\) \{[\s\S]*prepare-terminal-capture/);
+});
+
 test('terminal capture hides credential-bearing and nonterminal overlays', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(renderer, /querySelectorAll\('\.settings-backdrop, \.link-popover, \.toast-region'\)/);
