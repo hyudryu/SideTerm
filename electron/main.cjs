@@ -961,6 +961,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   const session = sessionId ? sessions.get(sessionId) : null;
   const metadata = sessionId ? mobileWorkspace.sessions.find((item) => item.id === sessionId) : null;
   if (sessionId && !session && !metadata) throw new Error('Session not found. Call list_sessions to get an exact session ID.');
+  if (sessionId && !session) throw new Error('That session is stopped and has no live terminal to inspect.');
   let capturedImage = null;
   const screenshot = async () => {
     if (capturedImage) return capturedImage;
