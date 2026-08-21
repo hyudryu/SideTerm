@@ -10,7 +10,7 @@ test('voice clarification replies stay bound to their own interaction without du
   assert.match(main, /desktopSpeechPresented: supervisorVoiceMode/);
   assert.match(main, /clarification: \{ \.\.\.clarification, interactionId: interaction\.id \}/);
   assert.match(main, /interactionId \|\| \(spokenRequest \? '' : state\.activeInteractionId\)/);
-  assert.match(main, /interactionId: String\(event\.payload\?\.interactionId \|\| ''\)/);
+  assert.match(main, /interactionId: String\(result\.interactionId \|\| notification\.payload\?\.interactionId \|\| ''\)/);
   assert.match(main, /agent:voice-ping'[\s\S]*interactionId: options\.interactionId \|\| ''/);
   assert.match(desktop, /voiceReplyInteractionId = transcript\.clarification\.interactionId/);
   assert.match(desktop, /queueAgentSpeech\(transcript\.clarification\.prompt, \{[\s\S]*interactionId: transcript\.clarification\.interactionId/);
