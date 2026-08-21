@@ -600,15 +600,15 @@ async function startMobileVoice() {
       silenceAt = 0;
     } else if (speaking) {
       silenceAt ||= now;
-      if (now - silenceAt > 850 || now - startedAt > 14_000) {
-        const blob = new Blob(header ? [header, ...utterance] : utterance, { type: voiceRecorder.mimeType || 'audio/webm' });
-        const duration = now - startedAt;
-        speaking = false;
-        silenceAt = 0;
-        utterance = [];
-        preRoll = [];
-        void submitVoiceBlob(blob, duration);
-      }
+    }
+    if (speaking && (now - startedAt > 14_000 || (silenceAt && now - silenceAt > 850))) {
+      const blob = new Blob(header ? [header, ...utterance] : utterance, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const duration = now - startedAt;
+      speaking = false;
+      silenceAt = 0;
+      utterance = [];
+      preRoll = [];
+      void submitVoiceBlob(blob, duration);
     }
     voiceFrame = requestAnimationFrame(monitor);
   };
