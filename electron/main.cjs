@@ -1216,22 +1216,44 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
     question
   });
   const router = new PerceptionRouter({
-    structuredState: async () => ({
-      summary: JSON.stringify({
-        session: metadata ? { id: metadata.id, title: metadata.title, summary: metadata.summary, busy: metadata.busy } : null,
-        sessions: sessionId ? [] : mobileWorkspace.sessions.slice(0, 200).map((item) => ({
-          id: item.id,
-          title: item.title,
-          summary: item.summary,
-          busy: Boolean(item.busy),
-          status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
-          needsAttention: Boolean(item.notified)
-        })),
-        supervisorStatus: agentStatus,
-        activeInteractionId: readAgentState().activeInteractionId
-      }),
-      confidence: structuredStateSufficient(question) ? 0.9 : 0.7
-    }),
+    structuredState: async () => {
+      const workspaceSessions = mobileWorkspace.sessions;
+      const sessionCounts = workspaceSessions.reduce((counts, item) => {
+        counts.total += 1;
+        counts[item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped'] += 1;
+        if (item.notified) counts.needsAttention += 1;
+        return counts;
+      }, { total: 0, running: 0, idle: 0, stopped: 0, needsAttention: 0 });
+      const listedSessions = sessionId ? [] : workspaceSessions.slice(0, 200).map((item) => ({
+        id: item.id,
+        title: item.title,
+        summary: item.summary,
+        busy: Boolean(item.busy),
+        status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
+        needsAttention: Boolean(item.notified)
+      }));
+      return {
+        summary: JSON.stringify({
+          session: metadata ? {
+            id: metadata.id,
+            title: metadata.title,
+            summary: metadata.summary,
+            busy: Boolean(metadata.busy),
+            status: metadata.busy ? 'running' : sessions.has(metadata.id) ? 'idle' : 'stopped',
+            needsAttention: Boolean(metadata.notified)
+          } : null,
+          sessions: listedSessions,
+          sessionCollection: {
+            ...sessionCounts,
+            returned: listedSessions.length,
+            truncated: !sessionId && listedSessions.length < sessionCounts.total
+          },
+          supervisorStatus: agentStatus,
+          activeInteractionId: readAgentState().activeInteractionId
+        }),
+        confidence: structuredStateSufficient(question) ? 0.9 : 0.7
+      };
+    },
     terminalText: session ? async () => {
       const text = captureSessionScreen(session).slice(-20_000);
       return {

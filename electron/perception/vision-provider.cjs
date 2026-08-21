@@ -8,7 +8,16 @@ function extractResponseText(payload = {}) {
 function parseStructuredPerception(text) {
   const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    const useful = parsed && !Array.isArray(parsed) && typeof parsed === 'object'
+      && (typeof parsed.summary === 'string'
+        || Array.isArray(parsed.visibleText)
+        || Array.isArray(parsed.controls)
+        || Array.isArray(parsed.errors));
+    if (!useful) {
+      return { summary: '', visibleText: [], controls: [], errors: ['Vision provider returned JSON without perception fields.'], confidence: 0 };
+    }
+    return { ...parsed, confidence: Number.isFinite(parsed.confidence) ? parsed.confidence : 0.75 };
   } catch {
     return { summary: raw.slice(0, 4000), visibleText: [], controls: [], errors: ['Vision provider returned non-JSON text.'], confidence: raw ? 0.75 : 0 };
   }
