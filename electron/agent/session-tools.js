@@ -85,13 +85,13 @@ export function createSessionTools(actions) {
     }),
     tool({
       name: 'watch_create',
-      description: 'Create a durable condition watch. GitHub Codex review watches stop when Codex approves the current head.',
+      description: 'Create and immediately enroll a durable GitHub Codex review watch. It checks once a minute and reaches its condition when Codex approves the current head.',
       inputSchema: z.object({
-        kind: z.enum(['github_codex_review', 'generic']),
-        repo: z.string().trim().max(300).optional().default(''),
-        prNumber: z.number().int().min(0).optional().default(0),
+        kind: z.literal('github_codex_review'),
+        repo: z.string().trim().min(3).max(300),
+        prNumber: z.number().int().min(1),
         intervalSeconds: z.number().int().min(60).max(86400).optional().default(60),
-        exitCondition: z.string().trim().min(1).max(100)
+        exitCondition: z.literal('codex_thumbs_up').optional().default('codex_thumbs_up')
       }),
       callback: (input) => actions.watchCreate(input)
     }),

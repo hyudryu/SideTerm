@@ -1213,7 +1213,7 @@ function handleProactiveMessages() {
     if (spokenProactiveMessageIds.has(message.id)) continue;
     spokenProactiveMessageIds.add(message.id);
     const brief = message.voiceSummary || message.text;
-    if (desktopVoiceMode) void queueAgentSpeech(brief);
+    if (desktopVoiceMode && !message.desktopSpeechPresented) void queueAgentSpeech(brief);
     else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
   }
 }
