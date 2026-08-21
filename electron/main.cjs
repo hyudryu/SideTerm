@@ -602,7 +602,7 @@ function readAgentState() {
         desktopSpeechPresented: Boolean(item?.desktopSpeechPresented)
       })) : [],
       notifications: Array.isArray(parsed.notifications)
-        ? recoverAbandonedEvents(markSupersededNotificationsRead(parsed.notifications.slice(-240).map((item) => normalizeSupervisorEvent(item))))
+        ? markSupersededNotificationsRead(parsed.notifications.slice(-240).map((item) => normalizeSupervisorEvent(item)))
         : [],
       archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions.slice(-160).map((item) => ({
         ...cleanAgentEntry(item, { id: 100, title: 100, group: 80, outcome: 24, summary: 500, context: 12_000 }),
@@ -688,6 +688,15 @@ function writeAgentState(state) {
   fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporary, destination);
   fs.chmodSync(destination, 0o600);
+}
+
+function recoverAbandonedAgentStateEvents() {
+  const state = readAgentState();
+  const hasAbandonedClaims = state.notifications.some((event) => event.state === 'presented' && !event.read);
+  if (!hasAbandonedClaims) return false;
+  recoverAbandonedEvents(state.notifications);
+  writeAgentState(state);
+  return true;
 }
 
 function eventBusFor(state) {
@@ -3503,6 +3512,7 @@ function createWindow() {
 }
 
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
+  recoverAbandonedAgentStateEvents();
   registerIpc();
   createWindow();
   syncBackgroundTray();

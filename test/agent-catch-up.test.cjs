@@ -81,6 +81,14 @@ test('dashboard and proactive catch-up share the same persisted event claim', ()
   assert.match(main, /releaseSupervisorEventClaim\(notification\.id\)/);
 });
 
+test('abandoned presentation claims recover once at application startup', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const readAgentState = main.match(/function readAgentState\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(readAgentState, /recoverAbandonedEvents/);
+  assert.match(main, /function recoverAbandonedAgentStateEvents\(\)[\s\S]*recoverAbandonedEvents\(state\.notifications\)[\s\S]*writeAgentState\(state\)/);
+  assert.match(main, /app\.whenReady\(\)\.then\(\(\) => \{\s*recoverAbandonedAgentStateEvents\(\);/);
+});
+
 test('persisted unread updates are scheduled once after workspace restoration', () => {
   assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: false }), true);
   assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: true }), false);
