@@ -1645,6 +1645,12 @@ async function handleAgentAction({ requestId, type, payload }) {
       api.resolveAgentAction(requestId, { restored: true });
       return;
     }
+    if (type === 'read-terminal-text') {
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The retained terminal is no longer available.');
+      api.resolveAgentAction(requestId, { text: terminalHistory(session.terminal).slice(-20_000) });
+      return;
+    }
     if (type === 'create-session') {
       let group = payload.createGroup
         ? null
@@ -2273,7 +2279,7 @@ function activateSession(id) {
     : `${next.shell} · ${next.cwd}`;
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
-  schedulePersist();
+  persistWorkspaceNow();
   requestAnimationFrame(() => {
     fitSession(next);
     next.terminal.focus();
@@ -2611,10 +2617,11 @@ async function addSession(cwd, options = {}) {
   }
 
   terminal.onData((data) => {
-    if (!session.exited && !terminalCaptureRestore) {
-      trackTerminalInput(session, data);
-      api.write(id, data);
-    }
+    if (session.exited) return;
+    const userInput = stripTerminalControlInput(data);
+    if (terminalCaptureRestore && userInput) return;
+    if (userInput) trackTerminalInput(session, data);
+    api.write(id, data);
   });
   terminal.onResize(({ cols, rows }) => api.resize(id, cols, rows));
   terminal.onTitleChange((title) => {
@@ -2631,6 +2638,7 @@ async function addSession(cwd, options = {}) {
   });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
+    if (terminalCaptureRestore) return false;
     const action = resolveTerminalShortcut(event, terminal.hasSelection(), settings.hotkeys);
     if (!action) return true;
     if (!consumeTerminalShortcutEvent(event, action)) return true;

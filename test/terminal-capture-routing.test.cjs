@@ -66,7 +66,7 @@ test('collection status inspection includes the bounded live session list', () =
 test('active terminal text is used before whole-window vision', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /const activeTerminal = !sessionId && mobileWorkspace\.activeId \? sessions\.get\(mobileWorkspace\.activeId\) : null/);
-  assert.match(main, /terminalText: session \|\| activeTerminal \? async \(\) => \{[\s\S]*captureSessionScreen\(session \|\| activeTerminal\)/);
+  assert.match(main, /const liveTerminal = session \|\| activeTerminal;[\s\S]*captureSessionScreen\(liveTerminal\)/);
 });
 
 test('capture routing keeps incomplete collection questions away from terminal text', () => {
@@ -79,9 +79,19 @@ test('capture lifetime locks session activation and terminal input', () => {
   const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
   assert.match(main, /function lockTerminalCaptureInteraction\(\) \{[\s\S]*classList\.add\('capture-locked'\)[\s\S]*classList\.remove\('capture-locked'\)/);
   assert.match(main, /function activateSession\(id\) \{\s*if \(terminalCaptureRestore\) return;/);
-  assert.match(main, /terminal\.onData\(\(data\) => \{\s*if \(!session\.exited && !terminalCaptureRestore\)/);
+  assert.match(main, /terminal\.onData\(\(data\) => \{[\s\S]*if \(terminalCaptureRestore && userInput\) return;[\s\S]*api\.write\(id, data\)/);
+  assert.match(main, /attachCustomKeyEventHandler\(\(event\) => \{[\s\S]*if \(terminalCaptureRestore\) return false;/);
   assert.match(main, /window\.addEventListener\('keydown', \(event\) => \{\s*if \(terminalCaptureRestore\)/);
   assert.match(styles, /\.app-shell\.capture-locked \{ pointer-events: none; \}/);
+});
+
+test('active identity publishes immediately and stopped terminals retain local text routing', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(renderer, /function activateSession\(id\) \{[\s\S]*activeId = id;[\s\S]*persistWorkspaceNow\(\);/);
+  assert.match(renderer, /type === 'read-terminal-text'[\s\S]*terminalHistory\(session\.terminal\)\.slice\(-20_000\)/);
+  assert.match(main, /session \|\| activeTerminal \|\| \(sessionId && metadata\) \? async \(\) =>/);
+  assert.match(main, /requestRendererAction\('read-terminal-text', \{ sessionId \}\)/);
 });
 
 test('persisted vision upload consent fails closed unless it is boolean true', () => {

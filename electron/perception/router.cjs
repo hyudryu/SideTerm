@@ -25,6 +25,8 @@ function structuredStateSufficient(question) {
   if (!text || requiresVisualEvidence(text)) return false;
   if (/\bactive interaction\b/i.test(text)) return true;
   if (/(?:\b(?:supervisor|agent)\b[^?.]*\bstatus\b|\bstatus\b[^?.]*\b(?:supervisor|agent)\b)/i.test(text)) return true;
+  if (/\b(?:supervisor|agent)\b/i.test(text)
+    && /\b(?:busy|working|thinking|idle|error|failed)\b/i.test(text)) return true;
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\bcommand\b/i.test(text)) return false;
   if (/\b(?:sessions|terminals)\b/i.test(text)
