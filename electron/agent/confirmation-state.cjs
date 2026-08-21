@@ -11,4 +11,14 @@ function restoreConfirmation(state, confirmation) {
   return state;
 }
 
-module.exports = { claimConfirmation, restoreConfirmation };
+function retirePullRequestConfirmations(state, pullRequestUrl) {
+  const retired = state.confirmations.filter((item) => item.kind === 'merge-pull-request'
+    && item.pullRequestUrl === pullRequestUrl);
+  if (retired.length) {
+    const ids = new Set(retired.map((item) => item.id));
+    state.confirmations = state.confirmations.filter((item) => !ids.has(item.id));
+  }
+  return retired;
+}
+
+module.exports = { claimConfirmation, restoreConfirmation, retirePullRequestConfirmations };

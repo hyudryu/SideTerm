@@ -279,6 +279,8 @@ function renderAgentState(state) {
         ? `Post comment to ${confirmation.pullRequestUrl}?`
         : confirmation.kind === 'merge-pull-request'
           ? `Merge ${confirmation.title}?`
+        : confirmation.kind === 'tui-selection'
+          ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detail = document.createElement('code');
     detail.textContent = confirmation.kind === 'archive'
@@ -287,6 +289,8 @@ function renderAgentState(state) {
         ? confirmation.body
         : confirmation.kind === 'merge-pull-request'
           ? confirmation.pullRequestUrl
+        : confirmation.kind === 'tui-selection'
+          ? confirmation.optionLabel
         : confirmation.input;
     copy.append(heading, detail);
     if (confirmation.kind === 'github-comment') row.classList.add('github-comment');

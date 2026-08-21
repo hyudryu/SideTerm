@@ -42,3 +42,13 @@ test('catch-up selection can use the event bus priority order', () => {
   bus.enqueue({ id: 'old-failure', kind: 'FAILED', createdAt: 10 });
   assert.equal(bus.next('').id, 'old-failure');
 });
+
+test('resolved interactions acknowledge every bound event', () => {
+  const events = [];
+  const bus = new PriorityEventBus(events);
+  bus.enqueue({ id: 'merge', kind: 'WATCH_CONDITION_MET', payload: { interactionId: 'approval-1' } });
+  bus.enqueue({ id: 'other', kind: 'INFO' });
+  assert.equal(bus.transitionForInteraction('approval-1', 'acknowledged'), 1);
+  assert.equal(events.find((event) => event.id === 'merge').read, true);
+  assert.equal(events.find((event) => event.id === 'other').read, false);
+});

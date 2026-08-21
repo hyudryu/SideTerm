@@ -8,7 +8,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
-const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
+const { claimConfirmation, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
@@ -383,11 +383,13 @@ function readAgentState() {
       })) : [],
       confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-40).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
-        kind: ['archive', 'terminal-input', 'github-comment', 'merge-pull-request'].includes(item?.kind) ? item.kind : 'terminal-input',
+        kind: ['archive', 'terminal-input', 'tui-selection', 'github-comment', 'merge-pull-request'].includes(item?.kind) ? item.kind : 'terminal-input',
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
         submit: item?.submit !== false,
+        optionIndex: Math.max(0, Math.floor(Number(item?.optionIndex) || 0)),
+        optionLabel: String(item?.optionLabel || '').slice(0, 300),
         pullRequestUrl: String(item?.pullRequestUrl || '').slice(0, 1000),
         headSha: String(item?.headSha || '').slice(0, 100),
         body: String(item?.body || '').slice(0, 20_000),
@@ -612,6 +614,21 @@ function addMergeReadyMessage(state, pull) {
   });
 }
 
+function settleInteractionEvents(state, interactionId, eventState = 'acknowledged') {
+  return eventBusFor(state).transitionForInteraction(interactionId, eventState);
+}
+
+function retireMergeConfirmations(state, pullRequestUrl) {
+  const retired = retirePullRequestConfirmations(state, pullRequestUrl);
+  if (!retired.length) return 0;
+  const interactions = interactionManagerFor(state);
+  for (const confirmation of retired) {
+    interactions.cancel(confirmation.id);
+    settleInteractionEvents(state, confirmation.id);
+  }
+  return retired.length;
+}
+
 function updateMonitoredPullRequest(snapshot, sessionId = '', {
   notify = false,
   pendingLocalHeadSha = '',
@@ -650,6 +667,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
   const pullIsOpen = String(snapshot.state || '').toLowerCase() === 'open';
   if (!pullIsOpen) {
     watchManager.conditionMet(reviewWatch.id, `pull-request-${String(snapshot.state || 'closed').toLowerCase()}:${snapshot.headSha}`, snapshot.headSha);
+    retireMergeConfirmations(state, snapshot.url);
   }
   let prNotificationAdded = false;
   if (notify && previous && pullIsOpen) {
@@ -895,6 +913,8 @@ function queueAgentConfirmation(input) {
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post the proposed comment to ${confirmation.title}?`
+        : confirmation.kind === 'tui-selection'
+          ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send the proposed input to ${confirmation.title}?`,
     options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
     priority: 0,
@@ -906,7 +926,13 @@ function queueAgentConfirmation(input) {
     pendingConfirmation: true,
     confirmationId: confirmation.id,
     interactionId: interaction.id,
-    message: `Waiting for the user to approve ${confirmation.kind === 'archive' ? 'archiving' : confirmation.kind === 'github-comment' ? 'posting the GitHub comment' : 'terminal input'} in SideTerm.`
+    message: `Waiting for the user to approve ${confirmation.kind === 'archive'
+      ? 'archiving'
+      : confirmation.kind === 'github-comment'
+        ? 'posting the GitHub comment'
+        : confirmation.kind === 'tui-selection'
+          ? `selecting “${confirmation.optionLabel}”`
+          : 'terminal input'} in SideTerm.`
   };
 }
 
@@ -927,6 +953,33 @@ function executeVoiceTerminalInput(input) {
   writeAgentState(state);
   broadcastAgentState();
   return { executed: true, message: resultText };
+}
+
+async function executeTuiSelection({ sessionId, optionIndex, optionLabel = '' }) {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error('That terminal session is not active.');
+  const before = tuiSnapshot(captureSessionScreen(session), sessionId);
+  const expectedLabel = String(optionLabel || '');
+  if (expectedLabel && before.options[Math.floor(Number(optionIndex))]?.label !== expectedLabel) {
+    throw new Error('The terminal menu changed before SideTerm could confirm the selected option.');
+  }
+  const keys = selectionKeys(before, optionIndex);
+  for (const key of keys.slice(0, -1)) {
+    const data = namedKeyData(key);
+    send('terminal:remote-input', { id: sessionId, data });
+    session.processHandle.write(data);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const beforeSubmit = tuiSnapshot(captureSessionScreen(session), sessionId);
+  if (beforeSubmit.selectedIndex !== Math.floor(Number(optionIndex))) {
+    return { accepted: false, keys: keys.slice(0, -1), before, beforeSubmit, after: beforeSubmit };
+  }
+  const enter = namedKeyData('ENTER');
+  send('terminal:remote-input', { id: sessionId, data: enter });
+  session.processHandle.write(enter);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const after = tuiSnapshot(captureSessionScreen(session), sessionId);
+  return { accepted: tuiSelectionAccepted(beforeSubmit, after), keys, before, beforeSubmit, after };
 }
 
 const supervisorActions = {
@@ -997,33 +1050,36 @@ const supervisorActions = {
   async tuiSelect({ sessionId, optionIndex }) {
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    if (authorize({ kind: 'TUI_SAFE_SELECTION', sessionId, optionIndex }) !== ALLOW) throw new Error('SideTerm did not authorize that TUI selection.');
     const before = tuiSnapshot(captureSessionScreen(session), sessionId);
-    const keys = selectionKeys(before, optionIndex);
-    for (const key of keys.slice(0, -1)) {
-      const data = namedKeyData(key);
-      send('terminal:remote-input', { id: sessionId, data });
-      session.processHandle.write(data);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const beforeSubmit = tuiSnapshot(captureSessionScreen(session), sessionId);
-    if (beforeSubmit.selectedIndex !== Math.floor(Number(optionIndex))) {
-      return { accepted: false, keys: keys.slice(0, -1), before, beforeSubmit, after: beforeSubmit };
-    }
-    const enter = namedKeyData('ENTER');
-    send('terminal:remote-input', { id: sessionId, data: enter });
-    session.processHandle.write(enter);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const after = tuiSnapshot(captureSessionScreen(session), sessionId);
-    return { accepted: tuiSelectionAccepted(beforeSubmit, after), keys, before, beforeSubmit, after };
+    const index = Math.floor(Number(optionIndex));
+    selectionKeys(before, index);
+    const optionLabel = before.options[index]?.label || '';
+    const decision = authorize({ kind: 'TUI_SAFE_SELECTION', sessionId, optionIndex: index, optionLabel });
+    if (decision === ALLOW) return executeTuiSelection({ sessionId, optionIndex: index, optionLabel });
+    if (decision === ASK_USER) return queueAgentConfirmation({
+      kind: 'tui-selection', sessionId, optionIndex: index, optionLabel,
+      reason: `The selected terminal option may have consequential effects: ${optionLabel}`
+    });
+    throw new Error('SideTerm denied that TUI selection.');
   },
   tuiKeypress({ sessionId, key }) {
     const normalized = String(key || '').toUpperCase();
     if (['CTRL_C', 'CTRL_D'].includes(normalized)) throw new Error('Interrupt and EOF keys require direct user confirmation.');
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    if (!canSubmitTuiKey(tuiSnapshot(captureSessionScreen(session), sessionId), normalized)) {
+    const snapshot = tuiSnapshot(captureSessionScreen(session), sessionId);
+    if (!canSubmitTuiKey(snapshot, normalized)) {
       throw new Error('SideTerm will not submit a key unless a structured TUI menu is visible.');
+    }
+    if (normalized === 'ENTER') {
+      const optionIndex = snapshot.selectedIndex;
+      const optionLabel = snapshot.options[optionIndex]?.label || '';
+      const decision = authorize({ kind: 'TUI_SAFE_SELECTION', sessionId, optionIndex, optionLabel });
+      if (decision === ASK_USER) return queueAgentConfirmation({
+        kind: 'tui-selection', sessionId, optionIndex, optionLabel,
+        reason: `The selected terminal option may have consequential effects: ${optionLabel}`
+      });
+      if (decision !== ALLOW) throw new Error('SideTerm denied that TUI selection.');
     }
     const data = namedKeyData(normalized);
     send('terminal:remote-input', { id: sessionId, data });
@@ -1137,12 +1193,15 @@ async function performSupervisorChat(text, {
   const promptText = String(text || '').trim().slice(0, 20_000);
   if (!promptText) throw new Error('Enter a message for the supervisor.');
   let state = readAgentState();
-  const responseInteractionId = String(interactionId || state.activeInteractionId);
+  // A wake-word request that arrives after the voice reply window has expired
+  // must remain a new request. Only an interaction ID explicitly supplied by
+  // the voice client may bind spoken text to an outstanding question.
+  const responseInteractionId = String(interactionId || (spokenRequest ? '' : state.activeInteractionId));
   const pendingInteraction = state.interactions.find((item) => item.id === responseInteractionId);
   const pendingConfirmation = state.confirmations.find((item) => item.id === responseInteractionId);
   const approvalAnswer = interpretApprovalAnswer(promptText);
   const answeredInteraction = !synthetic && shouldConsumeInteractionAnswer(pendingInteraction, promptText)
-    ? interactionManagerFor(state).answer(promptText, interactionId)
+    ? interactionManagerFor(state).answer(promptText, responseInteractionId)
     : null;
   if (!synthetic) addAgentMessage(state, 'user', promptText);
   writeAgentState(state);
@@ -1446,6 +1505,8 @@ async function resolveAgentConfirmation(id, approved) {
           ? `posting a comment to ${confirmation.pullRequestUrl}`
           : confirmation.kind === 'merge-pull-request'
             ? `merging ${confirmation.title}`
+            : confirmation.kind === 'tui-selection'
+              ? `selecting “${confirmation.optionLabel}” in ${confirmation.title}`
           : `terminal input for ${confirmation.title}`}.`;
     } else if (confirmation.kind === 'github-comment') {
       const posted = await postPullRequestComment(confirmation.pullRequestUrl, confirmation.body);
@@ -1459,6 +1520,11 @@ async function resolveAgentConfirmation(id, approved) {
       resultText = merged.merged
         ? `The user approved the merge and SideTerm merged ${confirmation.title}: ${merged.url}`
         : `The user approved the merge for ${confirmation.title}. GitHub accepted it but still reports ${merged.state.toLowerCase()}, so it may be queued or waiting for checks: ${merged.url}`;
+    } else if (confirmation.kind === 'tui-selection') {
+      const selection = await executeTuiSelection(confirmation);
+      if (!selection.accepted) throw new Error('The terminal menu changed before SideTerm could confirm the selected option.');
+      actionCommitted = true;
+      resultText = `The user approved and SideTerm selected “${confirmation.optionLabel}” in ${confirmation.title}.`;
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
@@ -1487,6 +1553,7 @@ async function resolveAgentConfirmation(id, approved) {
       state.metrics.terminalWordsEntered += approvedWords;
     }
     if (archivedRecord) state.archivedSessions.push(archivedRecord);
+    settleInteractionEvents(state, confirmation.id);
     state.actionResults.push({ text: resultText, createdAt: Date.now() });
     addAgentMessage(state, 'event', resultText);
     writeAgentState(state);
