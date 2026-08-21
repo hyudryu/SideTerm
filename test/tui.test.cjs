@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSnapshot } = require('../electron/sessions/tui.cjs');
+const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('../electron/sessions/tui.cjs');
 
 test('semantic TUI snapshot finds selected options and minimal navigation', () => {
   const snapshot = tuiSnapshot('  First option\n> Second option\n  Third option'.replace(/^  /gm, '  1. '), 'terminal');
@@ -32,4 +32,10 @@ test('checked controls are not mistaken for keyboard focus', () => {
   assert.equal(snapshot.options[0].checked, true);
   assert.equal(snapshot.selectedIndex, -1);
   assert.equal(canSubmitTuiKey(snapshot, 'ENTER'), false);
+});
+
+test('cursor navigation alone does not prove Enter submitted a selection', () => {
+  const navigated = tuiSnapshot('  1. First option\n> Second option', 'terminal');
+  assert.equal(tuiSelectionAccepted(navigated, navigated), false);
+  assert.equal(tuiSelectionAccepted(navigated, tuiSnapshot('Starting tests…', 'terminal')), true);
 });

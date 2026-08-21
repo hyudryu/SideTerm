@@ -51,7 +51,7 @@ const { deterministicPresentation, PresentationCoordinator } = require('./superv
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
-const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
+const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -581,7 +581,7 @@ function sendCodexFixRequest(pull, commentCount) {
 
 function addMergeReadyMessage(state, pull) {
   const text = `Codex gave PR #${pull.number} — ${pull.title} — a thumbs-up. Would you like me to merge it?`;
-  interactionManagerFor(state).create({
+  const interaction = interactionManagerFor(state).create({
     sessionId: pull.sessionId,
     kind: 'approval',
     prompt: text,
@@ -596,6 +596,7 @@ function addMergeReadyMessage(state, pull) {
     summary: text,
     dedupeKey: `codex-approved:${pull.url}:${pull.headSha}`,
     presentation: { shortText: text, requiresUserReply: true, suggestedAction: 'merge' },
+    payload: { interactionId: interaction.id },
     links: [pull.url]
   });
 }
@@ -981,14 +982,22 @@ const supervisorActions = {
     if (authorize({ kind: 'TUI_SAFE_SELECTION', sessionId, optionIndex }) !== ALLOW) throw new Error('SideTerm did not authorize that TUI selection.');
     const before = tuiSnapshot(captureSessionScreen(session), sessionId);
     const keys = selectionKeys(before, optionIndex);
-    for (const key of keys) {
+    for (const key of keys.slice(0, -1)) {
       const data = namedKeyData(key);
       send('terminal:remote-input', { id: sessionId, data });
       session.processHandle.write(data);
     }
     await new Promise((resolve) => setTimeout(resolve, 120));
+    const beforeSubmit = tuiSnapshot(captureSessionScreen(session), sessionId);
+    if (beforeSubmit.selectedIndex !== Math.floor(Number(optionIndex))) {
+      return { accepted: false, keys: keys.slice(0, -1), before, beforeSubmit, after: beforeSubmit };
+    }
+    const enter = namedKeyData('ENTER');
+    send('terminal:remote-input', { id: sessionId, data: enter });
+    session.processHandle.write(enter);
+    await new Promise((resolve) => setTimeout(resolve, 120));
     const after = tuiSnapshot(captureSessionScreen(session), sessionId);
-    return { accepted: after.text !== before.text || after.options.length === 0, keys, before, after };
+    return { accepted: tuiSelectionAccepted(beforeSubmit, after), keys, before, beforeSubmit, after };
   },
   tuiKeypress({ sessionId, key }) {
     const normalized = String(key || '').toUpperCase();
@@ -1123,6 +1132,7 @@ async function performSupervisorChat(text, {
     await resolveAgentConfirmation(pendingConfirmation.id, approvalAnswer);
     state = readAgentState();
   }
+  if (answeredInteraction) queueMicrotask(scheduleProactiveCatchUp);
   agentStatus = 'thinking';
   broadcastAgentState();
   try {
@@ -1262,7 +1272,7 @@ async function runProactiveCatchUp() {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
   const state = readAgentState();
-  const event = eventBusFor(state).next();
+  const event = eventBusFor(state).next(state.activeInteractionId);
   if (!event) return 'skipped';
   try {
     const voice = anyVoiceSurfaceOn();
@@ -1295,7 +1305,8 @@ async function runProactiveCatchUp() {
           return null;
         }).catch(() => {});
       }
-      if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
+      const latest = readAgentState();
+      if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
       return 'ran';
     }
     addAgentMessage(state, 'assistant', presentation, {
@@ -1307,7 +1318,8 @@ async function runProactiveCatchUp() {
     writeAgentState(state);
     broadcastAgentState();
     if (voice) void speakMobileVoiceUpdate(presentation);
-    if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
+    const latest = readAgentState();
+    if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
   } catch (error) {
     return 'failed';
@@ -1316,7 +1328,8 @@ async function runProactiveCatchUp() {
 
 function scheduleProactiveCatchUp() {
   if (!readSettingsRecord().agentEnabled) return;
-  const next = eventBusFor(readAgentState()).next();
+  const state = readAgentState();
+  const next = eventBusFor(state).next(state.activeInteractionId);
   if (!next) return;
   proactiveScheduler ||= new ProactiveCatchUpScheduler({ run: runProactiveCatchUp });
   proactiveScheduler.notify({ delayMs: next.priority <= 2 ? 0 : 30_000 });
@@ -1448,11 +1461,13 @@ async function resolveAgentConfirmation(id, approved) {
     addAgentMessage(state, 'event', resultText);
     writeAgentState(state);
     if (refreshPullRequestUrl) await monitorPullRequest(refreshPullRequestUrl, '', { notify: false }).catch(() => {});
+    queueMicrotask(scheduleProactiveCatchUp);
     return broadcastAgentState();
   } catch (error) {
     if (!actionCommitted) {
       const recovery = readAgentState();
       restoreConfirmation(recovery, confirmation);
+      interactionManagerFor(recovery).restore(confirmation.id);
       writeAgentState(recovery);
       broadcastAgentState();
     }
