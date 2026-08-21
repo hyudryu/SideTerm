@@ -8,6 +8,7 @@ import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES, shouldRearmAiSummary } fr
 import { renderMarkdown } from './markdown.js';
 import { sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
+import { releaseStaleMouseDrag } from './pointer-release.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -2101,6 +2102,15 @@ function acknowledgeActiveSessionOnFocus() {
   if (session && isSessionForeground(session)) acknowledgeSessionNotification(session);
 }
 
+function releaseTerminalSelectionDrag() {
+  releaseStaleMouseDrag(document);
+}
+
+function handleWindowFocus() {
+  releaseTerminalSelectionDrag();
+  acknowledgeActiveSessionOnFocus();
+}
+
 function visibleTerminalText(terminal) {
   const buffer = terminal?.buffer?.active;
   if (!buffer) return '';
@@ -2647,8 +2657,10 @@ api.onExit(({ id, exitCode }) => {
 
 new ResizeObserver(fitActive).observe(terminalStack);
 window.addEventListener('resize', fitActive);
-window.addEventListener('focus', acknowledgeActiveSessionOnFocus);
+window.addEventListener('blur', releaseTerminalSelectionDrag);
+window.addEventListener('focus', handleWindowFocus);
 document.addEventListener('visibilitychange', () => {
+  releaseTerminalSelectionDrag();
   if (document.visibilityState === 'visible') acknowledgeActiveSessionOnFocus();
 });
 collapseButton.addEventListener('click', toggleSidebar);
