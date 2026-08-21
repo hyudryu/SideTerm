@@ -7,6 +7,9 @@ test('level-two policy allows reads and asks for destructive actions', () => {
   assert.equal(authorize({ kind: 'RUN_TESTS' }), ALLOW);
   assert.equal(authorize({ kind: 'RAW_TERMINAL_INPUT', input: 'git push --force' }), ASK_USER);
   assert.equal(authorize({ kind: 'MERGE_PR', number: 9 }), ASK_USER);
+  assert.equal(authorize({ kind: 'TUI_SAFE_SELECTION', optionLabel: 'Run tests' }), ALLOW);
+  assert.equal(authorize({ kind: 'TUI_SAFE_SELECTION', optionLabel: 'Delete production data' }), ASK_USER);
+  assert.equal(authorize({ kind: 'TUI_SAFE_SELECTION', optionLabel: 'Deploy to production' }), ASK_USER);
   assert.equal(authorize({ kind: 'SESSION_READ' }, { untrustedInstruction: true }), DENY);
 });
 
