@@ -15,9 +15,30 @@ function providerDescriptor(id) {
   return provider;
 }
 
+function sttEndpointConfigurationError(value) {
+  const endpoint = String(value || '').trim();
+  if (!endpoint) return '';
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return 'Speech-to-text endpoint must be a valid URL.';
+  }
+  if (url.protocol === 'https:') return '';
+  const hostname = url.hostname.toLowerCase();
+  const loopback = hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname === '127.0.0.1'
+    || hostname === '[::1]';
+  if (url.protocol === 'http:' && loopback) return '';
+  return 'Cloud speech-to-text endpoints must use HTTPS; HTTP is allowed only for an explicit loopback address.';
+}
+
 function providerConfigurationError(id, options = {}) {
   const descriptor = providerDescriptor(id);
   if (descriptor.location === 'local') return '';
+  const endpointError = sttEndpointConfigurationError(options.endpoint);
+  if (endpointError) return endpointError;
   if (!options.credential) return `${descriptor.name} credentials are not configured.`;
   if (id === 'azure' && !options.region && !options.endpoint) return 'Azure Speech requires a region or endpoint.';
   if (id === 'aws' && !options.region) return 'Amazon Transcribe requires a region.';
@@ -221,4 +242,13 @@ async function transcribeCloud(providerId, audio, options = {}) {
   }
 }
 
-module.exports = { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };
+module.exports = {
+  awsAudioEvents,
+  awsClientConfiguration,
+  awsCredentials,
+  providerConfigurationError,
+  providerDescriptor,
+  STT_PROVIDERS,
+  sttEndpointConfigurationError,
+  transcribeCloud
+};
