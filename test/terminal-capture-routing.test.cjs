@@ -27,6 +27,8 @@ test('terminal capture hides credential-bearing and nonterminal overlays', () =>
   assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = true/);
   assert.match(renderer, /for \(const overlay of overlayStates\) overlay\.element\.hidden = overlay\.hidden/);
   assert.match(renderer, /querySelectorAll\('input\[type="password"\]'\)[\s\S]*credential\.element\.value = '••••••••'/);
+  assert.match(renderer, /querySelectorAll\('#mobile-urls code'\)[\s\S]*'\[redacted mobile access URL\]'/);
+  assert.match(renderer, /querySelectorAll\('#mobile-urls canvas'\)[\s\S]*style\.visibility = 'hidden'/);
   assert.match(renderer, /supervisorDashboard\.hidden = true/);
 });
 
@@ -38,6 +40,8 @@ test('whole-window capture preserves observable overlays and restores masked cre
   assert.match(renderer, /type === 'prepare-window-capture'[\s\S]*hideNonterminalCaptureOverlays\(\{ hideDashboard: false, preserveOverlays: true \}\)/);
   assert.match(renderer, /if \(!preserveOverlays\) \{[\s\S]*overlay\.element\.hidden = true/);
   assert.match(renderer, /credential\.element\.value = credential\.value/);
+  assert.match(renderer, /mobileUrl\.element\.textContent = mobileUrl\.text/);
+  assert.match(renderer, /mobileQr\.element\.style\.visibility = mobileQr\.visibility/);
 });
 
 test('session capture restores the live active session without dropping PTY output', () => {
