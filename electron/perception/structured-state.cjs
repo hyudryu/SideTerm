@@ -32,14 +32,35 @@ function fitSessionCollection(payload = {}, candidates = [], options = {}) {
   return { payload: fitted, summary };
 }
 
+function mergeLiveSessionRecords(metadata = [], liveSessionIds = [], indexedRecords = []) {
+  const merged = Array.isArray(metadata) ? metadata.slice() : [];
+  const knownIds = new Set(merged.map((item) => String(item?.id || '')));
+  const indexed = new Map((indexedRecords || []).map((item) => [String(item?.id || ''), item]));
+  for (const value of liveSessionIds || []) {
+    const id = String(value || '').slice(0, 100);
+    if (!id || knownIds.has(id)) continue;
+    const record = indexed.get(id);
+    merged.push({
+      id,
+      title: String(record?.friendlyName || id).slice(0, 100),
+      summary: String(record?.currentTask || '').slice(0, 500),
+      busy: record?.status === 'running',
+      notified: ['completed', 'input_required', 'blocked', 'failed'].includes(record?.semanticState)
+    });
+    knownIds.add(id);
+  }
+  return merged;
+}
+
 function structuredSessionRecord({ sessionId = '', metadata = null, live = false, indexed = null } = {}) {
   if (metadata) {
+    const busy = live && Boolean(metadata.busy);
     return {
       id: String(metadata.id || sessionId),
       title: String(metadata.title || indexed?.friendlyName || sessionId || 'Terminal'),
       summary: String(metadata.summary || indexed?.currentTask || ''),
-      busy: Boolean(metadata.busy),
-      status: metadata.busy ? 'running' : live ? 'idle' : 'stopped',
+      busy,
+      status: !live ? 'stopped' : busy ? 'running' : 'idle',
       needsAttention: Boolean(metadata.notified)
     };
   }
@@ -55,4 +76,4 @@ function structuredSessionRecord({ sessionId = '', metadata = null, live = false
   };
 }
 
-module.exports = { fitSessionCollection, structuredSessionRecord };
+module.exports = { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord };
