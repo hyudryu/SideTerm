@@ -39,7 +39,7 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
-const { audioFileExtension, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
+const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
@@ -1665,10 +1665,11 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
     try {
       let providerAudio = bytes;
       let providerMimeType = mimeType;
-      if (settings.sttProvider === 'aws' || settings.sttProvider === 'google') {
+      const canonicalFormat = canonicalCloudAudioFormat(settings.sttProvider);
+      if (canonicalFormat) {
         fs.mkdirSync(outputDirectory, { recursive: true });
         fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
-        if (settings.sttProvider === 'aws') {
+        if (canonicalFormat === 'pcm') {
           await convertToSpeechPcm(inputPath, pcmPath);
           providerAudio = fs.readFileSync(pcmPath);
           providerMimeType = 'audio/pcm';
