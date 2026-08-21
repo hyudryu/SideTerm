@@ -61,5 +61,7 @@ test('visual questions fall through terminal text to styled capture', () => {
 test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What is the supervisor status?'), true);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
+  assert.equal(structuredStateSufficient('Summarize this session.'), true);
+  assert.equal(structuredStateSufficient('What command is running in this session?'), false);
   assert.equal(structuredStateSufficient('What is visible in the window?'), false);
 });
