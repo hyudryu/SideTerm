@@ -55,7 +55,7 @@ const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
-const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
+const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 const { PerceptionRouter, requiresVisualEvidence, structuredStateSufficient } = require('./perception/router.cjs');
 const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
@@ -886,6 +886,9 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
     retireMergeConfirmations(state, snapshot.url);
   } else if (!approval.ready) {
     retireMergeConfirmations(state, snapshot.url);
+    if (reviewWatch.state === 'terminal' && !reviewWatch.cancelledAt) {
+      watchManager.activate(reviewWatch.id, { headSha: snapshot.headSha, intervalSeconds });
+    }
   }
   let prNotificationAdded = false;
   if (notify && previous && pullIsOpen) {
@@ -982,7 +985,7 @@ async function pollMonitoredPullRequests() {
     const watch = state.watches.find((item) => item.kind === 'github_codex_review'
       && item.repo === repository
       && Number(item.prNumber) === Number(pull.number));
-    return watchIsDue(watch, now);
+    return watchLifecycleIsDue(watch, now);
   });
   if (pulls.length && !githubCliAvailable()) {
     recordGithubPrerequisiteNotice();
@@ -1522,6 +1525,7 @@ async function performSupervisorChat(text, {
     state = readAgentState();
   }
   if (answeredInteraction) queueMicrotask(scheduleProactiveCatchUp);
+  const interactionIdsBeforeTurn = new Set(state.interactions.map((item) => item.id));
   agentStatus = 'thinking';
   broadcastAgentState();
   try {
@@ -1555,6 +1559,11 @@ async function performSupervisorChat(text, {
     const runtime = await getSupervisorRuntime();
     const result = await runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta });
     const latest = readAgentState();
+    const turnInteraction = latest.interactions
+      .filter((item) => !interactionIdsBeforeTurn.has(item.id)
+        && ['queued', 'presented', 'awaiting_answer'].includes(item.state)
+        && latest.confirmations.some((confirmation) => confirmation.id === item.id))
+      .sort((left, right) => right.createdAt - left.createdAt)[0];
     const presenterSentinel = automatic ? automaticPresenterSentinel(result.text) : '';
     const needsEnrichment = presenterSentinel === 'NEEDS_ENRICHMENT';
     const suppressed = Boolean(presenterSentinel);
@@ -1575,6 +1584,7 @@ async function performSupervisorChat(text, {
     return {
       response: suppressed ? '' : result.text,
       speech: suppressed ? '' : voice ? speechSummary(result.text) : result.text,
+      interactionId: turnInteraction?.id || '',
       needsEnrichment,
       state: publicAgentState()
     };
@@ -1837,7 +1847,10 @@ async function resolveAgentConfirmation(id, approved) {
       refreshPullRequestUrl = confirmation.pullRequestUrl;
       resultText = `The user approved the GitHub comment and SideTerm posted it: ${posted.url}`;
     } else if (confirmation.kind === 'merge-pull-request') {
-      const merged = await mergePullRequest(confirmation.pullRequestUrl, { headSha: confirmation.headSha });
+      const merged = await mergePullRequest(confirmation.pullRequestUrl, {
+        headSha: confirmation.headSha,
+        codexActorLogins: readSettingsRecord().githubCodexActorLogins
+      });
       actionCommitted = true;
       refreshPullRequestUrl = confirmation.pullRequestUrl;
       resultText = merged.merged
@@ -2671,7 +2684,7 @@ async function startMobileServer({ persist = true } = {}) {
           sendMobile(client, { type: 'agent:response', response: result.response });
           if (message.voiceMode) {
             await speech.drain();
-            speech.speak(result.speech, { opensReplyWindow: true });
+            speech.speak(result.speech, { opensReplyWindow: true, interactionId: result.interactionId || '' });
           }
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
@@ -2743,7 +2756,7 @@ async function startMobileServer({ persist = true } = {}) {
             sendMobile(client, { type: 'agent:response', response: result.response });
             if (message.speakResponse) {
               await speech.drain();
-              speech.speak(result.speech, { opensReplyWindow: true });
+              speech.speak(result.speech, { opensReplyWindow: true, interactionId: result.interactionId || '' });
             }
           }
         } catch (error) {

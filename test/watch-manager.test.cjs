@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { migrateLegacyPullRequestWatches, WatchManager, watchIsDue } = require('../electron/watches/manager.cjs');
+const { migrateLegacyPullRequestWatches, WatchManager, watchIsDue, watchLifecycleIsDue } = require('../electron/watches/manager.cjs');
 
 test('Codex watch terminates at approval and rearms for a new head', () => {
   const watches = [];
@@ -20,6 +20,17 @@ test('a cancelled watch is distinguishable from a met condition', () => {
   manager.cancel(watch.id);
   assert.equal(watch.state, 'terminal');
   assert.equal(watch.cancelledAt, 42);
+});
+
+test('terminal review watches retain a lifecycle poll but cancelled watches do not', () => {
+  const watches = [];
+  const manager = new WatchManager(watches, { createId: () => 'watch-1', now: () => 10 });
+  const watch = manager.create({ kind: 'github_codex_review', repo: 'a/b', prNumber: 9, lastCheckedAt: 10 });
+  manager.conditionMet(watch.id, 'approved:one', 'one');
+  assert.equal(watchIsDue(watch, 60_010), false);
+  assert.equal(watchLifecycleIsDue(watch, 60_010), true);
+  manager.cancel(watch.id);
+  assert.equal(watchLifecycleIsDue(watch, 120_010), false);
 });
 
 test('explicit creation can reactivate a cancelled watch at its requested cadence', () => {
