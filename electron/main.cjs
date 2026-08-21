@@ -95,6 +95,7 @@ let githubMonitorInFlight = false;
 let githubMonitorTimer = null;
 const mobileCatchUpCoordinator = createCatchUpCoordinator();
 const pendingRendererActions = new Map();
+const pendingDesktopPresentations = new Map();
 const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
@@ -1747,6 +1748,7 @@ async function runProactiveCatchUp(activation = {}) {
     if (retryEvent) retryEvent.read = false;
     eventBusFor(retryState).transition(event.id, 'queued');
     writeAgentState(retryState);
+    if (error?.name === 'AbortError' && activation.taskId) throw error;
     return 'failed';
   } finally {
     proactiveEventClaims.delete(event.id);
@@ -2377,14 +2379,40 @@ function send(channel, payload) {
 }
 
 presentationCoordinator.registerSurface('desktop', async (text, options) => {
-  if (!supervisorVoiceMode) return false;
-  send('agent:voice-ping', {
-    text,
-    acknowledgement: options.opensReplyWindow === false,
-    eventId: options.eventId || ''
+  if (!supervisorVoiceMode || !mainWindow || mainWindow.isDestroyed()) return false;
+  const presentationId = crypto.randomUUID();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingDesktopPresentations.delete(presentationId);
+      resolve(false);
+    }, 120_000);
+    pendingDesktopPresentations.set(presentationId, {
+      resolve, timer, webContentsId: mainWindow.webContents.id
+    });
+    send('agent:voice-ping', {
+      text,
+      acknowledgement: options.opensReplyWindow === false,
+      eventId: options.eventId || '',
+      presentationId
+    });
   });
-  return true;
 });
+
+function settleDesktopPresentations(delivered = false) {
+  for (const [id, pending] of pendingDesktopPresentations) {
+    clearTimeout(pending.timer);
+    pending.resolve(Boolean(delivered));
+    pendingDesktopPresentations.delete(id);
+  }
+}
+
+function resetDesktopVoiceActivation() {
+  if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
+  desktopVoiceActivationTaskId = '';
+  desktopVoiceActivationGeneration += 1;
+  supervisorVoiceMode = false;
+  settleDesktopPresentations(false);
+}
 
 function sanitizeMobileWorkspace(value) {
   const groups = Array.isArray(value?.groups) ? value.groups.slice(0, 80).map((group) => ({
@@ -3079,11 +3107,20 @@ function registerIpc() {
     String(payload.sessionId || ''),
     String(payload.cycleId || '')
   ));
+  ipcMain.on('agent:voice-presented', (event, payload = {}) => {
+    const presentationId = String(payload.presentationId || '');
+    const pending = pendingDesktopPresentations.get(presentationId);
+    if (!pending || pending.webContentsId !== event.sender.id) return;
+    clearTimeout(pending.timer);
+    pendingDesktopPresentations.delete(presentationId);
+    pending.resolve(payload.delivered === true);
+  });
   ipcMain.on('agent:voice-mode', (_event, enabled) => {
     const wasEnabled = supervisorVoiceMode;
     if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
     desktopVoiceActivationTaskId = '';
     desktopVoiceActivationGeneration += 1;
+    settleDesktopPresentations(false);
     supervisorVoiceMode = Boolean(enabled);
     if (supervisorVoiceMode) {
       void warmTextToSpeech().catch(() => {});
@@ -3222,6 +3259,8 @@ function createWindow() {
     const allowed = isDev && url.startsWith('http://127.0.0.1:5173');
     if (!allowed) event.preventDefault();
   });
+  mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
+  mainWindow.webContents.on('render-process-gone', resetDesktopVoiceActivation);
 
   if (isDev) {
     mainWindow.loadURL(process.env.SIDETERM_DEV_URL || 'http://127.0.0.1:5173');
@@ -3236,12 +3275,13 @@ function createWindow() {
     })) return;
     event.preventDefault();
     send('app:will-hide');
-    supervisorVoiceMode = false;
+    resetDesktopVoiceActivation();
     mainWindow.hide();
     syncBackgroundTray();
   });
 
   mainWindow.on('closed', () => {
+    resetDesktopVoiceActivation();
     detachAllSessions();
     mainWindow = null;
   });

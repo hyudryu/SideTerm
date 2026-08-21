@@ -3115,8 +3115,11 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
+api.onAgentVoicePing(async ({ text, acknowledgement, presentationId } = {}) => {
+  const delivered = desktopVoiceMode
+    ? await queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement })
+    : false;
+  if (presentationId) api.reportAgentVoicePresentation(presentationId, delivered);
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
