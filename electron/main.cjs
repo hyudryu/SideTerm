@@ -328,8 +328,10 @@ function saveSettings(update = {}) {
     if (!visionApiUrl || !visionModel) throw new Error('Set a separate vision endpoint and model before enabling visual inspection.');
     compatibleCompletionsUrl(visionApiUrl);
   }
-  const visionEndpointError = visionEndpointConfigurationError(visionApiUrl);
-  if (visionEndpointError) throw new Error(visionEndpointError);
+  if (visionEnabled && !visionUseSupervisorModel) {
+    const visionEndpointError = visionEndpointConfigurationError(visionApiUrl);
+    if (visionEndpointError) throw new Error(visionEndpointError);
+  }
   if (visionApiUrl.length > 1000) throw new Error('Vision endpoint must be 1,000 characters or fewer.');
   if (visionModel.length > 160) throw new Error('Vision model name must be 160 characters or fewer.');
   if (harnessBridgeEnabled) {
