@@ -41,6 +41,9 @@ function parseStructuredPerception(text) {
       confidence: hasEvidence ? (Number.isFinite(parsed.confidence) ? parsed.confidence : 0.75) : 0
     };
   } catch {
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      return { summary: '', visibleText: [], controls: [], errors: ['Vision provider returned malformed JSON.'], confidence: 0 };
+    }
     return { summary: raw.slice(0, 4000), visibleText: [], controls: [], errors: ['Vision provider returned non-JSON text.'], confidence: raw ? 0.75 : 0 };
   }
 }

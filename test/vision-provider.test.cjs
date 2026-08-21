@@ -10,6 +10,8 @@ test('vision output is normalized from JSON or safe non-JSON text', () => {
   assert.equal(parseStructuredPerception('{"visibleText":[]}').confidence, 0);
   assert.equal(parseStructuredPerception('{"controls":[{}]}').confidence, 0);
   assert.equal(parseStructuredPerception('{"errors":["image unreadable"]}').confidence, 0);
+  assert.equal(parseStructuredPerception('{"summary":"truncated"').confidence, 0);
+  assert.match(parseStructuredPerception('{"summary":"truncated"').errors[0], /malformed JSON/);
   assert.equal(parseStructuredPerception(JSON.stringify({ visibleText: ['x'.repeat(2000)] })).visibleText[0].length, 1000);
   assert.equal(parseStructuredPerception(JSON.stringify({ errors: ['x'.repeat(1000)] })).errors[0].length, 500);
   assert.equal(parseStructuredPerception('A button is visible').confidence, 0.75);
