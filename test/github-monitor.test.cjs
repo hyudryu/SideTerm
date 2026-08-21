@@ -36,6 +36,10 @@ test('approved merge actions execute the canonical pull request once', async () 
     headSha: 'abcdef1234567890',
     runGh: async (args, options) => {
       calls.push({ args, options });
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('state,headRefOid')) {
+        return '{"state":"OPEN","headRefOid":"abcdef1234567890"}';
+      }
+      if (args[0] === 'api' && args.includes('--paginate')) return '[[{"content":"+1","user":{"login":"codex[bot]"}}]]';
       if (args[0] === 'api') return '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}';
       return args[1] === 'view' ? '{"state":"OPEN"}' : '';
     }
@@ -44,12 +48,16 @@ test('approved merge actions execute the canonical pull request once', async () 
     merged: false, submitted: true, state: 'OPEN', url: 'https://github.com/hyudryu/SideTerm/pull/11',
     number: 11, headSha: 'abcdef1234567890'
   });
-  assert.deepEqual(calls[0].args, ['api', 'repos/hyudryu/SideTerm']);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls[0].args, ['pr', 'view', 'https://github.com/hyudryu/SideTerm/pull/11', '--json', 'state,headRefOid']);
+  assert.deepEqual(calls[1].args, [
+    'api', '--paginate', '--slurp', 'repos/hyudryu/SideTerm/issues/11/reactions?per_page=100'
+  ]);
+  assert.deepEqual(calls[2].args, ['api', 'repos/hyudryu/SideTerm']);
+  assert.deepEqual(calls[3], {
     args: ['pr', 'merge', 'https://github.com/hyudryu/SideTerm/pull/11', '--merge', '--match-head-commit', 'abcdef1234567890'],
     options: { owner: 'hyudryu', timeout: 120_000 }
   });
-  assert.deepEqual(calls[2].args, ['pr', 'view', 'https://github.com/hyudryu/SideTerm/pull/11', '--json', 'state']);
+  assert.deepEqual(calls[4].args, ['pr', 'view', 'https://github.com/hyudryu/SideTerm/pull/11', '--json', 'state']);
   await assert.rejects(mergePullRequest('https://github.com/hyudryu/SideTerm/pull/11', {
     runGh: async () => ''
   }), /approved pull-request revision/);
@@ -61,13 +69,30 @@ test('approved merge actions select a repository-enabled strategy', async () => 
     headSha: 'abcdef1234567890',
     runGh: async (args) => {
       calls.push(args);
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('state,headRefOid')) {
+        return '{"state":"OPEN","headRefOid":"abcdef1234567890"}';
+      }
+      if (args[0] === 'api' && args.includes('--paginate')) return '[[{"content":"+1","user":{"login":"codex[bot]"}}]]';
       if (args[0] === 'api') return '{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}';
       return args[1] === 'view' ? '{"state":"MERGED"}' : '';
     }
   });
-  assert.deepEqual(calls[1], [
+  assert.deepEqual(calls[3], [
     'pr', 'merge', 'https://github.com/hyudryu/SideTerm/pull/11', '--squash', '--match-head-commit', 'abcdef1234567890'
   ]);
+});
+
+test('approved merge actions fail closed when Codex withdraws approval', async () => {
+  const calls = [];
+  await assert.rejects(mergePullRequest('https://github.com/hyudryu/SideTerm/pull/11', {
+    headSha: 'abcdef1234567890',
+    runGh: async (args) => {
+      calls.push(args);
+      if (args[0] === 'pr') return '{"state":"OPEN","headRefOid":"abcdef1234567890"}';
+      return '[[{"content":"+1","user":{"login":"human-reviewer"}}]]';
+    }
+  }), /Codex approval is no longer present/);
+  assert.equal(calls.some((args) => args[0] === 'pr' && args[1] === 'merge'), false);
 });
 
 test('GitHub main-post reactions retain emoji, counts, and authors', () => {

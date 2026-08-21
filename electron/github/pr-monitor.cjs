@@ -259,6 +259,18 @@ async function mergePullRequest(value, options = {}) {
   const headSha = String(options.headSha || '');
   if (!/^[0-9a-f]{7,40}$/i.test(headSha)) throw new Error('The approved pull-request revision is missing or invalid. Refresh the pull request before merging.');
   const execute = options.runGh || runGh;
+  const currentOutput = await execute(['pr', 'view', ref.url, '--json', 'state,headRefOid'], { owner: ref.owner, timeout: 20_000 });
+  const current = JSON.parse(currentOutput || '{}');
+  if (String(current.state || '').toUpperCase() !== 'OPEN' || !sameGitRevision(current.headRefOid, headSha)) {
+    throw new Error('The pull request is no longer open at the approved revision. Refresh it before merging.');
+  }
+  const reactionsOutput = await execute([
+    'api', '--paginate', '--slurp', `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/reactions?per_page=100`
+  ], { owner: ref.owner, timeout: 20_000 });
+  const reactions = reactionSummary(flattenPages(JSON.parse(reactionsOutput || '[]')));
+  if (!hasCodexThumbsUp({ reactions }, options.codexActorLogins)) {
+    throw new Error('Codex approval is no longer present on the pull request. Refresh it before merging.');
+  }
   let strategy = '--merge';
   try {
     const output = await execute(['api', `repos/${ref.owner}/${ref.repo}`], { owner: ref.owner, timeout: 20_000 });

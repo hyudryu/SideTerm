@@ -1504,7 +1504,9 @@ async function submitAgentChat(text, { spokenRequest = false, interactionId = ''
   try {
     const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest, interactionId });
     renderAgentState(result.state);
-    await queueAgentSpeech(result.speech || result.response);
+    await queueAgentSpeech(result.speech || result.response, {
+      interactionId: result.interactionId || ''
+    });
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));
