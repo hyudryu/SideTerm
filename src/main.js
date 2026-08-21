@@ -1507,6 +1507,20 @@ function restoreTerminalVisualCapture() {
   restore?.();
 }
 
+function waitForTerminalCaptureRepaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(done, 80);
+    if (document.visibilityState === 'visible') requestAnimationFrame(() => requestAnimationFrame(done));
+  });
+}
+
 async function handleAgentAction({ requestId, type, payload }) {
   try {
     if (type === 'prepare-terminal-capture') {
@@ -1528,8 +1542,8 @@ async function handleAgentAction({ requestId, type, payload }) {
         session.pane.classList.add('active');
         supervisorDashboard.hidden = true;
         shellElement.classList.remove('supervisor-active');
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         session.fit.fit();
+        await waitForTerminalCaptureRepaint();
         const rect = session.pane.getBoundingClientRect();
         if (rect.width < 1 || rect.height < 1) throw new Error('The terminal has no visible capture area.');
         api.resolveAgentAction(requestId, {

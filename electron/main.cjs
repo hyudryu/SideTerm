@@ -991,8 +991,8 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
     if (capturedImage) return capturedImage;
     if (session) {
       if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The SideTerm window is not available to capture.');
-      const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
       try {
+        const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
         const bounds = prepared?.bounds || {};
         if (!['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key])) || bounds.width < 1 || bounds.height < 1) {
           throw new Error('The terminal returned invalid capture bounds.');
