@@ -9,6 +9,12 @@ const STT_PROVIDERS = Object.freeze({
   openai: { id: 'openai', name: 'OpenAI Transcription', location: 'cloud', supportsStreaming: true, supportsPartialResults: true, supportsVocabularyHints: true }
 });
 
+function providerScopedSetting(currentValue, updateValue, providerChanged, maxLength = 1000) {
+  if (typeof updateValue === 'string') return updateValue.trim().slice(0, maxLength);
+  if (providerChanged) return '';
+  return String(currentValue || '').slice(0, maxLength);
+}
+
 function providerDescriptor(id) {
   const provider = STT_PROVIDERS[String(id || '')];
   if (!provider) throw new Error(`Unknown speech-to-text provider: ${id}`);
@@ -248,6 +254,7 @@ module.exports = {
   awsCredentials,
   providerConfigurationError,
   providerDescriptor,
+  providerScopedSetting,
   STT_PROVIDERS,
   sttEndpointConfigurationError,
   transcribeCloud

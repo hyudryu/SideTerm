@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, sttEndpointConfigurationError, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
+const { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, providerScopedSetting, sttEndpointConfigurationError, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
 
 test('STT provider descriptors visibly distinguish local and cloud', () => {
   assert.equal(providerDescriptor('parakeet').location, 'local');
@@ -78,6 +78,13 @@ test('cloud STT endpoints require encrypted transport except on explicit loopbac
   }), /must use HTTPS/);
 });
 
+test('provider changes clear omitted settings but preserve explicit repeated values', () => {
+  const endpoint = 'https://speech.example.test/v1';
+  assert.equal(providerScopedSetting(endpoint, undefined, true), '');
+  assert.equal(providerScopedSetting(endpoint, endpoint, true), endpoint);
+  assert.equal(providerScopedSetting(endpoint, undefined, false), endpoint);
+});
+
 test('Google joins every final recognition segment', async (context) => {
   const originalFetch = global.fetch;
   context.after(() => { global.fetch = originalFetch; });
@@ -114,6 +121,14 @@ test('switching from local to cloud STT releases only Parakeet state', () => {
   assert.match(main, /writeSettingsRecord\(next\);\s*if \(releaseLocalStt\) void releaseLocalSpeechRecognition\(\)\.catch/);
   assert.match(main, /function releaseLocalSpeechRecognition\(\)[\s\S]*speechWorker\.request\('release-stt'\)/);
   assert.match(sidecar, /elif command == "release-stt":\s*result = release_stt_models\(\)/);
+});
+
+test('erasing a replacement keeps an explicit credential removal pending', () => {
+  const fs = require('node:fs');
+  const renderer = fs.readFileSync(require.resolve('../src/main.js'), 'utf8');
+  assert.match(renderer, /let sttCredentialRemovalIntent = false/);
+  assert.match(renderer, /#clear-stt-credential'[\s\S]*sttCredentialRemovalIntent = true;[\s\S]*clearSttCredentialRequested = true/);
+  assert.match(renderer, /#stt-credential'\)\.addEventListener\('input'[\s\S]*clearSttCredentialRequested = sttCredentialRemovalIntent && !event\.target\.value\.trim\(\)/);
 });
 
 test('Azure labels canonical WAV input with its required PCM format', async (context) => {
