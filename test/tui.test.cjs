@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('../electron/sessions/tui.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
 
 test('semantic TUI snapshot finds selected options and minimal navigation', () => {
   const snapshot = tuiSnapshot('  First option\n> Second option\n  Third option'.replace(/^  /gm, '  1. '), 'terminal');
@@ -38,4 +40,11 @@ test('cursor navigation alone does not prove Enter submitted a selection', () =>
   const navigated = tuiSnapshot('  1. First option\n> Second option', 'terminal');
   assert.equal(tuiSelectionAccepted(navigated, navigated), false);
   assert.equal(tuiSelectionAccepted(navigated, tuiSnapshot('Starting tests…', 'terminal')), true);
+});
+
+test('main-process TUI submission gates Space and revalidates the authorized label', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /\['ENTER', 'SPACE'\]\.includes\(normalized\)/);
+  assert.match(main, /beforeSubmit\.options\[targetIndex\]\?\.label !== expectedLabel/);
+  assert.match(main, /kind: 'tui-selection', sessionId, optionIndex, optionLabel, tuiKey: normalized/);
 });
