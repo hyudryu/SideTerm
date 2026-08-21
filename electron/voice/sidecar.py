@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -41,15 +42,26 @@ def download_stt(args) -> None:
 
 def transcribe_result(args):
     model = load_parakeet(args.model, args.root)
-    outputs = model.transcribe([args.input], batch_size=1)
+    outputs = model.transcribe([args.input], batch_size=1, return_hypotheses=True)
     first = outputs[0] if outputs else ""
     text = str(getattr(first, "text", first) or "").strip()
+    confidence = None
+    score = getattr(first, "score", None)
+    if score is not None:
+        try:
+            sequence = getattr(first, "y_sequence", None)
+            token_count = max(1, len(sequence) if sequence is not None else len(text.split()))
+            average_log_probability = min(0.0, float(score) / token_count)
+            confidence = max(0.0, min(1.0, math.exp(max(-20.0, average_log_probability))))
+        except (TypeError, ValueError, OverflowError):
+            confidence = None
     return {
         "text": text,
         "language": "en",
         "duration": 0.0,
         "noSpeechProbability": 0.0 if text else 1.0,
         "provider": "parakeet",
+        "confidence": confidence,
     }
 
 

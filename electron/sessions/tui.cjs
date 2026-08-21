@@ -12,15 +12,21 @@ function tuiSnapshot(value, terminalId = '') {
   const options = [];
   let selectedIndex = -1;
   for (const line of text.split('\n').slice(-80)) {
-    const match = line.match(/^\s*([>❯›*]|\(\s*[xX ]?\s*\)|\[\s*[xX ]?\s*\]|\d+[.)])\s+(.{1,300})$/u);
+    const match = line.match(/^\s*([>❯›]|\(\s*[xX ]?\s*\)|\[\s*[xX ]?\s*\]|\d+[.)])\s+(.{1,300})$/u);
     if (!match) continue;
     const index = options.length;
-    const selected = /^[>❯›*]$/u.test(match[1]) || /[xX]/.test(match[1]);
+    const selected = /^[>❯›]$/u.test(match[1]) || /[xX]/.test(match[1]);
     if (selected) selectedIndex = index;
     options.push({ index, label: match[2].trim(), selected });
   }
   const confidence = options.length >= 2 ? (selectedIndex >= 0 ? 0.98 : 0.82) : 0;
   return { terminalId: String(terminalId), text, selectedIndex, options, confidence };
+}
+
+function canSubmitTuiKey(snapshot, key) {
+  const normalized = String(key || '').toUpperCase();
+  if (!['ENTER', 'SPACE'].includes(normalized)) return true;
+  return Boolean(snapshot && snapshot.confidence >= 0.8 && snapshot.selectedIndex >= 0);
 }
 
 function selectionKeys(snapshot, targetIndex) {
@@ -37,4 +43,4 @@ function namedKeyData(key) {
   return NAMED_KEYS[normalized];
 }
 
-module.exports = { NAMED_KEYS, cleanTerminalText, namedKeyData, selectionKeys, tuiSnapshot };
+module.exports = { NAMED_KEYS, canSubmitTuiKey, cleanTerminalText, namedKeyData, selectionKeys, tuiSnapshot };
