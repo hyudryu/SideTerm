@@ -1587,6 +1587,14 @@ function hideNonterminalCaptureOverlays({ hideDashboard = true, preserveOverlays
     .map((element) => ({ element, hidden: element.hidden }));
   const credentialStates = [...document.querySelectorAll('input[type="password"]')]
     .map((element) => ({ element, value: element.value }));
+  const mobileUrlStates = [...document.querySelectorAll('#mobile-urls code')]
+    .map((element) => ({ element, text: element.textContent }));
+  const mobileQrStates = [...document.querySelectorAll('#mobile-urls canvas')]
+    .map((element) => ({
+      element,
+      visibility: element.style.visibility,
+      ariaHidden: element.getAttribute('aria-hidden')
+    }));
   if (hideDashboard) {
     supervisorDashboard.hidden = true;
     shellElement.classList.remove('supervisor-active');
@@ -1594,11 +1602,22 @@ function hideNonterminalCaptureOverlays({ hideDashboard = true, preserveOverlays
   for (const credential of credentialStates) {
     if (credential.value) credential.element.value = '••••••••';
   }
+  for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = '[redacted mobile access URL]';
+  for (const mobileQr of mobileQrStates) {
+    mobileQr.element.style.visibility = 'hidden';
+    mobileQr.element.setAttribute('aria-hidden', 'true');
+  }
   if (!preserveOverlays) {
     for (const overlay of overlayStates) overlay.element.hidden = true;
   }
   return () => {
     for (const credential of credentialStates) credential.element.value = credential.value;
+    for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = mobileUrl.text;
+    for (const mobileQr of mobileQrStates) {
+      mobileQr.element.style.visibility = mobileQr.visibility;
+      if (mobileQr.ariaHidden === null) mobileQr.element.removeAttribute('aria-hidden');
+      else mobileQr.element.setAttribute('aria-hidden', mobileQr.ariaHidden);
+    }
     for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
     if (hideDashboard) {
       supervisorDashboard.hidden = dashboardWasHidden;
