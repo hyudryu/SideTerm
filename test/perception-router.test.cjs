@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('../electron/perception/router.cjs');
-const { fitSessionCollection, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
+const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
   let cloudCalled = false;
@@ -104,6 +104,27 @@ test('live sessions remain structured evidence before renderer metadata arrives'
     needsAttention: false
   });
   assert.equal(structuredSessionRecord({ sessionId: 'stopped', live: false }), null);
+});
+
+test('collection metadata includes live sessions before renderer synchronization', () => {
+  const merged = mergeLiveSessionRecords(
+    [{ id: 'known', title: 'Known' }],
+    ['known', 'new-session'],
+    [{ id: 'new-session', friendlyName: 'New session', status: 'idle' }]
+  );
+  assert.deepEqual(merged.map((item) => item.id), ['known', 'new-session']);
+  assert.equal(merged[1].title, 'New session');
+  assert.equal(merged[1].busy, false);
+});
+
+test('authoritative process exit overrides stale busy renderer metadata', () => {
+  const record = structuredSessionRecord({
+    sessionId: 'stopped',
+    live: false,
+    metadata: { id: 'stopped', title: 'Stopped', busy: true }
+  });
+  assert.equal(record.status, 'stopped');
+  assert.equal(record.busy, false);
 });
 
 test('truncated collections lower confidence only when the full member list is required', () => {

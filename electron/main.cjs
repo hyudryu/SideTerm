@@ -57,8 +57,8 @@ const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiS
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('./perception/router.cjs');
-const { fitSessionCollection, structuredSessionRecord } = require('./perception/structured-state.cjs');
-const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
+const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
+const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
 
 // Set the product identity before any Electron call (including the
@@ -301,6 +301,8 @@ function saveSettings(update = {}) {
     if (!visionApiUrl || !visionModel) throw new Error('Set a separate vision endpoint and model before enabling visual inspection.');
     compatibleCompletionsUrl(visionApiUrl);
   }
+  const visionEndpointError = visionEndpointConfigurationError(visionApiUrl);
+  if (visionEndpointError) throw new Error(visionEndpointError);
   if (visionApiUrl.length > 1000) throw new Error('Vision endpoint must be 1,000 characters or fewer.');
   if (visionModel.length > 160) throw new Error('Vision model name must be 160 characters or fewer.');
   const personality = typeof update.personality === 'string' ? update.personality.trim() : current.personality;
@@ -1091,7 +1093,11 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   });
   const router = new PerceptionRouter({
     structuredState: async () => {
-      const workspaceSessions = mobileWorkspace.sessions;
+      const workspaceSessions = mergeLiveSessionRecords(
+        mobileWorkspace.sessions,
+        sessions.keys(),
+        sessionIndex.list()
+      );
       const sessionCounts = workspaceSessions.reduce((counts, item) => {
         counts.total += 1;
         counts[item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped'] += 1;
