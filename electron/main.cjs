@@ -1571,10 +1571,13 @@ async function performSupervisorChat(text, {
 
 function chatWithSupervisor(text, options = {}) {
   options.onAccepted?.();
+  const priority = Number.isInteger(options.priority)
+    ? Math.max(0, Math.min(3, options.priority))
+    : (options.automatic || options.proactive) ? 2 : 0;
   return supervisorActor.enqueue(
     () => performSupervisorChat(text, options),
     {
-      priority: options.automatic || options.proactive ? 2 : 0,
+      priority,
       id: options.taskId,
       interruptible: Boolean(options.automatic || options.interruptible),
       cancel: () => options.automatic ? supervisorRuntime?.cancelAutomatic?.() : supervisorRuntime?.cancel?.()
@@ -1693,6 +1696,7 @@ async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } 
       notificationIds: [],
       voice: true,
       taskId,
+      priority: 2,
       interruptible: true,
       onAccepted: () => void present(acknowledgement, { opensReplyWindow: false })
     }

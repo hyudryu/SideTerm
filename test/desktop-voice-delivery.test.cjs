@@ -19,4 +19,5 @@ test('renderer reload resets desktop activation and cancellation stays silent', 
   assert.match(main, /webContents\.on\('did-start-loading', resetDesktopVoiceActivation\)/);
   assert.match(main, /webContents\.on\('render-process-gone', resetDesktopVoiceActivation\)/);
   assert.match(main, /if \(error\?\.name === 'AbortError' && activation\.taskId\) throw error/);
+  assert.match(main, /taskId,\s+priority: 2,\s+interruptible: true/);
 });
