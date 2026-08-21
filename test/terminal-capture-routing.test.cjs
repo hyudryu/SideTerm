@@ -30,3 +30,11 @@ test('whole-window capture uses the same overlay hide and restore lifecycle', ()
   assert.match(main, /prepare-window-capture'[\s\S]*capturePage\(\)[\s\S]*finally \{[\s\S]*restore-terminal-capture/);
   assert.match(renderer, /type === 'prepare-window-capture'[\s\S]*hideNonterminalCaptureOverlays\(\)/);
 });
+
+test('session capture restores the live active session and suppresses redraw activity', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(renderer, /sessions\.get\(activeId\)\?\.pane\.classList\.add\('active'\)/);
+  assert.doesNotMatch(renderer, /for \(const pane of activePanes\) pane\.classList\.add\('active'\)/);
+  assert.match(renderer, /session\.captureRedrawSuppressedUntil = Date\.now\(\) \+ ACTIVATION_REDRAW_SUPPRESS_MS/);
+  assert.match(renderer, /if \(captureOnlyRedraw\) return;[\s\S]*recordSessionResponse/);
+});

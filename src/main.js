@@ -1576,17 +1576,18 @@ async function handleAgentAction({ requestId, type, payload }) {
       restoreTerminalVisualCapture();
       const session = sessions.get(payload.sessionId);
       if (!session) throw new Error('The session is no longer available.');
-      const activePanes = [...document.querySelectorAll('.terminal-pane.active')];
       const restoreOverlays = hideNonterminalCaptureOverlays();
       terminalCaptureRestore = () => {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
-        for (const pane of activePanes) pane.classList.add('active');
+        sessions.get(activeId)?.pane.classList.add('active');
         restoreOverlays();
         requestAnimationFrame(fitActive);
       };
       try {
-        for (const pane of activePanes) pane.classList.remove('active');
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         session.pane.classList.add('active');
+        session.busySuppressedUntil = Math.max(session.busySuppressedUntil, Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS);
+        session.captureRedrawSuppressedUntil = Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS;
         session.fit.fit();
         await waitForTerminalCaptureRepaint();
         const rect = session.pane.getBoundingClientRect();
@@ -2514,6 +2515,7 @@ async function addSession(cwd, options = {}) {
     busy: false,
     busyTimer: null,
     busySuppressedUntil: Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS,
+    captureRedrawSuppressedUntil: 0,
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
@@ -2841,7 +2843,11 @@ sessionList.addEventListener('dragend', cleanupDrag);
 api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
-  session.terminal.write(data, () => noteSessionBusy(session, data));
+  const captureOnlyRedraw = Date.now() < session.captureRedrawSuppressedUntil;
+  session.terminal.write(data, () => {
+    if (!captureOnlyRedraw) noteSessionBusy(session, data);
+  });
+  if (captureOnlyRedraw) return;
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
   noteBackgroundActivity(session, data);
