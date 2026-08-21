@@ -21,7 +21,7 @@ test('mobile viewport keeps the device scale and allows safe-area layout', () =>
 
 test('mobile voice mode is reannounced after a WebSocket reconnect', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
-  assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true \}\)/);
+  assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId \}\)/);
 });
 
 test('mobile creation and suppressed catch-up recover without a reload', () => {

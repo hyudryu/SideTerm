@@ -50,13 +50,13 @@ let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
 let mobileSttLocation = 'local';
+let mobileSttProviderName = 'NVIDIA Parakeet';
+let mobileVoiceActivationId = '';
 let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
 let pendingMobileCreateTimer = null;
-let mobileSttProviderName = 'NVIDIA Parakeet';
-let mobileSttLocation = 'local';
 
 function queueMobileAudio(message) {
   mobileAudioQueue = mobileAudioQueue
@@ -349,7 +349,7 @@ function connect() {
     catchupRequested = false;
     mobileTranscriptionInFlight = false;
     resetPendingMobileCreate('Connection restored. Please try again.');
-    if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true });
+    if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId });
   });
   socket.addEventListener('message', (event) => {
     let message;
@@ -531,7 +531,8 @@ async function startMobileVoice() {
   });
   voiceRecorder.start(220);
   mobileVoiceMode = true;
-  send({ type: 'voice:mode', enabled: true });
+  mobileVoiceActivationId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  send({ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId });
   agentDashboard.classList.add('voice-mode');
   document.querySelector('#mobile-waveform').hidden = false;
   mobileVoiceToggle.textContent = 'Voice on';
@@ -580,7 +581,8 @@ function stopMobileVoice() {
   mobileVoiceMode = false;
   mobileTranscriptionInFlight = false;
   mobileReplyUntil = 0;
-  send({ type: 'voice:mode', enabled: false });
+  send({ type: 'voice:mode', enabled: false, activationId: mobileVoiceActivationId });
+  mobileVoiceActivationId = '';
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
   if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();
