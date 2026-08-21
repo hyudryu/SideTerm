@@ -62,6 +62,14 @@ test('proactive enrichment yields to higher-priority user work', () => {
   assert.match(main, /if \(result\.needsEnrichment\) \{[\s\S]*?notificationIds: \[event\.id\],[\s\S]*?interruptible: true/);
 });
 
+test('dashboard and proactive catch-up share the same persisted event claim', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function claimNextSupervisorEvent\(\)[\s\S]*claimNext\(state\.activeInteractionId\)[\s\S]*writeAgentState\(state\)/);
+  assert.match(main, /async function runProactiveCatchUp\(\)[\s\S]*const \{ state, event \} = claimNextSupervisorEvent\(\)/);
+  assert.match(main, /async function catchUpWithSupervisor[\s\S]*const \{ state, event: notification \} = claimNextSupervisorEvent\(\)/);
+  assert.match(main, /releaseSupervisorEventClaim\(notification\.id\)/);
+});
+
 test('persisted unread updates are scheduled once after workspace restoration', () => {
   assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: false }), true);
   assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: true }), false);

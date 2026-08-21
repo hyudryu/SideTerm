@@ -471,6 +471,20 @@ function eventBusFor(state) {
   return new PriorityEventBus(state.notifications);
 }
 
+function claimNextSupervisorEvent() {
+  const state = readAgentState();
+  const event = eventBusFor(state).claimNext(state.activeInteractionId);
+  if (event) writeAgentState(state);
+  return { state, event };
+}
+
+function releaseSupervisorEventClaim(eventId) {
+  const state = readAgentState();
+  const released = eventBusFor(state).releaseClaim(eventId);
+  if (released) writeAgentState(state);
+  return Boolean(released);
+}
+
 function interactionManagerFor(state) {
   return new PendingInteractionManager(state.interactions, {
     activeInteractionId: state.activeInteractionId,
@@ -1373,8 +1387,7 @@ async function speakMobileVoiceUpdate(text, options = {}) {
 async function runProactiveCatchUp() {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
-  const state = readAgentState();
-  const event = eventBusFor(state).next(state.activeInteractionId);
+  const { state, event } = claimNextSupervisorEvent();
   if (!event) return 'skipped';
   try {
     const voice = anyVoiceSurfaceOn();
@@ -1411,7 +1424,7 @@ async function runProactiveCatchUp() {
         }).then((enriched) => {
           if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech, presentationOptions);
           return null;
-        }).catch(() => {});
+        }).catch(() => { releaseSupervisorEventClaim(event.id); });
       }
       const latest = readAgentState();
       if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
@@ -1430,6 +1443,7 @@ async function runProactiveCatchUp() {
     if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
   } catch (error) {
+    releaseSupervisorEventClaim(event.id);
     return 'failed';
   }
 }
@@ -1444,8 +1458,7 @@ function scheduleProactiveCatchUp() {
 }
 
 async function catchUpWithSupervisor({ voice = false } = {}) {
-  const state = readAgentState();
-  const notification = eventBusFor(state).next(state.activeInteractionId);
+  const { state, event: notification } = claimNextSupervisorEvent();
   const remainingCount = Math.max(0, pendingNotifications(state.notifications).length - (notification ? 1 : 0));
   if (!notification) {
     return {
@@ -1457,31 +1470,36 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
       hasMore: false
     };
   }
-  const prompt = catchUpPrompt(notification, remainingCount);
-  let result = await chatWithSupervisor(prompt, {
-    synthetic: true,
-    notificationIds: [notification.id],
-    voice,
-    automatic: true
-  });
-  if (result.needsEnrichment) {
-    result = await chatWithSupervisor(prompt, {
+  try {
+    const prompt = catchUpPrompt(notification, remainingCount);
+    let result = await chatWithSupervisor(prompt, {
       synthetic: true,
       notificationIds: [notification.id],
       voice,
-      automatic: false,
-      proactive: true,
-      interruptible: true
+      automatic: true
     });
+    if (result.needsEnrichment) {
+      result = await chatWithSupervisor(prompt, {
+        synthetic: true,
+        notificationIds: [notification.id],
+        voice,
+        automatic: false,
+        proactive: true,
+        interruptible: true
+      });
+    }
+    const remaining = pendingNotifications(readAgentState().notifications).length;
+    return {
+      ...result,
+      processedNotificationId: notification.id,
+      interactionId: String(notification.payload?.interactionId || ''),
+      remainingCount: remaining,
+      hasMore: remaining > 0
+    };
+  } catch (error) {
+    releaseSupervisorEventClaim(notification.id);
+    throw error;
   }
-  const remaining = pendingNotifications(readAgentState().notifications).length;
-  return {
-    ...result,
-    processedNotificationId: notification.id,
-    interactionId: String(notification.payload?.interactionId || ''),
-    remainingCount: remaining,
-    hasMore: remaining > 0
-  };
 }
 
 function recordSessionFinished(payload = {}) {
@@ -2101,6 +2119,7 @@ function sanitizeMobileWorkspace(value) {
     summary: String(session?.summary || '').slice(0, 500),
     agent: String(session?.agent || '').slice(0, 40),
     attentionCycleId: String(session?.attentionCycleId || '').slice(0, 200),
+    lastActivityAt: Math.max(0, Number(session?.lastActivityAt) || Number(session?.lastResponseAt) || 0),
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
