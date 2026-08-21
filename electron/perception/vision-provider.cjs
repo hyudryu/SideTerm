@@ -71,6 +71,7 @@ async function analyzeScreenshot(image, options = {}) {
       (async () => {
         const providerResponse = await fetch(options.endpoint, {
           method: 'POST',
+          redirect: 'manual',
           headers,
           signal: controller.signal,
           body: JSON.stringify({
