@@ -309,6 +309,30 @@ button { font: inherit; }
   box-shadow: 0 0 0 1px rgba(229,72,77,.25);
 }
 .session-item.has-notification .notification-dot { display: block; }
+.input-required-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  color: #fff;
+  background: #e5484d;
+  border: 2px solid #252525;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(229,72,77,.35), 0 0 8px rgba(229,72,77,.55);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  animation: input-required-flash 1s ease-in-out infinite;
+}
+.session-item.input-required .input-required-badge { display: grid; }
+.session-item.input-required .notification-dot { display: none; }
+@keyframes input-required-flash {
+  0%, 42%, 100% { opacity: 1; transform: scale(1); }
+  50%, 92% { opacity: .28; transform: scale(.88); }
+}
 .activity-spinner {
   position: absolute;
   right: -4px;
@@ -325,8 +349,15 @@ button { font: inherit; }
 }
 .session-item.session-busy .activity-spinner { display: block; }
 @keyframes session-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .input-required-badge { animation: none; }
+}
 .session-item.session-exited .session-icon { color: #999; background: #191919; }
 .session-details strong { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; }
+.session-subline { display: flex; min-width: 0; align-items: baseline; gap: 6px; }
+.session-subline small { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-response-time { flex: none; color: #777; font-size: 10px; font-variant-numeric: tabular-nums; line-height: 1; }
+.session-response-time[hidden] { display: none; }
 .session-close { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; opacity: 0; }
 .session-item:hover .session-close, .session-item.active .session-close { opacity: .72; }
 .session-close:hover { color: #fff; background: rgba(255,255,255,.1); opacity: 1 !important; }

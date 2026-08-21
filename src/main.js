@@ -3,10 +3,10 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, isForegroundSession, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
-import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES, shouldRearmAiSummary } from './ai-summary.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isAgentInputRequiredText, isBareAgentLaunchCommand, isForegroundSession, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
+import { aiSummaryRetryDelay, isAiSessionStale, MAX_AI_SUMMARY_FAILURES, shouldBackfillAiSessionLabel, shouldPauseStaleAiSummary, shouldRearmAiSummary } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
-import { sessionDisplayLabels } from './session-labels.js';
+import { compactLastResponseAge, sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import {
   DEFAULT_HOTKEYS,
@@ -33,6 +33,7 @@ const SESSION_BUSY_SETTLE_MS = 1_400;
 const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
+const AI_SUMMARY_BUSY_RETRY_DELAY_MS = 1_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
 const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const AI_SUMMARY_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -691,8 +692,18 @@ function appendSessionContext(session, text) {
   if (captureLinks(session, terminalText)) updateSessionItem(session);
   const plain = terminalText.trim();
   if (!plain) return;
+  const liveContextActivity = !restoringWorkspace && Date.now() >= session.busySuppressedUntil;
+  const rearmStaleSummary = liveContextActivity && session.staleAiSummaryDone;
+  if (liveContextActivity) {
+    session.lastAiContextActivityAt = Date.now();
+    if (rearmStaleSummary) session.staleAiSummaryDone = false;
+  }
   session.context = `${session.context}\n${plain}`.slice(-MAX_CONTEXT_CHARS);
   session.contextRevision += 1;
+  if (rearmStaleSummary) {
+    scheduleAiSummary(session);
+    schedulePersist();
+  }
   if (shouldRearmAiSummary(session.aiSummaryFailureCount, session.aiSummaryFailureRevision, session.contextRevision)) {
     scheduleAiSummary(session);
   }
@@ -709,6 +720,7 @@ function trackTerminalInput(session, data) {
   }
   for (const character of input) {
     if (character === '\r' || character === '\n') {
+      setSessionInputRequired(session, false);
       const command = session.commandBuffer.trim();
       if (command) {
         if (/(?:^|\s)git\s+push(?:\s|$)/i.test(command)) {
@@ -768,6 +780,12 @@ function scheduleAiSummary(session) {
     session.aiSummaryFailureCount = 0;
     session.aiSummaryFailureRevision = 0;
   }
+  if (shouldPauseStaleAiSummary(session.staleAiSummaryDone, session.lastAiContextActivityAt)) return;
+  if (shouldBackfillAiSessionLabel(session.summary, settings.aiInitialContextEnabled, settings.aiContinuousContextEnabled)) {
+    const mode = settings.aiInitialContextEnabled ? 'initial' : 'continuous';
+    armAiSummaryTimer(session, mode, AI_INITIAL_CONTEXT_DELAY_MS);
+    return;
+  }
   if (!session.aiInitialSummaryDone) {
     if (settings.aiInitialContextEnabled) {
       armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
@@ -813,7 +831,7 @@ async function requestAiSummary(session, mode) {
     return;
   }
   if (aiSummaryGlobalInFlight) {
-    armAiSummaryTimer(session, mode, AI_SUMMARY_RETRY_DELAY_MS);
+    armAiSummaryTimer(session, mode, AI_SUMMARY_BUSY_RETRY_DELAY_MS);
     return;
   }
   if (session.aiSummaryInFlight) {
@@ -821,6 +839,7 @@ async function requestAiSummary(session, mode) {
     return;
   }
   if (sessions.get(session.id) !== session || !settings.llmEnabled || session.exited) return;
+  if (shouldPauseStaleAiSummary(session.staleAiSummaryDone, session.lastAiContextActivityAt)) return;
   if (mode === 'initial' && !settings.aiInitialContextEnabled) {
     session.aiInitialSummaryDone = true;
     scheduleAiSummary(session);
@@ -829,7 +848,9 @@ async function requestAiSummary(session, mode) {
   if (mode === 'continuous' && !settings.aiContinuousContextEnabled) return;
   if (session.contextRevision === session.lastSummarizedRevision) {
     if (mode === 'initial') session.aiInitialSummaryDone = true;
+    if (isAiSessionStale(session.lastAiContextActivityAt)) session.staleAiSummaryDone = true;
     session.lastAiSummaryAt = Date.now();
+    schedulePersist();
     scheduleAiSummary(session);
     return;
   }
@@ -837,6 +858,7 @@ async function requestAiSummary(session, mode) {
   aiSummaryGlobalInFlight = true;
   const summarizedContext = session.context;
   const summarizedRevision = session.contextRevision;
+  const summarizedActivityAt = session.lastAiContextActivityAt;
   let completed = false;
   let requestFailed = false;
   try {
@@ -889,6 +911,10 @@ async function requestAiSummary(session, mode) {
     }
     if (mode === 'initial') session.aiInitialSummaryDone = true;
     session.lastAiSummaryAt = Date.now();
+    if (session.lastAiContextActivityAt === summarizedActivityAt && isAiSessionStale(summarizedActivityAt)) {
+      session.staleAiSummaryDone = true;
+    }
+    schedulePersist();
     scheduleAiSummary(session);
   }
 }
@@ -946,6 +972,7 @@ function persistWorkspaceNow() {
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
         notified: session.notified,
+        inputRequired: session.inputRequired,
         attentionCycleId: session.attentionCycleId,
         activityArmed: session.activityArmed,
         displayName: session.displayName,
@@ -954,6 +981,8 @@ function persistWorkspaceNow() {
         hasUserActivity: session.hasUserActivity,
         aiInitialSummaryDone: session.aiInitialSummaryDone,
         lastAiSummaryAt: session.lastAiSummaryAt,
+        lastAiContextActivityAt: session.lastAiContextActivityAt,
+        staleAiSummaryDone: session.staleAiSummaryDone,
         createdAt: session.createdAt,
         lastResponseAt: session.lastResponseAt,
         links: session.links
@@ -1008,6 +1037,7 @@ function persistWorkspaceNow() {
       agent: session.agent,
       attentionCycleId: session.attentionCycleId,
       notified: session.notified,
+      inputRequired: session.inputRequired,
       busy: sessions.get(session.id)?.busy
     }))
   });
@@ -1702,7 +1732,10 @@ function stopDesktopVoiceMode() {
 }
 
 function groupNotificationCount(group) {
-  return group.sessionIds.reduce((count, id) => count + (sessions.get(id)?.notified ? 1 : 0), 0);
+  return group.sessionIds.reduce((count, id) => {
+    const session = sessions.get(id);
+    return count + (session?.notified || session?.inputRequired ? 1 : 0);
+  }, 0);
 }
 
 function updateSessionItem(session) {
@@ -1716,7 +1749,9 @@ function updateSessionItem(session) {
   session.item.title = (aiLabelActive || session.manualTitle) ? `${primary} ${secondary}` : session.title;
   session.item.querySelector('.session-details strong').textContent = primary;
   session.item.querySelector('.session-details small').textContent = secondary;
+  updateSessionResponseTime(session);
   session.item.classList.toggle('has-notification', session.notified);
+  session.item.classList.toggle('input-required', session.inputRequired);
   session.item.classList.toggle('session-busy', session.busy);
   session.item.classList.toggle('session-exited', session.exited);
   const linkTrigger = session.item.querySelector('.session-link-trigger');
@@ -1727,6 +1762,22 @@ function updateSessionItem(session) {
 
 function resortSessionGroupByName(session) {
   if (getGroupForSession(session.id)?.sortBy === 'name') renderGroups();
+}
+
+function updateSessionResponseTime(session, now = Date.now()) {
+  const element = session?.item?.querySelector('.session-response-time');
+  if (!element) return;
+  const label = compactLastResponseAge(session.lastResponseAt, now);
+  element.textContent = label;
+  element.hidden = !label;
+  if (!label) {
+    element.removeAttribute('datetime');
+    element.removeAttribute('title');
+    return;
+  }
+  const responseDate = new Date(session.lastResponseAt);
+  element.dateTime = responseDate.toISOString();
+  element.title = `Last response: ${responseDate.toLocaleString()}`;
 }
 
 function updateVisualState() {
@@ -1957,10 +2008,11 @@ function renderSessionItem(session) {
       <span class="session-icon">›_</span>
       <span class="activity-spinner" aria-label="Session is producing output"></span>
       <span class="notification-dot" aria-label="Session needs attention"></span>
+      <span class="input-required-badge" aria-label="Session requires input" title="Session requires input">!</span>
     </span>
     <span class="session-details">
       <strong></strong>
-      <small></small>
+      <span class="session-subline"><small></small><time class="session-response-time" hidden></time></span>
     </span>
     <span class="session-item-actions">
       <span class="session-link-trigger" role="button" aria-label="Show captured links" title="Captured links" hidden>
@@ -2118,6 +2170,21 @@ function visibleTerminalText(terminal) {
   return lines.join('\n');
 }
 
+function setSessionInputRequired(session, inputRequired) {
+  const next = Boolean(inputRequired);
+  if (!session || session.inputRequired === next) return;
+  session.inputRequired = next;
+  updateSessionItem(session);
+  updateVisualState();
+  schedulePersist();
+}
+
+function refreshSessionInputRequired(session, visibleText = visibleTerminalText(session?.terminal)) {
+  if (!session || session.exited) return;
+  const codingAgent = /^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim());
+  setSessionInputRequired(session, codingAgent && isAgentInputRequiredText(visibleText));
+}
+
 function settleSessionBusy(session) {
   if (!session?.busy) return;
   if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal), {
@@ -2159,6 +2226,7 @@ function noteSessionBusy(session, data) {
   if (!session || session.exited) return;
   const output = plainTerminalText(data);
   const visible = visibleTerminalText(session.terminal);
+  refreshSessionInputRequired(session, visible);
   session.activityScanBuffer = `${session.activityScanBuffer}${output}`.slice(-8_000);
   const visibleState = agentActivityState(visible);
   const activityState = visibleState === 'unknown'
@@ -2205,6 +2273,7 @@ function recordSessionResponse(session, data) {
   if (!output.trim()) return;
   if (restoringWorkspace || Date.now() < session.busySuppressedUntil) return;
   session.lastResponseAt = Date.now();
+  updateSessionResponseTime(session);
   window.clearTimeout(session.responseSortTimer);
   session.responseSortTimer = window.setTimeout(() => {
     if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
@@ -2266,6 +2335,13 @@ async function addSession(cwd, options = {}) {
   terminal.registerLinkProvider(createTerminalLinkProvider(terminal, api.openExternal));
 
   const restoredContext = restoredContextState(options.history, Boolean(options.summary), MAX_CONTEXT_CHARS);
+  const createdAt = Object.hasOwn(options, 'createdAt')
+    ? Math.max(0, Number(options.createdAt) || 0)
+    : Date.now();
+  const lastResponseAt = Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0;
+  const lastAiContextActivityAt = Number(options.lastAiContextActivityAt) > 0
+    ? Number(options.lastAiContextActivityAt)
+    : Math.max(lastResponseAt, createdAt || Date.now());
   const session = {
     id,
     title: options.title || `Terminal ${sessions.size + 1}`,
@@ -2277,6 +2353,7 @@ async function addSession(cwd, options = {}) {
     item: null,
     exited: false,
     notified: Boolean(options.notified),
+    inputRequired: Boolean(options.inputRequired),
     attentionCycleId: String(options.attentionCycleId || (options.notified ? `restored:${id}` : '')).slice(0, 200),
     activityArmed: Boolean(options.activityArmed),
     notifyWhenIdle: false,
@@ -2292,10 +2369,8 @@ async function addSession(cwd, options = {}) {
         .map((link) => ({ ...link, url: normalizeGithubPullRequestUrl(link?.url) }))
         .filter((link) => link.url)
       : [],
-    createdAt: Object.hasOwn(options, 'createdAt')
-      ? Math.max(0, Number(options.createdAt) || 0)
-      : Date.now(),
-    lastResponseAt: Number(options.lastResponseAt) > 0 ? Number(options.lastResponseAt) : 0,
+    createdAt,
+    lastResponseAt,
     responseSortTimer: null,
     linkScanBuffer: '',
     context: restoredContext.context,
@@ -2313,6 +2388,8 @@ async function addSession(cwd, options = {}) {
       ? options.aiInitialSummaryDone
       : Boolean(options.summary || restoringWorkspace),
     lastAiSummaryAt: Number(options.lastAiSummaryAt) > 0 ? Number(options.lastAiSummaryAt) : 0,
+    lastAiContextActivityAt,
+    staleAiSummaryDone: Boolean(options.staleAiSummaryDone),
     contextRevision: restoredContext.contextRevision,
     lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
@@ -2358,6 +2435,9 @@ async function addSession(cwd, options = {}) {
     schedulePersist();
   });
   terminal.onBell(() => {
+    if (/^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim())) {
+      setSessionInputRequired(session, true);
+    }
     if (session.activityArmed) markSessionNotification(session);
   });
   terminal.attachCustomKeyEventHandler((event) => {
@@ -2626,6 +2706,7 @@ api.onExit(({ id, exitCode }) => {
   if (!session) return;
   session.exited = true;
   session.busy = false;
+  setSessionInputRequired(session, false);
   reportSessionCompletion(session);
   session.activityArmed = false;
   session.notifyWhenIdle = false;
@@ -2858,6 +2939,10 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', persistWorkspaceNow);
+window.setInterval(() => {
+  const now = Date.now();
+  for (const session of sessions.values()) updateSessionResponseTime(session, now);
+}, 1_000);
 window.setInterval(() => void refreshRuntimeStateAndPersist(), 2_000);
 
 async function restoreSavedWorkspace() {
@@ -2875,6 +2960,7 @@ async function restoreSavedWorkspace() {
       shell: saved.shell,
       history: saved.history,
       notified: saved.notified,
+      inputRequired: saved.inputRequired,
       attentionCycleId: saved.attentionCycleId,
       activityArmed: saved.activityArmed,
       displayName: saved.displayName,
@@ -2883,6 +2969,8 @@ async function restoreSavedWorkspace() {
       hasUserActivity: saved.hasUserActivity,
       aiInitialSummaryDone: saved.aiInitialSummaryDone,
       lastAiSummaryAt: saved.lastAiSummaryAt,
+      lastAiContextActivityAt: saved.lastAiContextActivityAt,
+      staleAiSummaryDone: saved.staleAiSummaryDone,
       createdAt: saved.createdAt,
       lastResponseAt: saved.lastResponseAt,
       links: saved.links,

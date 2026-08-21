@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isForegroundSession, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isForegroundSession, isAgentInputRequiredText, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -101,6 +101,21 @@ test('an idle coding-agent prompt does not keep the spinner active', () => {
   assert.equal(isAgentWorkingText(idle), false);
   assert.equal(isAgentWorkingText(idleHermes), false);
   assert.equal(shouldKeepSessionBusy(true, idle), false);
+});
+
+test('coding-agent questions and confirmations are recognized as requiring input', () => {
+  assert.equal(isAgentInputRequiredText('Question 1/2 (1 unanswered)\nType your answer'), true);
+  assert.equal(isAgentInputRequiredText('Questions 2/2 answered\nEnter to submit all'), true);
+  assert.equal(isAgentInputRequiredText('Would you like to run the following command?\nPress Enter to confirm or Esc to cancel'), true);
+  assert.equal(isAgentInputRequiredText('Proceed with the Plan mode changes? [Y/n]'), true);
+  assert.equal(isAgentInputRequiredText('› Refine the proposed implementation\n\ngpt-5.6-sol high · Plan mode · ~/repo'), true);
+});
+
+test('ordinary coding-agent status does not look like an input request', () => {
+  assert.equal(isAgentInputRequiredText('• Working (34s • esc to interrupt)'), false);
+  assert.equal(isAgentInputRequiredText('› Find and fix a bug\n\ngpt-5.6-sol high · ~/repo'), false);
+  assert.equal(isAgentInputRequiredText('Implemented the requested change and all tests pass.'), false);
+  assert.equal(isAgentInputRequiredText('• Working (34s • esc to interrupt)\n› Refine the implementation\n\ngpt-5.6-sol high · Plan mode · ~/repo'), false);
 });
 
 test('a newer idle prompt overrides stale working status in the visible window', () => {

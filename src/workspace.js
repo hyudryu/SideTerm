@@ -111,6 +111,7 @@ export function parseSavedWorkspace(raw) {
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
         notified: Boolean(session.notified),
+        inputRequired: Boolean(session.inputRequired),
         attentionCycleId: typeof session.attentionCycleId === 'string' ? session.attentionCycleId.slice(0, 200) : '',
         activityArmed: Boolean(session.activityArmed),
         displayName: typeof session.displayName === 'string' ? session.displayName : '',
@@ -119,6 +120,8 @@ export function parseSavedWorkspace(raw) {
         hasUserActivity: Boolean(session.hasUserActivity),
         aiInitialSummaryDone: typeof session.aiInitialSummaryDone === 'boolean' ? session.aiInitialSummaryDone : null,
         lastAiSummaryAt: Number.isFinite(session.lastAiSummaryAt) && session.lastAiSummaryAt > 0 ? session.lastAiSummaryAt : 0,
+        lastAiContextActivityAt: Number.isFinite(session.lastAiContextActivityAt) && session.lastAiContextActivityAt > 0 ? session.lastAiContextActivityAt : 0,
+        staleAiSummaryDone: Boolean(session.staleAiSummaryDone),
         createdAt: Number.isFinite(session.createdAt) && session.createdAt > 0 ? session.createdAt : 0,
         lastResponseAt: Number.isFinite(session.lastResponseAt) && session.lastResponseAt > 0 ? session.lastResponseAt : 0,
         links: Array.isArray(session.links)

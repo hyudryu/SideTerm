@@ -1514,6 +1514,7 @@ function sanitizeMobileWorkspace(value) {
     agent: String(session?.agent || '').slice(0, 40),
     attentionCycleId: String(session?.attentionCycleId || '').slice(0, 200),
     notified: Boolean(session?.notified),
+    inputRequired: Boolean(session?.inputRequired),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
   return { groups, sessions: workspaceSessions };
@@ -1528,6 +1529,7 @@ function mobileSessionSnapshot() {
     cwd: metadata.get(id)?.cwd || '',
     groupId: metadata.get(id)?.groupId || '',
     notified: Boolean(metadata.get(id)?.notified),
+    inputRequired: Boolean(metadata.get(id)?.inputRequired),
     busy: Boolean(metadata.get(id)?.busy)
   }));
 }

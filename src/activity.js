@@ -108,6 +108,16 @@ export function isAgentWorkingText(value) {
   return agentActivityState(value) === 'working';
 }
 
+export function isAgentInputRequiredText(value) {
+  const text = String(value);
+  return /\b(?:press\s+)?(?:enter|return)\s+to\s+(?:select|submit(?:\s+(?:answer|all))?|confirm|continue|proceed)\b/iu.test(text)
+    || /\btype your answer\b/iu.test(text)
+    || /\bquestions?\s+\d+(?:\s*\/\s*\d+)?[^\n]{0,40}\bunanswered\b/iu.test(text)
+    || /\b(?:do you want to proceed|would you like to (?:run|execute|apply|continue|proceed))\b/iu.test(text)
+    || /(?:\[\s*[yY]\s*\/\s*[nN]\s*\]|\(\s*[yY]\s*\/\s*[nN]\s*\))\s*:?\s*$/mu.test(text)
+    || (/\bplan mode\b/iu.test(text) && agentActivityState(text) === 'idle');
+}
+
 export function shouldKeepSessionBusy(activityArmed, visibleTerminalText, options = {}) {
   if (!activityArmed) return false;
   const state = agentActivityState(visibleTerminalText);
