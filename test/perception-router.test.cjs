@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('../electron/perception/router.cjs');
-const { fitSessionCollection } = require('../electron/perception/structured-state.cjs');
+const { fitSessionCollection, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
   let cloudCalled = false;
@@ -90,6 +90,18 @@ test('intentionally omitted session collections are marked incomplete', () => {
   const result = fitSessionCollection({ sessionCollection: { total: 3 } }, [], { includeSessions: false });
   assert.equal(result.payload.sessionCollection.returned, 0);
   assert.equal(result.payload.sessionCollection.truncated, true);
+});
+
+test('live sessions remain structured evidence before renderer metadata arrives', () => {
+  assert.deepEqual(structuredSessionRecord({ sessionId: 'new-session', live: true }), {
+    id: 'new-session',
+    title: 'new-session',
+    summary: '',
+    busy: false,
+    status: 'idle',
+    needsAttention: false
+  });
+  assert.equal(structuredSessionRecord({ sessionId: 'stopped', live: false }), null);
 });
 
 test('truncated collections lower confidence only when the full member list is required', () => {
