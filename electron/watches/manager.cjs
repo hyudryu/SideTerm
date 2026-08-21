@@ -115,6 +115,7 @@ function migrateLegacyPullRequestWatches(watches = [], pullRequests = [], option
     if (watches.some((watch) => watch.kind === 'github_codex_review'
       && watch.repo === repo && Number(watch.prNumber) === Number(number))) continue;
     const watch = manager.create({
+      id: `legacy-github-${crypto.createHash('sha256').update(`${repo.toLowerCase()}:${Number(number)}`).digest('hex').slice(0, 24)}`,
       kind: 'github_codex_review', repo, prNumber: Number(number), intervalSeconds: 60,
       state: 'active', exitCondition: 'codex_thumbs_up', headSha: pull.headSha,
       lastFingerprint: pull.fingerprint, lastCheckedAt: pull.lastCheckedAt,
