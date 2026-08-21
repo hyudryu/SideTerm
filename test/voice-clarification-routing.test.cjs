@@ -27,7 +27,11 @@ test('voice clarification replies stay bound to their own interaction without du
 test('ordinary voice approvals bind the final reply window to the new interaction', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const desktop = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  assert.match(main, /const interactionIdsBeforeTurn = new Set/);
+  assert.match(main, /const supervisorTurnContext = new AsyncLocalStorage\(\)/);
+  assert.match(main, /if \(turn\) turn\.confirmationIds\.push\(confirmation\.id\)/);
+  assert.match(main, /supervisorTurnContext\.run\(turn, \(\) =>/);
+  assert.match(main, /turnConfirmationIds\.has\(item\.id\)/);
+  assert.doesNotMatch(main, /interactionIdsBeforeTurn/);
   assert.match(main, /interactionId: turnInteraction\?\.id \|\| ''/);
   assert.match(main, /speech\.speak\(result\.speech, \{ opensReplyWindow: true, interactionId: result\.interactionId \|\| '' \}\)/);
   assert.match(desktop, /queueAgentSpeech\(result\.speech \|\| result\.response, \{\s*interactionId: result\.interactionId \|\| ''/);
