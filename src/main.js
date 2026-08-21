@@ -65,7 +65,8 @@ let clearSttCredentialRequested = false;
 let sttCredentialRemovalIntent = false;
 let clearVisionApiKeyRequested = false;
 let clearHarnessBridgeTokenRequested = false;
-let visionKeyEndpointDraft = '';
+let visionKeyExplicitClearRequested = false;
+let visionKeyPersistedEndpoint = '';
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -450,6 +451,7 @@ function populateSettingsPanel() {
   sttCredentialRemovalIntent = false;
   clearVisionApiKeyRequested = false;
   clearHarnessBridgeTokenRequested = false;
+  visionKeyExplicitClearRequested = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -466,7 +468,7 @@ function populateSettingsPanel() {
   document.querySelector('#vision-enabled').checked = Boolean(settings.visionEnabled);
   document.querySelector('#vision-use-supervisor-model').checked = settings.visionUseSupervisorModel !== false;
   document.querySelector('#vision-api-url').value = settings.visionApiUrl || '';
-  visionKeyEndpointDraft = settings.visionApiUrl || '';
+  visionKeyPersistedEndpoint = settings.visionApiUrl || '';
   document.querySelector('#vision-model').value = settings.visionModel || '';
   document.querySelector('#vision-api-key').value = '';
   document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
@@ -3053,23 +3055,37 @@ document.querySelector('#clear-harness-bridge-token').addEventListener('click', 
   document.querySelector('#harness-token-state').textContent = 'Token will be removed';
   document.querySelector('#clear-harness-bridge-token').hidden = true;
 });
+const visionEndpointOrigin = (value) => {
+  try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
+};
 document.querySelector('#vision-api-url').addEventListener('change', (event) => {
-  const origin = (value) => {
-    try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
-  };
-  if (origin(event.target.value) !== origin(visionKeyEndpointDraft)) {
+  const endpointChanged = visionEndpointOrigin(event.target.value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+  const keyInput = document.querySelector('#vision-api-key');
+  keyInput.value = '';
+  if (endpointChanged) {
     clearVisionApiKeyRequested = true;
-    document.querySelector('#vision-api-key').value = '';
-    document.querySelector('#vision-api-key').placeholder = 'Enter a key for this endpoint';
+    keyInput.placeholder = 'Enter a key for this endpoint';
     document.querySelector('#vision-key-state').textContent = 'Key cleared for endpoint change';
     document.querySelector('#clear-vision-api-key').hidden = true;
+  } else {
+    clearVisionApiKeyRequested = visionKeyExplicitClearRequested;
+    keyInput.placeholder = clearVisionApiKeyRequested
+      ? 'Key will be removed on save'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+    document.querySelector('#vision-key-state').textContent = clearVisionApiKeyRequested
+      ? 'Key will be removed'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+    document.querySelector('#clear-vision-api-key').hidden = clearVisionApiKeyRequested || !settings.hasVisionApiKey;
   }
-  visionKeyEndpointDraft = event.target.value;
 });
 document.querySelector('#vision-api-key').addEventListener('input', (event) => {
-  if (event.target.value) clearVisionApiKeyRequested = false;
+  clearVisionApiKeyRequested = event.target.value
+    ? false
+    : visionKeyExplicitClearRequested
+      || visionEndpointOrigin(document.querySelector('#vision-api-url').value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
 });
 document.querySelector('#clear-vision-api-key').addEventListener('click', () => {
+  visionKeyExplicitClearRequested = true;
   clearVisionApiKeyRequested = true;
   document.querySelector('#vision-api-key').value = '';
   document.querySelector('#vision-api-key').placeholder = 'Key will be removed on save';
