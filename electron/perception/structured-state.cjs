@@ -32,4 +32,27 @@ function fitSessionCollection(payload = {}, candidates = [], options = {}) {
   return { payload: fitted, summary };
 }
 
-module.exports = { fitSessionCollection };
+function structuredSessionRecord({ sessionId = '', metadata = null, live = false, indexed = null } = {}) {
+  if (metadata) {
+    return {
+      id: String(metadata.id || sessionId),
+      title: String(metadata.title || indexed?.friendlyName || sessionId || 'Terminal'),
+      summary: String(metadata.summary || indexed?.currentTask || ''),
+      busy: Boolean(metadata.busy),
+      status: metadata.busy ? 'running' : live ? 'idle' : 'stopped',
+      needsAttention: Boolean(metadata.notified)
+    };
+  }
+  if (!live) return null;
+  const status = indexed?.status === 'running' ? 'running' : 'idle';
+  return {
+    id: String(sessionId),
+    title: String(indexed?.friendlyName || sessionId || 'Terminal'),
+    summary: String(indexed?.currentTask || ''),
+    busy: status === 'running',
+    status,
+    needsAttention: ['completed', 'input_required', 'blocked', 'failed'].includes(indexed?.semanticState)
+  };
+}
+
+module.exports = { fitSessionCollection, structuredSessionRecord };

@@ -51,7 +51,7 @@ test('collection status inspection includes the bounded live session list', () =
   assert.match(main, /status: item\.busy \? 'running' : sessions\.has\(item\.id\) \? 'idle' : 'stopped'/);
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
   assert.match(main, /fitSessionCollection\(\{[\s\S]*sessionCollection: \{[\s\S]*\.\.\.sessionCounts/);
-  assert.match(main, /session: metadata \? \{[\s\S]*needsAttention: Boolean\(metadata\.notified\)/);
+  assert.match(main, /session: structuredSessionRecord\(\{[\s\S]*metadata,[\s\S]*live: Boolean\(session\)/);
 });
 
 test('persisted vision upload consent fails closed unless it is boolean true', () => {

@@ -6,6 +6,10 @@ test('vision output is normalized from JSON or safe non-JSON text', () => {
   assert.equal(parseStructuredPerception('{"summary":"Dialog","confidence":0.9}').summary, 'Dialog');
   assert.equal(parseStructuredPerception('{"summary":"Dialog","visibleText":["OK"]}').confidence, 0.75);
   assert.equal(parseStructuredPerception('{"unexpected":true}').confidence, 0);
+  assert.equal(parseStructuredPerception('{"summary":""}').confidence, 0);
+  assert.equal(parseStructuredPerception('{"visibleText":[]}').confidence, 0);
+  assert.equal(parseStructuredPerception('{"controls":[{}]}').confidence, 0);
+  assert.equal(parseStructuredPerception('{"errors":["image unreadable"]}').confidence, 0);
   assert.equal(parseStructuredPerception('A button is visible').confidence, 0.75);
 });
 

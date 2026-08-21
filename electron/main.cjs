@@ -59,7 +59,7 @@ const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('./perception/router.cjs');
-const { fitSessionCollection } = require('./perception/structured-state.cjs');
+const { fitSessionCollection, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
 
@@ -412,7 +412,7 @@ function saveSettings(update = {}) {
     && providerDescriptor(current.sttProvider).location === 'local'
     && providerDescriptor(next.sttProvider).location === 'cloud';
   writeSettingsRecord(next);
-  if (releaseLocalStt) stopSpeechWorker();
+  if (releaseLocalStt) void releaseLocalSpeechRecognition().catch(() => {});
   return publicSettings(next);
 }
 
@@ -1255,14 +1255,12 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         needsAttention: Boolean(item.notified)
       }));
       const fitted = fitSessionCollection({
-        session: metadata ? {
-          id: metadata.id,
-          title: metadata.title,
-          summary: metadata.summary,
-          busy: Boolean(metadata.busy),
-          status: metadata.busy ? 'running' : sessions.has(metadata.id) ? 'idle' : 'stopped',
-          needsAttention: Boolean(metadata.notified)
-        } : null,
+        session: structuredSessionRecord({
+          sessionId,
+          metadata,
+          live: Boolean(session),
+          indexed: sessionIndex.get(sessionId)
+        }),
         sessionCollection: {
           ...sessionCounts
         },
@@ -1989,6 +1987,12 @@ function stopSpeechWorker() {
   speechWorker?.stop();
   speechWorker = null;
   speechTranscriptionInFlight = false;
+}
+
+async function releaseLocalSpeechRecognition() {
+  if (!speechWorker) return false;
+  await speechWorker.request('release-stt');
+  return true;
 }
 
 async function warmTextToSpeech() {
