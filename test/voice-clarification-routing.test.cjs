@@ -13,11 +13,13 @@ test('voice clarification replies stay bound to their own interaction without du
   assert.match(main, /interactionId: String\(event\.payload\?\.interactionId \|\| ''\)/);
   assert.match(main, /agent:voice-ping'[\s\S]*interactionId: options\.interactionId \|\| ''/);
   assert.match(desktop, /voiceReplyInteractionId = transcript\.clarification\.interactionId/);
+  assert.match(desktop, /queueAgentSpeech\(transcript\.clarification\.prompt, \{[\s\S]*interactionId: transcript\.clarification\.interactionId/);
   assert.match(desktop, /voiceReplyInteractionId = String\(interactionId \|\| ''\)/);
   assert.match(desktop, /submitAgentChat\(transcript\.text, \{ spokenRequest: true, interactionId \}\)/);
   assert.match(desktop, /if \(!replyWindowActive\) voiceReplyInteractionId = ''/);
   assert.match(desktop, /interactionId = replyWindowActive \? voiceReplyInteractionId : ''/);
   assert.match(mobile, /if \(!replyWindowActive\) mobileVoiceInteractionId = ''/);
   assert.match(mobile, /mobileVoiceInteractionId = String\(interactionId \|\| ''\)/);
+  assert.match(main, /mobileSpeechPipeline\(client\)\.speak\(transcript\.clarification\.prompt, \{[\s\S]*interactionId: transcript\.clarification\.interactionId/);
   assert.match(mobile, /interactionId: replyWindowActive \? mobileVoiceInteractionId : ''/);
 });
