@@ -9,6 +9,7 @@ test('voice clarification replies stay bound to their own interaction without du
   const mobile = fs.readFileSync(path.join(__dirname, '..', 'electron', 'mobile', 'mobile.js'), 'utf8');
   assert.match(main, /desktopSpeechPresented: supervisorVoiceMode/);
   assert.match(main, /clarification: \{ \.\.\.clarification, interactionId: interaction\.id \}/);
+  assert.match(main, /interactionId \|\| \(spokenRequest \? '' : state\.activeInteractionId\)/);
   assert.match(desktop, /voiceReplyInteractionId = transcript\.clarification\.interactionId/);
   assert.match(desktop, /submitAgentChat\(transcript\.text, \{ spokenRequest: true, interactionId \}\)/);
   assert.match(desktop, /if \(!replyWindowActive\) voiceReplyInteractionId = ''/);
