@@ -59,12 +59,15 @@ test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresVisualEvidence('Is the prompt bold?'), true);
   assert.equal(requiresVisualEvidence('Is the terminal using a dark theme?'), true);
   assert.equal(requiresVisualEvidence('Is the background job still running?'), false);
+  assert.equal(requiresVisualEvidence('Is the settings dialog open?'), true);
   assert.equal(requiresVisualEvidence('What command finished?'), false);
 });
 
 test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What is the supervisor status?'), true);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
+  assert.equal(structuredStateSufficient('How many terminals are running?'), true);
+  assert.equal(structuredStateSufficient('Which terminals are idle?'), true);
   assert.equal(structuredStateSufficient('Summarize this session.'), true);
   assert.equal(structuredStateSufficient('Is this session running?'), true);
   assert.equal(structuredStateSufficient('Is this session stopped?'), true);
@@ -130,6 +133,8 @@ test('authoritative process exit overrides stale busy renderer metadata', () => 
 
 test('truncated collections lower confidence only when the full member list is required', () => {
   assert.equal(structuredCollectionRequiresCompleteList('How many sessions are active?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('How many terminals are active?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('List all terminal names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('List all session names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which sessions are busy?'), true);
 });

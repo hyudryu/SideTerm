@@ -21,3 +21,8 @@ test('enabling supervisor-model vision validates the supervisor endpoint', () =>
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /if \(visionEnabled && visionUseSupervisorModel\) \{[\s\S]*visionEndpointConfigurationError\(apiUrl\)/);
 });
+
+test('unused separate vision endpoints do not block safe settings changes', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /if \(visionEnabled && !visionUseSupervisorModel\) \{[\s\S]*visionEndpointConfigurationError\(visionApiUrl\)/);
+});
