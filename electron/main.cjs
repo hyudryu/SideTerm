@@ -1154,7 +1154,12 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
       }
     } else {
       if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The SideTerm window is not available to capture.');
-      capturedImage = (await mainWindow.webContents.capturePage()).toPNG();
+      try {
+        await requestRendererAction('prepare-window-capture', {});
+        capturedImage = (await mainWindow.webContents.capturePage()).toPNG();
+      } finally {
+        await requestRendererAction('restore-terminal-capture', {}).catch(() => {});
+      }
     }
     if (!capturedImage.length) throw new Error('The SideTerm window returned an empty screenshot.');
     return capturedImage;
