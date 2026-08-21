@@ -81,7 +81,9 @@ class PriorityEventBus {
 
   enqueue(value) {
     const event = normalizeSupervisorEvent(value, { now: this.now, createId: this.createId });
-    const duplicate = this.events.find((item) => item.dedupeKey === event.dedupeKey && item.state !== 'superseded');
+    const duplicate = this.events.find((item) => item.dedupeKey === event.dedupeKey
+      && !item.read
+      && item.state !== 'superseded');
     if (duplicate) return { event: duplicate, added: false };
 
     if (event.sessionId) {

@@ -21,6 +21,16 @@ test('priority event bus deduplicates exact events and supersedes stale same-ses
   assert.equal(bus.pending()[0].id, 'two');
 });
 
+test('an acknowledged dedupe key may recur as new work', () => {
+  const events = [];
+  const bus = new PriorityEventBus(events);
+  bus.enqueue({ id: 'first', kind: 'INFO', dedupeKey: 'github-cli-missing' });
+  bus.transition('first', 'acknowledged');
+  const recurrence = bus.enqueue({ id: 'second', kind: 'INFO', dedupeKey: 'github-cli-missing' });
+  assert.equal(recurrence.added, true);
+  assert.equal(bus.pending()[0].id, 'second');
+});
+
 test('legacy notification records migrate into typed events', () => {
   const event = normalizeSupervisorEvent({ id: 'legacy', title: 'API', summary: 'Done', read: false });
   assert.equal(event.kind, 'INFO');

@@ -9,7 +9,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
-const { claimConfirmation, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
+const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
@@ -608,7 +608,7 @@ function readAgentState() {
         ...cleanAgentEntry(item, { id: 100, title: 100, group: 80, outcome: 24, summary: 500, context: 12_000 }),
         archivedAt: Number(item?.archivedAt) || Date.now()
       })) : [],
-      confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-40).map((item) => ({
+      confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-120).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
         kind: ['archive', 'terminal-input', 'tui-selection', 'github-comment', 'merge-pull-request'].includes(item?.kind) ? item.kind : 'terminal-input',
         sessionId: String(item?.sessionId || '').slice(0, 100),
@@ -674,6 +674,7 @@ function readAgentState() {
         createdAt: Number(item?.createdAt) || Date.now()
       })).filter((item) => item.name && item.description && item.instructions) : []
     };
+    reconcileConfirmationInteractions(state);
     migrateLegacyPullRequestWatches(state.watches, state.pullRequests);
     return state;
   } catch {
@@ -1915,6 +1916,7 @@ async function runProactiveCatchUp(activation = {}) {
     if (retryEvent) retryEvent.read = false;
     eventBusFor(retryState).transition(event.id, 'queued');
     writeAgentState(retryState);
+    if (activation.taskId) queueMicrotask(scheduleProactiveCatchUp);
     if (error?.name === 'AbortError' && activation.taskId) throw error;
     return 'failed';
   } finally {
