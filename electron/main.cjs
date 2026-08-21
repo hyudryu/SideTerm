@@ -99,6 +99,10 @@ const sessionIndex = new SessionIndex();
 let harnessBackend = null;
 let harnessBridgeDisposers = [];
 let harnessRefreshTimer = null;
+let harnessRefreshDebounceTimer = null;
+let harnessRefreshInFlight = false;
+let harnessRefreshQueued = false;
+let harnessBridgeGeneration = 0;
 let speechWorker = null;
 let speechTranscriptionInFlight = false;
 const ownsSingleInstanceLock = app.requestSingleInstanceLock();
@@ -324,6 +328,7 @@ function saveSettings(update = {}) {
     }
     new HarnessBridgeClient({ endpoint: harnessBridgeEndpoint, token: suppliesToken ? update.harnessBridgeToken.trim() : readHarnessBridgeToken(current) });
   }
+  if (harnessBridgeEndpoint.length > 1000) throw new Error('Harness bridge endpoint must be 1,000 characters or fewer.');
   const personality = typeof update.personality === 'string' ? update.personality.trim() : current.personality;
   const agentInstructions = typeof update.agentInstructions === 'string' ? update.agentInstructions.trim() : current.agentInstructions;
   const wakeWord = typeof update.wakeWord === 'string' ? update.wakeWord.trim() : current.wakeWord;
@@ -345,7 +350,7 @@ function saveSettings(update = {}) {
     visionApiUrl,
     visionModel,
     harnessBridgeEnabled,
-    harnessBridgeEndpoint: harnessBridgeEndpoint.slice(0, 1000),
+    harnessBridgeEndpoint,
     personality,
     agentInstructions,
     wakeWord,
@@ -430,24 +435,55 @@ function readHarnessBridgeToken(record) {
 }
 
 function stopHarnessBridge() {
+  harnessBridgeGeneration += 1;
   if (harnessRefreshTimer) clearInterval(harnessRefreshTimer);
+  if (harnessRefreshDebounceTimer) clearTimeout(harnessRefreshDebounceTimer);
   harnessRefreshTimer = null;
+  harnessRefreshDebounceTimer = null;
+  harnessRefreshQueued = false;
   for (const dispose of harnessBridgeDisposers.splice(0)) dispose();
   harnessBackend = null;
+  for (const record of sessionIndex.list()) {
+    if (record.backend === 'deepseek-harness') sessionIndex.remove(record.id);
+  }
 }
 
 async function refreshHarnessSessions() {
   if (!harnessBackend) return;
-  const records = await harnessBackend.listSessions();
-  const liveIds = new Set();
-  for (const record of Array.isArray(records) ? records : []) {
-    liveIds.add(String(record.id));
-    sessionIndex.upsert({ ...record, id: String(record.id), backend: 'deepseek-harness' });
+  if (harnessRefreshInFlight) {
+    harnessRefreshQueued = true;
+    return;
   }
-  for (const record of sessionIndex.list()) {
-    if (record.backend === 'deepseek-harness' && !liveIds.has(record.id)) sessionIndex.remove(record.id);
+  harnessRefreshInFlight = true;
+  const backend = harnessBackend;
+  const generation = harnessBridgeGeneration;
+  try {
+    const records = await backend.listSessions();
+    if (generation !== harnessBridgeGeneration || backend !== harnessBackend) return;
+    const liveIds = new Set();
+    for (const record of Array.isArray(records) ? records : []) {
+      liveIds.add(String(record.id));
+      sessionIndex.upsert({ ...record, id: String(record.id), backend: 'deepseek-harness' });
+    }
+    for (const record of sessionIndex.list()) {
+      if (record.backend === 'deepseek-harness' && !liveIds.has(record.id)) sessionIndex.remove(record.id);
+    }
+    broadcastAgentState();
+  } finally {
+    harnessRefreshInFlight = false;
+    if (harnessRefreshQueued) {
+      harnessRefreshQueued = false;
+      queueMicrotask(() => void refreshHarnessSessions().catch(() => {}));
+    }
   }
-  broadcastAgentState();
+}
+
+function scheduleHarnessRefresh() {
+  if (harnessRefreshDebounceTimer) return;
+  harnessRefreshDebounceTimer = setTimeout(() => {
+    harnessRefreshDebounceTimer = null;
+    void refreshHarnessSessions().catch(() => {});
+  }, 100);
 }
 
 function handleHarnessSessionEvent(message) {
@@ -455,6 +491,7 @@ function handleHarnessSessionEvent(message) {
   const event = message.event || {};
   const sessionId = String(message.sessionId || '');
   if (!sessionId) return;
+  if (!['turn/start', 'step/start', 'turn/end'].includes(event.type)) return;
   if (event.type === 'turn/start' || event.type === 'step/start') {
     sessionIndex.upsert({ id: sessionId, backend: 'deepseek-harness', status: 'running', semanticState: 'working' });
   }
@@ -480,7 +517,7 @@ function handleHarnessSessionEvent(message) {
     writeAgentState(state);
     scheduleProactiveCatchUp();
   }
-  void refreshHarnessSessions().catch(() => {});
+  scheduleHarnessRefresh();
 }
 
 function configureHarnessBridge(settings = readSettingsRecord()) {
@@ -490,7 +527,7 @@ function configureHarnessBridge(settings = readSettingsRecord()) {
     const client = new HarnessBridgeClient({ endpoint: settings.harnessBridgeEndpoint, token: readHarnessBridgeToken(settings) });
     harnessBackend = new DeepSeekHarnessBackend(client);
     harnessBridgeDisposers.push(harnessBackend.subscribe(handleHarnessSessionEvent));
-    harnessBridgeDisposers.push(client.subscribe('agent/status', () => void refreshHarnessSessions().catch(() => {})));
+    harnessBridgeDisposers.push(client.subscribe('agent/status', scheduleHarnessRefresh));
     harnessRefreshTimer = setInterval(() => void refreshHarnessSessions().catch(() => {}), 10_000);
     void refreshHarnessSessions().catch(() => {});
   } catch {
