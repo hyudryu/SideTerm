@@ -15,6 +15,15 @@ function providerDescriptor(id) {
   return provider;
 }
 
+function providerConfigurationError(id, options = {}) {
+  const descriptor = providerDescriptor(id);
+  if (descriptor.location === 'local') return '';
+  if (!options.credential) return `${descriptor.name} credentials are not configured.`;
+  if (id === 'azure' && !options.region && !options.endpoint) return 'Azure Speech requires a region or endpoint.';
+  if (id === 'aws' && !options.region) return 'Amazon Transcribe requires a region.';
+  return '';
+}
+
 async function checkedJson(response, provider) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${provider} transcription failed (${response.status}): ${body.message || body.error?.message || 'unknown error'}`);
@@ -32,7 +41,8 @@ async function transcribeDeepgram(audio, options) {
   url.searchParams.set('language', options.language || 'en-US');
   for (const term of vocabularyQuery(options.vocabulary)) url.searchParams.append('keyterm', term);
   const body = await checkedJson(await fetch(url, {
-    method: 'POST', headers: { Authorization: `Token ${options.credential}`, 'Content-Type': options.mimeType }, body: audio
+    method: 'POST', headers: { Authorization: `Token ${options.credential}`, 'Content-Type': options.mimeType }, body: audio,
+    signal: options.signal
   }), 'Deepgram');
   const alternative = body.results?.channels?.[0]?.alternatives?.[0] || {};
   return { text: String(alternative.transcript || ''), confidence: Number(alternative.confidence), language: options.language || 'en-US', provider: 'deepgram' };
@@ -50,10 +60,15 @@ async function transcribeGoogle(audio, options) {
         speechContexts: [{ phrases: vocabularyQuery(options.vocabulary) }]
       },
       audio: { content: Buffer.from(audio).toString('base64') }
-    })
+    }), signal: options.signal
   }), 'Google');
-  const alternative = body.results?.[0]?.alternatives?.[0] || {};
-  return { text: String(alternative.transcript || ''), confidence: Number(alternative.confidence), language: options.language || 'en-US', provider: 'google' };
+  const alternatives = (body.results || []).map((result) => result.alternatives?.[0]).filter(Boolean);
+  const confidences = alternatives.map((item) => Number(item.confidence)).filter(Number.isFinite);
+  return {
+    text: alternatives.map((item) => String(item.transcript || '').trim()).filter(Boolean).join(' '),
+    confidence: confidences.length ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length : NaN,
+    language: options.language || 'en-US', provider: 'google'
+  };
 }
 
 async function transcribeAzure(audio, options) {
@@ -67,7 +82,7 @@ async function transcribeAzure(audio, options) {
   const body = await checkedJson(await fetch(url, {
     method: 'POST',
     headers: { 'Ocp-Apim-Subscription-Key': options.credential, 'Content-Type': options.mimeType, Accept: 'application/json' },
-    body: audio
+    body: audio, signal: options.signal
   }), 'Azure');
   const candidate = body.NBest?.[0] || {};
   return { text: String(candidate.Display || body.DisplayText || ''), confidence: Number(candidate.Confidence), language: options.language || 'en-US', provider: 'azure' };
@@ -82,7 +97,7 @@ async function transcribeOpenAi(audio, options) {
   const prompt = vocabularyQuery(options.vocabulary).join(', ');
   if (prompt) form.set('prompt', prompt);
   const body = await checkedJson(await fetch(endpoint, {
-    method: 'POST', headers: { Authorization: `Bearer ${options.credential}` }, body: form
+    method: 'POST', headers: { Authorization: `Bearer ${options.credential}` }, body: form, signal: options.signal
   }), 'OpenAI');
   return { text: String(body.text || ''), confidence: Number(body.confidence), language: options.language || 'en-US', provider: 'openai' };
 }
@@ -109,7 +124,7 @@ async function transcribeAws(audio, options) {
   try {
     const response = await client.send(new StartStreamTranscriptionCommand({
       LanguageCode: options.language || 'en-US', MediaEncoding: encoding, MediaSampleRateHertz: 16_000, AudioStream: chunks()
-    }));
+    }), { abortSignal: options.signal });
     let text = '';
     for await (const event of response.TranscriptResultStream || []) {
       for (const result of event.TranscriptEvent?.Transcript?.Results || []) {
@@ -125,9 +140,28 @@ async function transcribeAws(audio, options) {
 async function transcribeCloud(providerId, audio, options = {}) {
   const descriptor = providerDescriptor(providerId);
   if (descriptor.location !== 'cloud') throw new Error(`${providerId} is not a cloud speech provider.`);
-  if (!options.credential) throw new Error(`${descriptor.name} credentials are not configured.`);
+  const configurationError = providerConfigurationError(providerId, options);
+  if (configurationError) throw new Error(configurationError);
   const implementations = { deepgram: transcribeDeepgram, google: transcribeGoogle, azure: transcribeAzure, aws: transcribeAws, openai: transcribeOpenAi };
-  return implementations[descriptor.id](Buffer.from(audio), options);
+  const controller = new AbortController();
+  const timeoutMs = Math.max(100, Math.min(120_000, Number(options.timeoutMs) || 30_000));
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`${descriptor.name} transcription timed out.`));
+  }, timeoutMs);
+  try {
+    const result = await Promise.race([
+      implementations[descriptor.id](Buffer.from(audio), { ...options, signal: controller.signal }),
+      new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }))
+    ]);
+    return result;
+  } catch (error) {
+    if (timedOut) throw new Error(`${descriptor.name} transcription timed out.`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-module.exports = { awsCredentials, providerDescriptor, STT_PROVIDERS, transcribeCloud };
+module.exports = { awsCredentials, providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud };

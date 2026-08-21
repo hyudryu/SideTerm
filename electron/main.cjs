@@ -41,7 +41,7 @@ const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs'
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
 const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
-const { providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
+const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -289,6 +289,8 @@ function saveSettings(update = {}) {
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
+
+  if (next.sttProvider !== current.sttProvider) delete next.encryptedSttCredential;
 
   if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
@@ -1450,7 +1452,13 @@ function speechStatus() {
   const settings = readSettingsRecord();
   const descriptor = providerDescriptor(settings.sttProvider);
   let sttInstalled = false;
-  if (descriptor.location === 'cloud') sttInstalled = Boolean(readSttCredential(settings));
+  let sttConfigurationError = '';
+  if (descriptor.location === 'cloud') {
+    sttConfigurationError = providerConfigurationError(settings.sttProvider, {
+      credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion
+    });
+    sttInstalled = !sttConfigurationError;
+  }
   else {
     try {
       const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
@@ -1464,6 +1472,7 @@ function speechStatus() {
     sttProvider: settings.sttProvider,
     sttLocation: descriptor.location,
     sttProviderName: descriptor.name,
+    sttConfigurationError,
     ttsModel: DEFAULT_SETTINGS.ttsModel
   };
 }
@@ -1584,7 +1593,12 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
 }
 
 async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWithoutWakeWord = false } = {}) {
-  if (!speechStatus().sttInstalled) throw new Error('Install the speech-to-text model in Settings first.');
+  const currentSpeechStatus = speechStatus();
+  if (!currentSpeechStatus.sttInstalled) {
+    throw new Error(currentSpeechStatus.sttLocation === 'cloud'
+      ? currentSpeechStatus.sttConfigurationError || `Configure ${currentSpeechStatus.sttProviderName} in Settings first.`
+      : 'Install the speech-to-text model in Settings first.');
+  }
   if (speechTranscriptionInFlight) {
     return { ignored: true, reason: 'Still transcribing the previous utterance.' };
   }
@@ -1593,15 +1607,29 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   const settings = readSettingsRecord();
   const descriptor = providerDescriptor(settings.sttProvider);
   if (descriptor.location === 'cloud') {
+    const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
+    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${/ogg/i.test(mimeType) ? 'ogg' : /wav/i.test(mimeType) ? 'wav' : 'webm'}`);
+    const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
     speechTranscriptionInFlight = true;
     try {
-      const transcript = await transcribeCloud(settings.sttProvider, bytes, {
+      let providerAudio = bytes;
+      let providerMimeType = mimeType;
+      if (settings.sttProvider === 'aws' && !/^(?:audio\/ogg|audio\/wav)/i.test(mimeType)) {
+        fs.mkdirSync(outputDirectory, { recursive: true });
+        fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
+        await convertToSpeechWav(inputPath, wavPath);
+        providerAudio = fs.readFileSync(wavPath);
+        providerMimeType = 'audio/wav';
+      }
+      const transcript = await transcribeCloud(settings.sttProvider, providerAudio, {
         credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
-        mimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
+        mimeType: providerMimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
       });
       return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
     } finally {
       speechTranscriptionInFlight = false;
+      try { fs.unlinkSync(inputPath); } catch {}
+      try { fs.unlinkSync(wavPath); } catch {}
     }
   }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';
@@ -2080,6 +2108,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
     sendMobile(client, { type: 'agent:state', state: publicAgentState() });
     sendMobile(client, mobileVoiceSettings());
+    sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
       mobilePresentationSurfaces.get(client)?.dispose();
       mobilePresentationSurfaces.delete(client);
@@ -2459,6 +2488,7 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => publicSettings());
   ipcMain.handle('settings:save', (_event, update) => {
     const saved = saveSettings(update);
+    broadcastMobile({ type: 'voice:status', status: speechStatus() });
     broadcastAgentState();
     return saved;
   });
