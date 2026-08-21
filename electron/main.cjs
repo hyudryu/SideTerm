@@ -1710,6 +1710,7 @@ async function startMobileServer({ persist = true } = {}) {
     if (!route || route === 'index.html') return serveMobileFile(response, path.join(mobileDirectory, 'index.html'));
     if (route === 'mobile.js') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.js'));
     if (route === 'terminal-frame.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-frame.js'));
+    if (route === 'terminal-submit.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-submit.js'));
     if (route === 'mobile.css') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.css'));
     if (route === 'xterm.js') return serveMobileFile(response, xtermScript, true);
     if (route === 'xterm.css') return serveMobileFile(response, xtermStyles, true);

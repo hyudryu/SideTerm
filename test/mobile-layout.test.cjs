@@ -36,3 +36,10 @@ test('only final mobile speech opens the wake-word-free reply window', () => {
   assert.match(script, /completed && openReplyWindow/);
   assert.match(script, /openReplyWindow: Boolean\(message\.opensReplyWindow\)/);
 });
+
+test('mobile loads the one-tap terminal submit helper before its app code', () => {
+  const html = fs.readFileSync(path.join(mobileDirectory, 'index.html'), 'utf8');
+  assert.match(html, /terminal-submit\.js[\s\S]*mobile\.js/);
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /route === 'terminal-submit\.js'/);
+});

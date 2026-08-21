@@ -701,8 +701,11 @@ inputForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (!activeId) return;
   const value = inputBar.value;
-  if (!value && !send({ type: 'input', id: activeId, data: '\r' })) return;
-  if (value && !send({ type: 'input', id: activeId, data: `${value}\r` })) return;
+  const sessionId = activeId;
+  if (!SideTermMobileSubmit.submitTerminalInput({
+    value,
+    send: (data) => send({ type: 'input', id: sessionId, data })
+  })) return;
   inputBar.value = '';
   inputBar.style.height = 'auto';
   inputBar.focus();
