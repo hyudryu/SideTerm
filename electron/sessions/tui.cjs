@@ -38,10 +38,16 @@ function selectionKeys(snapshot, targetIndex) {
   return [...Array(Math.abs(target - snapshot.selectedIndex)).fill(direction), 'ENTER'];
 }
 
+function tuiSelectionAccepted(beforeSubmit, afterSubmit) {
+  if (!beforeSubmit || !afterSubmit) return false;
+  if (beforeSubmit.options.length > 0 && afterSubmit.options.length === 0) return true;
+  return afterSubmit.text !== beforeSubmit.text;
+}
+
 function namedKeyData(key) {
   const normalized = String(key || '').toUpperCase();
   if (!Object.hasOwn(NAMED_KEYS, normalized)) throw new Error(`Unsupported terminal key: ${key}`);
   return NAMED_KEYS[normalized];
 }
 
-module.exports = { NAMED_KEYS, canSubmitTuiKey, cleanTerminalText, namedKeyData, selectionKeys, tuiSnapshot };
+module.exports = { NAMED_KEYS, canSubmitTuiKey, cleanTerminalText, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot };

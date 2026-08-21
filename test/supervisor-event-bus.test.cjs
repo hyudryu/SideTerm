@@ -27,3 +27,11 @@ test('legacy notification records migrate into typed events', () => {
   assert.equal(event.priority, 3);
   assert.equal(event.state, 'queued');
 });
+
+test('interaction-bound events wait until their question is active', () => {
+  const bus = new PriorityEventBus([]);
+  bus.enqueue({ id: 'merge', kind: 'WATCH_CONDITION_MET', payload: { interactionId: 'merge-question' } });
+  bus.enqueue({ id: 'completion', kind: 'COMPLETED' });
+  assert.equal(bus.next('other-question').id, 'completion');
+  assert.equal(bus.next('merge-question').id, 'merge');
+});
