@@ -62,6 +62,7 @@ let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
+let sttCredentialRemovalIntent = false;
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -410,6 +411,7 @@ function renderHotkeyInputs() {
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
   clearSttCredentialRequested = false;
+  sttCredentialRemovalIntent = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -2870,6 +2872,7 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  sttCredentialRemovalIntent = true;
   clearSttCredentialRequested = true;
   document.querySelector('#stt-credential').value = '';
   document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
@@ -2883,9 +2886,10 @@ document.querySelector('#stt-provider').addEventListener('change', () => {
     : 'CLOUD — save settings to configure';
 });
 document.querySelector('#stt-credential').addEventListener('input', (event) => {
-  if (event.target.value) clearSttCredentialRequested = false;
+  clearSttCredentialRequested = sttCredentialRemovalIntent && !event.target.value.trim();
 });
 document.querySelector('#clear-stt-credential').addEventListener('click', () => {
+  sttCredentialRemovalIntent = true;
   clearSttCredentialRequested = true;
   document.querySelector('#stt-credential').value = '';
   document.querySelector('#stt-credential').placeholder = 'Credential will be removed on save';
