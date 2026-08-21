@@ -15,6 +15,9 @@ test('new events do not steal an answer from the active interaction', () => {
 
 test('approval answers are explicit and colloquial without guessing ambiguous speech', () => {
   assert.equal(interpretApprovalAnswer('yeah'), true);
+  assert.equal(interpretApprovalAnswer('Yes.'), true);
+  assert.equal(interpretApprovalAnswer('go ahead!'), true);
+  assert.equal(interpretApprovalAnswer('No, thanks.'), false);
   assert.equal(interpretApprovalAnswer('nope'), false);
   assert.equal(interpretApprovalAnswer('maybe after the tests'), null);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'maybe after the tests'), false);
