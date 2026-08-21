@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('../electron/perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('../electron/perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
@@ -145,4 +145,17 @@ test('truncated collections lower confidence only when the full member list is r
   assert.equal(structuredCollectionRequiresCompleteList('List all terminal names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('List all session names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which sessions are busy?'), true);
+});
+
+test('structured summaries are authoritative only when the requested summary exists', () => {
+  assert.equal(structuredSessionSummaryAvailable('Is this session running?', { session: { summary: '' } }), true);
+  assert.equal(structuredSessionSummaryAvailable('Summarize this session.', { session: { summary: '' } }), false);
+  assert.equal(structuredSessionSummaryAvailable('Summarize this session.', { session: { summary: 'Fixed auth' } }), true);
+  assert.equal(structuredSessionSummaryAvailable('Summarize the active terminal.', {
+    activeSessionId: 'active',
+    sessions: [{ id: 'active', active: true, summary: '' }, { id: 'other', summary: 'Done' }]
+  }), false);
+  assert.equal(structuredSessionSummaryAvailable('Summarize these sessions.', {
+    sessions: [{ summary: 'Done' }, { summary: '' }]
+  }), false);
 });
