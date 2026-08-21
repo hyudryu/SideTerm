@@ -54,19 +54,22 @@ let mobileSttProviderName = 'NVIDIA Parakeet';
 let mobileVoiceActivationId = '';
 let mobileVoiceInteractionId = '';
 let mobileAudioQueue = Promise.resolve(true);
+let mobileAudioGeneration = 0;
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
 let pendingMobileCreateTimer = null;
 
 function queueMobileAudio(message) {
+  const generation = mobileAudioGeneration;
   mobileAudioQueue = mobileAudioQueue
     .catch(() => false)
-    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, {
+    .then(() => mobileVoiceMode && generation === mobileAudioGeneration ? playMobileAudio(message.audio, {
       openReplyWindow: Boolean(message.opensReplyWindow),
       interactionId: String(message.interactionId || '')
     }) : false);
   return mobileAudioQueue.then((speechCompleted) => {
+    if (generation !== mobileAudioGeneration) return false;
     if (!message.continueCatchUp) return speechCompleted;
     if (!speechCompleted) releaseCatchUpQueue();
     else requestNextCatchUp(message.catchUpHasMore);
@@ -461,6 +464,9 @@ function connect() {
     }
   });
   socket.addEventListener('close', () => {
+    mobileAudioGeneration += 1;
+    interruptMobileVoicePlayback();
+    mobileAudioQueue = Promise.resolve(false);
     connectionDot.classList.remove('online');
     connectionDetail.textContent = 'Disconnected · retrying';
     mobileTranscriptionInFlight = false;
@@ -610,7 +616,9 @@ async function startMobileVoice() {
 }
 
 function stopMobileVoice() {
+  mobileAudioGeneration += 1;
   interruptMobileVoicePlayback();
+  mobileAudioQueue = Promise.resolve(false);
   mobileVoiceMode = false;
   mobileTranscriptionInFlight = false;
   mobileReplyUntil = 0;
