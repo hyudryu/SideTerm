@@ -1053,6 +1053,7 @@ function persistWorkspaceNow() {
       summary: session.summary,
       agent: session.agent,
       attentionCycleId: session.attentionCycleId,
+      lastActivityAt: session.lastResponseAt || session.createdAt,
       notified: session.notified,
       busy: sessions.get(session.id)?.busy
     }))
