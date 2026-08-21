@@ -4,6 +4,8 @@ const { analyzeScreenshot, parseStructuredPerception } = require('../electron/pe
 
 test('vision output is normalized from JSON or safe non-JSON text', () => {
   assert.equal(parseStructuredPerception('{"summary":"Dialog","confidence":0.9}').summary, 'Dialog');
+  assert.equal(parseStructuredPerception('{"summary":"Dialog","visibleText":["OK"]}').confidence, 0.75);
+  assert.equal(parseStructuredPerception('{"unexpected":true}').confidence, 0);
   assert.equal(parseStructuredPerception('A button is visible').confidence, 0.75);
 });
 
