@@ -8,7 +8,7 @@ function inferEventKind(value = {}) {
   const text = outcomeEvidence(value);
   if (/\b(?:needs?|requires?|waiting for)\s+(?:your\s+)?(?:input|answer|choice|approval)\b/i.test(text)) return 'INPUT_REQUIRED';
   if (/\b(?:blocked|cannot continue|can.t proceed)\b/i.test(text)) return 'BLOCKED';
-  if (/\b(?:failed|failure|tests? failing|fatal error|uncaught error|error:|errors?:\s*[1-9]\d*)\b/i.test(text)) return 'FAILED';
+  if (/npm ERR!|\b(?:failed|failure|tests? failing|fatal error|uncaught error|error:|errors?:\s*[1-9]\d*|traceback|elifecycle|command failed|process exited with (?:code|status)\s*[1-9]\d*|exit(?:ed)? (?:code|status)\s*[1-9]\d*)\b/i.test(text)) return 'FAILED';
   return 'COMPLETED';
 }
 
