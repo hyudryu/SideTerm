@@ -53,10 +53,16 @@ test('legacy open pull requests migrate into active Codex watches', () => {
   }], { createId: () => 'legacy-watch', now: () => 200 });
   assert.equal(migrated.length, 1);
   assert.deepEqual(watches[0], {
-    id: 'legacy-watch', kind: 'github_codex_review', repo: 'a/b', prNumber: 9,
+    id: watches[0].id, kind: 'github_codex_review', repo: 'a/b', prNumber: 9,
     intervalSeconds: 60, state: 'active', exitCondition: 'codex_thumbs_up', lastFingerprint: '',
     headSha: 'abc', lastCheckedAt: 100, cancelledAt: 0, createdAt: 100, updatedAt: 200
   });
+  assert.match(watches[0].id, /^legacy-github-[0-9a-f]{24}$/);
+  const repeated = [];
+  migrateLegacyPullRequestWatches(repeated, [{
+    url: 'https://github.com/a/b/pull/9', number: 9, state: 'open'
+  }]);
+  assert.equal(repeated[0].id, watches[0].id);
   assert.equal(migrateLegacyPullRequestWatches(watches, [{
     url: 'https://github.com/a/b/pull/9', state: 'open'
   }]).length, 0);

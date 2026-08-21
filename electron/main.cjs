@@ -688,6 +688,20 @@ function eventBusFor(state) {
   return new PriorityEventBus(state.notifications);
 }
 
+function claimNextSupervisorEvent() {
+  const state = readAgentState();
+  const event = eventBusFor(state).claimNext(state.activeInteractionId);
+  if (event) writeAgentState(state);
+  return { state, event };
+}
+
+function releaseSupervisorEventClaim(eventId) {
+  const state = readAgentState();
+  const released = eventBusFor(state).releaseClaim(eventId);
+  if (released) writeAgentState(state);
+  return Boolean(released);
+}
+
 function interactionManagerFor(state) {
   return new PendingInteractionManager(state.interactions, {
     activeInteractionId: state.activeInteractionId,
@@ -1798,12 +1812,7 @@ async function requestVoiceActivationUpdate(targets, activation = {}) {
 async function runProactiveCatchUp(activation = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
-  const state = readAgentState();
-  const bus = eventBusFor(state);
-  const event = bus.pending().find((item) => {
-    const interactionId = String(item.payload?.interactionId || '');
-    return !proactiveEventClaims.has(item.id) && (!interactionId || interactionId === state.activeInteractionId);
-  });
+  const { state, event } = claimNextSupervisorEvent();
   if (!event) return 'skipped';
   proactiveEventClaims.add(event.id);
   const voiceSnapshot = activation.targets?.length ? activation : voicePresentationSnapshot();
@@ -1904,8 +1913,7 @@ function scheduleProactiveCatchUp() {
 }
 
 async function catchUpWithSupervisor({ voice = false } = {}) {
-  const state = readAgentState();
-  const notification = eventBusFor(state).next(state.activeInteractionId);
+  const { state, event: notification } = claimNextSupervisorEvent();
   const remainingCount = Math.max(0, pendingNotifications(state.notifications).length - (notification ? 1 : 0));
   if (!notification) {
     return {
@@ -1917,31 +1925,36 @@ async function catchUpWithSupervisor({ voice = false } = {}) {
       hasMore: false
     };
   }
-  const prompt = catchUpPrompt(notification, remainingCount);
-  let result = await chatWithSupervisor(prompt, {
-    synthetic: true,
-    notificationIds: [notification.id],
-    voice,
-    automatic: true
-  });
-  if (result.needsEnrichment) {
-    result = await chatWithSupervisor(prompt, {
+  try {
+    const prompt = catchUpPrompt(notification, remainingCount);
+    let result = await chatWithSupervisor(prompt, {
       synthetic: true,
       notificationIds: [notification.id],
       voice,
-      automatic: false,
-      proactive: true,
-      interruptible: true
+      automatic: true
     });
+    if (result.needsEnrichment) {
+      result = await chatWithSupervisor(prompt, {
+        synthetic: true,
+        notificationIds: [notification.id],
+        voice,
+        automatic: false,
+        proactive: true,
+        interruptible: true
+      });
+    }
+    const remaining = pendingNotifications(readAgentState().notifications).length;
+    return {
+      ...result,
+      processedNotificationId: notification.id,
+      interactionId: String(notification.payload?.interactionId || ''),
+      remainingCount: remaining,
+      hasMore: remaining > 0
+    };
+  } catch (error) {
+    releaseSupervisorEventClaim(notification.id);
+    throw error;
   }
-  const remaining = pendingNotifications(readAgentState().notifications).length;
-  return {
-    ...result,
-    processedNotificationId: notification.id,
-    interactionId: String(notification.payload?.interactionId || ''),
-    remainingCount: remaining,
-    hasMore: remaining > 0
-  };
 }
 
 function recordSessionFinished(payload = {}) {
@@ -2590,6 +2603,7 @@ function sanitizeMobileWorkspace(value) {
     summary: String(session?.summary || '').slice(0, 500),
     agent: String(session?.agent || '').slice(0, 40),
     attentionCycleId: String(session?.attentionCycleId || '').slice(0, 200),
+    lastActivityAt: Math.max(0, Number(session?.lastActivityAt) || Number(session?.lastResponseAt) || 0),
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
