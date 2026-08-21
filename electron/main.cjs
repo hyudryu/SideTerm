@@ -40,6 +40,7 @@ const {
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
+const { providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -125,6 +126,8 @@ const DEFAULT_SETTINGS = {
   wakeWord: 'Hey Agent',
   sttProvider: 'parakeet',
   sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  sttEndpoint: '',
+  sttRegion: '',
   githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
@@ -197,8 +200,10 @@ function readSettingsRecord() {
       personality: typeof parsed.personality === 'string' ? parsed.personality.slice(0, 2000) : DEFAULT_SETTINGS.personality,
       agentInstructions: typeof parsed.agentInstructions === 'string' ? parsed.agentInstructions.slice(0, 8000) : DEFAULT_SETTINGS.agentInstructions,
       wakeWord: typeof parsed.wakeWord === 'string' ? parsed.wakeWord.slice(0, 80) : DEFAULT_SETTINGS.wakeWord,
-      sttProvider: parsed.sttProvider === 'parakeet' ? 'parakeet' : DEFAULT_SETTINGS.sttProvider,
+      sttProvider: Object.hasOwn(STT_PROVIDERS, parsed.sttProvider) ? parsed.sttProvider : DEFAULT_SETTINGS.sttProvider,
       sttModel: parsed.sttModel === DEFAULT_SETTINGS.sttModel ? parsed.sttModel : DEFAULT_SETTINGS.sttModel,
+      sttEndpoint: typeof parsed.sttEndpoint === 'string' ? parsed.sttEndpoint.slice(0, 1000) : '',
+      sttRegion: typeof parsed.sttRegion === 'string' ? parsed.sttRegion.slice(0, 100) : '',
       githubCodexActorLogins: Array.isArray(parsed.githubCodexActorLogins)
         ? parsed.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
         : DEFAULT_SETTINGS.githubCodexActorLogins,
@@ -216,8 +221,11 @@ function readSettingsRecord() {
 }
 
 function publicSettings(record = readSettingsRecord()) {
-  const { encryptedApiKey: _encryptedApiKey, mobileToken: _mobileToken, ...settings } = record;
-  return { ...settings, appVersion: app.getVersion(), hasApiKey: Boolean(record.encryptedApiKey) };
+  const { encryptedApiKey: _encryptedApiKey, encryptedSttCredential: _encryptedSttCredential, mobileToken: _mobileToken, ...settings } = record;
+  return {
+    ...settings, appVersion: app.getVersion(), hasApiKey: Boolean(record.encryptedApiKey),
+    hasSttCredential: Boolean(record.encryptedSttCredential), sttProviders: Object.values(STT_PROVIDERS)
+  };
 }
 
 function writeSettingsRecord(record) {
@@ -267,8 +275,10 @@ function saveSettings(update = {}) {
     personality,
     agentInstructions,
     wakeWord,
-    sttProvider: update.sttProvider === 'parakeet' ? 'parakeet' : current.sttProvider,
+    sttProvider: Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider,
     sttModel: update.sttModel === DEFAULT_SETTINGS.sttModel ? update.sttModel : current.sttModel,
+    sttEndpoint: typeof update.sttEndpoint === 'string' ? update.sttEndpoint.trim().slice(0, 1000) : current.sttEndpoint,
+    sttRegion: typeof update.sttRegion === 'string' ? update.sttRegion.trim().slice(0, 100) : current.sttRegion,
     githubCodexActorLogins: Array.isArray(update.githubCodexActorLogins)
       ? update.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
       : current.githubCodexActorLogins,
@@ -286,6 +296,11 @@ function saveSettings(update = {}) {
   if (update.clearApiKey) {
     delete next.encryptedApiKey;
   }
+  if (typeof update.sttCredential === 'string' && update.sttCredential.trim()) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
+    next.encryptedSttCredential = safeStorage.encryptString(update.sttCredential.trim()).toString('base64');
+  }
+  if (update.clearSttCredential) delete next.encryptedSttCredential;
 
   writeSettingsRecord(next);
   return publicSettings(next);
@@ -295,6 +310,15 @@ function readApiKey(record) {
   if (!record.encryptedApiKey || !safeStorage.isEncryptionAvailable()) return null;
   try {
     return safeStorage.decryptString(Buffer.from(record.encryptedApiKey, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
+function readSttCredential(record) {
+  if (!record.encryptedSttCredential || !safeStorage.isEncryptionAvailable()) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(record.encryptedSttCredential, 'base64'));
   } catch {
     return null;
   }
@@ -1408,16 +1432,23 @@ function voiceMarker(kind) {
 }
 
 function speechStatus() {
+  const settings = readSettingsRecord();
+  const descriptor = providerDescriptor(settings.sttProvider);
   let sttInstalled = false;
-  try {
-    const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
-    sttInstalled = marker.provider === 'parakeet' && marker.model === readSettingsRecord().sttModel;
-  } catch {}
+  if (descriptor.location === 'cloud') sttInstalled = Boolean(readSttCredential(settings));
+  else {
+    try {
+      const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
+      sttInstalled = marker.provider === 'parakeet' && marker.model === settings.sttModel;
+    } catch {}
+  }
   return {
     sttInstalled,
     ttsInstalled: fs.existsSync(voiceMarker('tts')),
-    sttModel: readSettingsRecord().sttModel,
-    sttProvider: readSettingsRecord().sttProvider,
+    sttModel: settings.sttModel,
+    sttProvider: settings.sttProvider,
+    sttLocation: descriptor.location,
+    sttProviderName: descriptor.name,
     ttsModel: DEFAULT_SETTINGS.ttsModel
   };
 }
@@ -1464,6 +1495,9 @@ async function ensureVoiceEnvironment() {
 async function installSpeechComponent(kind) {
   if (!['stt', 'tts'].includes(kind)) throw new Error('Unknown speech component.');
   stopSpeechWorker();
+  if (kind === 'stt' && providerDescriptor(readSettingsRecord().sttProvider).location === 'cloud') {
+    throw new Error('Cloud speech providers use the encrypted credential in Settings and do not install a local model.');
+  }
   const python = await ensureVoiceEnvironment();
   const packages = kind === 'stt'
     ? ['nemo_toolkit[asr]', 'huggingface-hub']
@@ -1501,6 +1535,39 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
   }
 }
 
+function activeSpeechVocabulary() {
+  return [
+    'SideTerm', 'DeepSeek', 'Strands', 'Codex', 'Parakeet', 'Pocket TTS', 'Qwen', 'vLLM',
+    ...mobileWorkspace.sessions.flatMap((session) => [session.title, session.agent, path.basename(session.cwd || '')])
+  ].filter(Boolean);
+}
+
+function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
+  let text = String(transcript.text || '').trim();
+  if (!text || transcript.noSpeechProbability > 0.72 || text.replace(/[^a-z0-9]/gi, '').length < 3) {
+    return { ignored: true, reason: 'No deliberate speech detected.' };
+  }
+  const wakeResult = applyWakeWord(text, settings.wakeWord, { allowWithoutWakeWord });
+  if (wakeResult.ignored) return wakeResult;
+  text = wakeResult.text;
+  const clarification = transcriptClarification(text, activeSpeechVocabulary(), { confidence: transcript.confidence });
+  if (clarification) {
+    const state = readAgentState();
+    addAgentMessage(state, 'assistant', clarification.prompt, { proactive: true, voiceSummary: clarification.prompt });
+    interactionManagerFor(state).create({
+      kind: 'supervisor_question',
+      prompt: clarification.prompt,
+      options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
+      priority: 0,
+      state: 'awaiting_answer'
+    });
+    writeAgentState(state);
+    broadcastAgentState();
+    return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider, clarification };
+  }
+  return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider };
+}
+
 async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWithoutWakeWord = false } = {}) {
   if (!speechStatus().sttInstalled) throw new Error('Install the speech-to-text model in Settings first.');
   if (speechTranscriptionInFlight) {
@@ -1508,6 +1575,20 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   }
   const bytes = Buffer.from(audioBytes);
   if (bytes.length < 1000 || bytes.length > 25 * 1024 * 1024) return { ignored: true, reason: 'Audio was empty or too large.' };
+  const settings = readSettingsRecord();
+  const descriptor = providerDescriptor(settings.sttProvider);
+  if (descriptor.location === 'cloud') {
+    speechTranscriptionInFlight = true;
+    try {
+      const transcript = await transcribeCloud(settings.sttProvider, bytes, {
+        credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
+        mimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
+      });
+      return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
+    } finally {
+      speechTranscriptionInFlight = false;
+    }
+  }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
@@ -1515,40 +1596,13 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
   speechTranscriptionInFlight = true;
   try {
-    const settings = readSettingsRecord();
     const transcript = await getSpeechWorker().request('transcribe', {
       model: settings.sttModel,
       input: inputPath,
       language: 'en',
       initialPrompt: `English conversation with a coding assistant. The wake phrase is "${settings.wakeWord || 'Hey Agent'}".`
     });
-    let text = String(transcript.text || '').trim();
-    if (!text || transcript.noSpeechProbability > 0.72 || text.replace(/[^a-z0-9]/gi, '').length < 3) {
-      return { ignored: true, reason: 'No deliberate speech detected.' };
-    }
-    const wakeResult = applyWakeWord(text, settings.wakeWord, { allowWithoutWakeWord });
-    if (wakeResult.ignored) return wakeResult;
-    text = wakeResult.text;
-    const vocabulary = [
-      'SideTerm', 'DeepSeek', 'Strands', 'Codex', 'Parakeet', 'Pocket TTS', 'Qwen', 'vLLM',
-      ...mobileWorkspace.sessions.flatMap((session) => [session.title, session.agent, path.basename(session.cwd || '')])
-    ].filter(Boolean);
-    const clarification = transcriptClarification(text, vocabulary, { confidence: transcript.confidence });
-    if (clarification) {
-      const state = readAgentState();
-      addAgentMessage(state, 'assistant', clarification.prompt, { proactive: true, voiceSummary: clarification.prompt });
-      interactionManagerFor(state).create({
-        kind: 'supervisor_question',
-        prompt: clarification.prompt,
-        options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
-        priority: 0,
-        state: 'awaiting_answer'
-      });
-      writeAgentState(state);
-      broadcastAgentState();
-      return { ignored: false, text, language: transcript.language, duration: transcript.duration, clarification };
-    }
-    return { ignored: false, text, language: transcript.language, duration: transcript.duration };
+    return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
   } finally {
     speechTranscriptionInFlight = false;
     try { fs.unlinkSync(inputPath); } catch {}
