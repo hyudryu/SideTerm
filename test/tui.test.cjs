@@ -26,3 +26,10 @@ test('submission keys require an explicitly selected TUI option', () => {
   assert.equal(canSubmitTuiKey(numbered, 'UP'), false);
   assert.equal(canSubmitTuiKey(selected, 'UP'), true);
 });
+
+test('checked controls are not mistaken for keyboard focus', () => {
+  const snapshot = tuiSnapshot('[x] Run tests\n[ ] Commit', 'terminal');
+  assert.equal(snapshot.options[0].checked, true);
+  assert.equal(snapshot.selectedIndex, -1);
+  assert.equal(canSubmitTuiKey(snapshot, 'ENTER'), false);
+});
