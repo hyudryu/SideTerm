@@ -73,6 +73,17 @@ class PendingInteractionManager {
     return interaction;
   }
 
+  restore(id) {
+    const interaction = this.interactions.find((item) => item.id === String(id));
+    if (!interaction) return null;
+    interaction.state = 'awaiting_answer';
+    interaction.answer = '';
+    interaction.answeredAt = 0;
+    this.activeInteractionId = interaction.id;
+    this.onChange(this.snapshot());
+    return interaction;
+  }
+
   cancel(id) {
     const interaction = this.interactions.find((item) => item.id === String(id));
     if (!interaction) return false;
