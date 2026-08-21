@@ -35,6 +35,9 @@ function structuredStateSufficient(question) {
 function structuredCollectionRequiresCompleteList(question) {
   const text = String(question || '');
   if (!/\b(?:sessions?|terminals?)\b/i.test(text) || /\b(?:count|how many|number of)\b/i.test(text)) return false;
+  if (/\b(?:which|what)\b/i.test(text)
+    && /\b(?:session|terminal)\b/i.test(text)
+    && /\bactive\b/i.test(text)) return false;
   return /\b(?:which|list|all|each|every|names?|titles?|summar(?:y|ies|ize[ds]?))\b/i.test(text);
 }
 
