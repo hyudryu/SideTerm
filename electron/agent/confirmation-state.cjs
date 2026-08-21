@@ -21,8 +21,34 @@ function retirePullRequestConfirmations(state, pullRequestUrl) {
   return retired;
 }
 
-function reconcileConfirmationInteractions(state) {
+function legacyApprovalInteraction(confirmation) {
+  const title = String(confirmation.title || confirmation.sessionId || 'this pending action').slice(0, 300);
+  return {
+    id: String(confirmation.id),
+    sessionId: String(confirmation.sessionId || '').slice(0, 100),
+    kind: 'approval',
+    prompt: `Approve the pending ${String(confirmation.kind || 'action').replace(/-/g, ' ')} for ${title}?`,
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+    priority: 0,
+    state: 'awaiting_answer',
+    createdAt: Number(confirmation.createdAt) || Date.now(),
+    answeredAt: 0,
+    answer: ''
+  };
+}
+
+function reconcileConfirmationInteractions(state, { migrateLegacy = false } = {}) {
   const removedIds = new Set();
+  let migrated = false;
+  if (migrateLegacy) {
+    const interactionIds = new Set((state.interactions || []).map((item) => String(item.id)));
+    for (const confirmation of state.confirmations || []) {
+      if (interactionIds.has(String(confirmation.id))) continue;
+      state.interactions.push(legacyApprovalInteraction(confirmation));
+      interactionIds.add(String(confirmation.id));
+      migrated = true;
+    }
+  }
   const approvalInteractionIds = new Set((state.interactions || [])
     .filter((item) => item.kind === 'approval')
     .map((item) => String(item.id)));
@@ -39,7 +65,7 @@ function reconcileConfirmationInteractions(state) {
     if (!paired) removedIds.add(String(interaction.id));
     return paired;
   });
-  if (!removedIds.size) return removedIds;
+  if (!removedIds.size && !migrated) return removedIds;
 
   for (const event of state.notifications || []) {
     if (!removedIds.has(String(event.payload?.interactionId || ''))) continue;
@@ -57,4 +83,4 @@ function reconcileConfirmationInteractions(state) {
   return removedIds;
 }
 
-module.exports = { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
+module.exports = { claimConfirmation, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
