@@ -56,7 +56,7 @@ const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
-const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('./perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('./perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
@@ -1148,7 +1148,9 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         && structuredCollectionRequiresCompleteList(question);
       return {
         summary: fitted.summary,
-        confidence: structuredStateSufficient(question) && !listIsIncomplete ? 0.9 : 0.7
+        confidence: structuredStateSufficient(question)
+          && structuredSessionSummaryAvailable(question, fitted.payload)
+          && !listIsIncomplete ? 0.9 : 0.7
       };
     },
     terminalText: session || activeTerminal || (sessionId && metadata) ? async () => {
