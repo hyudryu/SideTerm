@@ -47,12 +47,24 @@ test('vision refuses plaintext remote screenshot uploads', async () => {
   }), /must use HTTPS/);
 });
 
+test('vision does not follow screenshot upload redirects', async (context) => {
+  const originalFetch = global.fetch;
+  context.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return new Response('', { status: 307, headers: { Location: 'http://vision.example.test/upload' } });
+  };
+  await assert.rejects(analyzeScreenshot(Buffer.from('png'), {
+    endpoint: 'https://vision.example/v1/chat/completions', model: 'vision-model'
+  }), /307/);
+});
+
 test('vision sends a readable high-detail image only to the configured endpoint', async (context) => {
   const originalFetch = global.fetch;
   context.after(() => { global.fetch = originalFetch; });
   let request;
   global.fetch = async (url, options) => {
-    request = { url, body: JSON.parse(options.body) };
+    request = { url, redirect: options.redirect, body: JSON.parse(options.body) };
     return new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"Ready","confidence":0.95}' } }] }), {
       status: 200, headers: { 'Content-Type': 'application/json' }
     });
@@ -62,6 +74,7 @@ test('vision sends a readable high-detail image only to the configured endpoint'
   });
   assert.equal(result.summary, 'Ready');
   assert.equal(request.url, 'https://vision.example/v1/chat/completions');
+  assert.equal(request.redirect, 'manual');
   assert.match(request.body.messages[1].content[1].image_url.url, /^data:image\/png;base64,/);
   assert.equal(request.body.messages[1].content[1].image_url.detail, 'high');
 });

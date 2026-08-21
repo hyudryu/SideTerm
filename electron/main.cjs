@@ -326,6 +326,10 @@ function saveSettings(update = {}) {
   if (visionEnabled && visionUseSupervisorModel && (!apiUrl || !model)) {
     throw new Error('Set up the LLM Provider before enabling visual inspection with the supervisor model.');
   }
+  if (visionEnabled && visionUseSupervisorModel) {
+    const supervisorVisionEndpointError = visionEndpointConfigurationError(apiUrl);
+    if (supervisorVisionEndpointError) throw new Error(supervisorVisionEndpointError);
+  }
   if (visionEnabled && !visionUseSupervisorModel) {
     if (!visionApiUrl || !visionModel) throw new Error('Set a separate vision endpoint and model before enabling visual inspection.');
     compatibleCompletionsUrl(visionApiUrl);
@@ -1219,6 +1223,7 @@ function executeVoiceTerminalInput(input) {
 async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   const settings = readSettingsRecord();
   const session = sessionId ? sessions.get(sessionId) : null;
+  const activeTerminal = !sessionId && mobileWorkspace.activeId ? sessions.get(mobileWorkspace.activeId) : null;
   const metadata = sessionId ? mobileWorkspace.sessions.find((item) => item.id === sessionId) : null;
   if (sessionId && !session && !metadata) throw new Error('Session not found. Call list_sessions to get an exact session ID.');
   let capturedImage = null;
@@ -1262,20 +1267,26 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         sessionIndex.list()
       );
       const sessionCounts = workspaceSessions.reduce((counts, item) => {
+        const live = sessions.has(item.id);
+        const busy = live && Boolean(item.busy);
         counts.total += 1;
-        counts[item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped'] += 1;
+        counts[!live ? 'stopped' : busy ? 'running' : 'idle'] += 1;
         if (item.notified) counts.needsAttention += 1;
         return counts;
       }, { total: 0, running: 0, idle: 0, stopped: 0, needsAttention: 0 });
-      const listedSessions = sessionId ? [] : workspaceSessions.slice(0, 200).map((item) => ({
-        id: item.id,
-        title: item.title,
-        summary: String(item.summary || '').slice(0, 160),
-        busy: Boolean(item.busy),
-        status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
-        active: item.id === mobileWorkspace.activeId,
-        needsAttention: Boolean(item.notified)
-      }));
+      const listedSessions = sessionId ? [] : workspaceSessions.slice(0, 200).map((item) => {
+        const live = sessions.has(item.id);
+        const busy = live && Boolean(item.busy);
+        return {
+          id: item.id,
+          title: item.title,
+          summary: String(item.summary || '').slice(0, 160),
+          busy,
+          status: !live ? 'stopped' : busy ? 'running' : 'idle',
+          active: item.id === mobileWorkspace.activeId,
+          needsAttention: Boolean(item.notified)
+        };
+      });
       const fitted = fitSessionCollection({
         session: structuredSessionRecord({
           sessionId,
@@ -1297,8 +1308,8 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         confidence: structuredStateSufficient(question) && !listIsIncomplete ? 0.9 : 0.7
       };
     },
-    terminalText: session ? async () => {
-      const text = captureSessionScreen(session).slice(-20_000);
+    terminalText: session || activeTerminal ? async () => {
+      const text = captureSessionScreen(session || activeTerminal).slice(-20_000);
       return {
         summary: text,
         visibleText: text.split('\n').filter(Boolean).slice(-200),

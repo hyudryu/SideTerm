@@ -54,12 +54,19 @@ test('whole-window capture preserves the dashboard while masking sensitive overl
 test('collection status inspection includes the bounded live session list', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /const listedSessions = sessionId \? \[\] : workspaceSessions\.slice\(0, 200\)\.map/);
-  assert.match(main, /status: item\.busy \? 'running' : sessions\.has\(item\.id\) \? 'idle' : 'stopped'/);
+  assert.match(main, /const live = sessions\.has\(item\.id\);[\s\S]*const busy = live && Boolean\(item\.busy\)/);
+  assert.match(main, /status: !live \? 'stopped' : busy \? 'running' : 'idle'/);
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
   assert.match(main, /active: item\.id === mobileWorkspace\.activeId/);
   assert.match(main, /activeSessionId: mobileWorkspace\.activeId/);
   assert.match(main, /fitSessionCollection\(\{[\s\S]*sessionCollection: \{[\s\S]*\.\.\.sessionCounts/);
   assert.match(main, /session: structuredSessionRecord\(\{[\s\S]*metadata,[\s\S]*live: Boolean\(session\)/);
+});
+
+test('active terminal text is used before whole-window vision', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /const activeTerminal = !sessionId && mobileWorkspace\.activeId \? sessions\.get\(mobileWorkspace\.activeId\) : null/);
+  assert.match(main, /terminalText: session \|\| activeTerminal \? async \(\) => \{[\s\S]*captureSessionScreen\(session \|\| activeTerminal\)/);
 });
 
 test('persisted vision upload consent fails closed unless it is boolean true', () => {
