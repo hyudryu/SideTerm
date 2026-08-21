@@ -2847,6 +2847,11 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
 document.querySelector('#stt-provider').addEventListener('change', () => {
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = 'Credential cleared for provider change';
+  document.querySelector('#clear-stt-credential').hidden = true;
   document.querySelector('#stt-endpoint').value = '';
   document.querySelector('#stt-region').value = '';
   syncSttProviderFields();
