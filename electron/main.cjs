@@ -1438,6 +1438,27 @@ async function speakMobileVoiceUpdate(text) {
   await presentationCoordinator.present(text, { targets, opensReplyWindow: true });
 }
 
+async function requestVoiceActivationUpdate(targets) {
+  const settings = readSettingsRecord();
+  if (!settings.agentEnabled || !settings.apiUrl || !settings.model || !targets.length) return;
+  if (eventBusFor(readAgentState()).next()) {
+    await presentationCoordinator.present('I’ve got an update—one sec.', { targets, opensReplyWindow: false });
+    scheduleProactiveCatchUp();
+    return;
+  }
+  const acknowledgement = 'I’m checking the latest.';
+  const result = await chatWithSupervisor(
+    'Voice mode was just enabled. Give the user the latest useful status across active sessions. Be concise; if nothing needs attention, say they are caught up.',
+    {
+      synthetic: true,
+      notificationIds: [],
+      voice: true,
+      onAccepted: () => void presentationCoordinator.present(acknowledgement, { targets, opensReplyWindow: false })
+    }
+  );
+  if (result.speech) await presentationCoordinator.present(result.speech, { targets, opensReplyWindow: true });
+}
+
 async function runProactiveCatchUp() {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model) return 'skipped';
@@ -2387,8 +2408,15 @@ async function startMobileServer({ persist = true } = {}) {
         }
       }
       if (message.type === 'voice:mode') {
+        const wasEnabled = Boolean(client.sideTermVoiceMode);
         client.sideTermVoiceMode = Boolean(message.enabled);
-        if (client.sideTermVoiceMode) void warmTextToSpeech().catch(() => {});
+        if (client.sideTermVoiceMode) {
+          void warmTextToSpeech().catch(() => {});
+          if (!wasEnabled) {
+            const surface = ensureMobilePresentationSurface(client);
+            void requestVoiceActivationUpdate([surface.id]).catch(() => {});
+          }
+        }
         return;
       }
       if (message.type === 'voice:transcribe') {
@@ -2705,8 +2733,12 @@ function registerIpc() {
     String(payload.cycleId || '')
   ));
   ipcMain.on('agent:voice-mode', (_event, enabled) => {
+    const wasEnabled = supervisorVoiceMode;
     supervisorVoiceMode = Boolean(enabled);
-    if (supervisorVoiceMode) void warmTextToSpeech().catch(() => {});
+    if (supervisorVoiceMode) {
+      void warmTextToSpeech().catch(() => {});
+      if (!wasEnabled) void requestVoiceActivationUpdate(['desktop']).catch(() => {});
+    }
   });
   ipcMain.handle('agent:chat', (_event, payload) => {
     const voice = Boolean(payload?.voice);
