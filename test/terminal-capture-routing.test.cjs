@@ -87,6 +87,14 @@ test('capture lifetime locks session activation and terminal input', () => {
   assert.match(styles, /\.app-shell\.capture-locked \{ pointer-events: none; \}/);
 });
 
+test('capture-only fits do not resize the backing PTY', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /const terminalCaptureResizeTokens = new Map\(\)/);
+  assert.match(main, /terminalCaptureResizeTokens\.set\(session\.id, resizeToken\)[\s\S]*session\.fit\.fit\(\)/);
+  assert.match(main, /restoreCapturedTerminalLayout\(session\.id, resizeToken, restoreInteraction\)/);
+  assert.match(main, /terminal\.onResize\(\(\{ cols, rows \}\) => \{\s*if \(!terminalCaptureResizeTokens\.has\(id\)\) api\.resize\(id, cols, rows\)/);
+});
+
 test('active identity publishes immediately and stopped terminals retain local text routing', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
