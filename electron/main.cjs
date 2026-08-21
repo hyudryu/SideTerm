@@ -1152,7 +1152,9 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
       return {
         summary: text,
         visibleText: text.split('\n').filter(Boolean).slice(-200),
-        confidence: text ? requiresVisualEvidence(question) ? 0.6 : 0.9 : 0
+        confidence: text
+          ? requiresVisualEvidence(question) || structuredCollectionRequiresCompleteList(question) ? 0.6 : 0.9
+          : 0
       };
     } : null,
     nativeVision: settings.visionUseSupervisorModel ? async () => analyzeScreenshot(await screenshot(), visionOptions(false)) : null,

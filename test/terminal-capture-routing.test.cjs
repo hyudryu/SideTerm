@@ -69,6 +69,21 @@ test('active terminal text is used before whole-window vision', () => {
   assert.match(main, /terminalText: session \|\| activeTerminal \? async \(\) => \{[\s\S]*captureSessionScreen\(session \|\| activeTerminal\)/);
 });
 
+test('capture routing keeps incomplete collection questions away from terminal text', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /requiresVisualEvidence\(question\) \|\| structuredCollectionRequiresCompleteList\(question\) \? 0\.6 : 0\.9/);
+});
+
+test('capture lifetime locks session activation and terminal input', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
+  assert.match(main, /function lockTerminalCaptureInteraction\(\) \{[\s\S]*classList\.add\('capture-locked'\)[\s\S]*classList\.remove\('capture-locked'\)/);
+  assert.match(main, /function activateSession\(id\) \{\s*if \(terminalCaptureRestore\) return;/);
+  assert.match(main, /terminal\.onData\(\(data\) => \{\s*if \(!session\.exited && !terminalCaptureRestore\)/);
+  assert.match(main, /window\.addEventListener\('keydown', \(event\) => \{\s*if \(terminalCaptureRestore\)/);
+  assert.match(styles, /\.app-shell\.capture-locked \{ pointer-events: none; \}/);
+});
+
 test('persisted vision upload consent fails closed unless it is boolean true', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /visionEnabled: parsed\.visionEnabled === true/);

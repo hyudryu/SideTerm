@@ -24,6 +24,8 @@ button { font: inherit; }
   transition: grid-template-columns 180ms cubic-bezier(.7, 0, .3, 1);
 }
 
+.app-shell.capture-locked { pointer-events: none; }
+
 .app-shell.sidebar-collapsed { grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr); }
 
 .sidebar {

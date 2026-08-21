@@ -1525,6 +1525,11 @@ function restoreTerminalVisualCapture() {
   restore?.();
 }
 
+function lockTerminalCaptureInteraction() {
+  shellElement.classList.add('capture-locked');
+  return () => shellElement.classList.remove('capture-locked');
+}
+
 function hideNonterminalCaptureOverlays({ hideDashboard = true } = {}) {
   const dashboardWasHidden = supervisorDashboard.hidden;
   const supervisorWasActive = shellElement.classList.contains('supervisor-active');
@@ -1565,9 +1570,11 @@ async function handleAgentAction({ requestId, type, payload }) {
       const session = sessions.get(payload.sessionId);
       if (!session) throw new Error('The session is no longer available.');
       const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreInteraction = lockTerminalCaptureInteraction();
       terminalCaptureRestore = () => {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         sessions.get(activeId)?.pane.classList.add('active');
+        restoreInteraction();
         restoreOverlays();
         requestAnimationFrame(fitActive);
       };
@@ -1593,7 +1600,9 @@ async function handleAgentAction({ requestId, type, payload }) {
     if (type === 'prepare-window-capture') {
       restoreTerminalVisualCapture();
       const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false });
+      const restoreInteraction = lockTerminalCaptureInteraction();
       terminalCaptureRestore = () => {
+        restoreInteraction();
         restoreOverlays();
         requestAnimationFrame(fitActive);
       };
@@ -2206,6 +2215,7 @@ function renderSessionItem(session) {
 }
 
 function activateSession(id) {
+  if (terminalCaptureRestore) return;
   const next = sessions.get(id);
   if (!next) return;
   if (supervisorDashboardActive) closeAgentPanel();
@@ -2571,7 +2581,7 @@ async function addSession(cwd, options = {}) {
   }
 
   terminal.onData((data) => {
-    if (!session.exited) {
+    if (!session.exited && !terminalCaptureRestore) {
       trackTerminalInput(session, data);
       api.write(id, data);
     }
@@ -3120,6 +3130,10 @@ api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (terminalCaptureRestore) {
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && sessionList.querySelector('.group-sort[aria-expanded="true"]')) {
     event.preventDefault();
     closeGroupSortMenus();
