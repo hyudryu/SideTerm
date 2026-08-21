@@ -72,6 +72,7 @@ let settings = {
   apiUrl: '',
   model: '',
   agentEnabled: false,
+  supervisorBackgroundEnabled: true,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
@@ -242,6 +243,10 @@ document.querySelector('#app').innerHTML = `
               <label class="toggle-row">
                 <span><strong>Enable Supervisor <em class="llm-required-label">LLM required</em></strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
                 <input id="agent-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row">
+                <span><strong>Keep running in background</strong><small>Closing the window keeps monitoring active in the tray. SideTerm does not start at login.</small></span>
+                <input id="supervisor-background-enabled" type="checkbox"><i></i>
               </label>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
@@ -421,6 +426,7 @@ function populateSettingsPanel() {
   document.querySelector('#ai-api-url').value = settings.apiUrl || '';
   document.querySelector('#ai-model').value = settings.model;
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
+  document.querySelector('#supervisor-background-enabled').checked = settings.supervisorBackgroundEnabled !== false;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
   document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
@@ -486,6 +492,7 @@ function settingsPayload() {
     apiUrl: document.querySelector('#ai-api-url').value,
     model: document.querySelector('#ai-model').value,
     agentEnabled: document.querySelector('#agent-enabled').checked,
+    supervisorBackgroundEnabled: document.querySelector('#supervisor-background-enabled').checked,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
     githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
