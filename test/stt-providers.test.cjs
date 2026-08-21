@@ -77,6 +77,23 @@ test('Google joins every final recognition segment', async (context) => {
   assert.equal(result.confidence, 0.9);
 });
 
+test('Azure labels canonical WAV input with its required PCM format', async (context) => {
+  const originalFetch = global.fetch;
+  let request;
+  context.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => {
+    request = { url: String(url), headers: options.headers };
+    return new Response(JSON.stringify({ DisplayText: 'Run the tests' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    });
+  };
+  const result = await transcribeCloud('azure', Buffer.from('pcm wav'), {
+    credential: 'secret', endpoint: 'https://westus.example.test/recognize', mimeType: 'audio/wav', timeoutMs: 1000
+  });
+  assert.equal(result.text, 'Run the tests');
+  assert.equal(request.headers['Content-Type'], 'audio/wav; codecs=audio/pcm; samplerate=16000');
+});
+
 test('cloud transcription aborts a stalled provider request', async (context) => {
   const originalFetch = global.fetch;
   context.after(() => { global.fetch = originalFetch; });
