@@ -71,6 +71,7 @@ test('final catch-up may ask what to do next', () => {
 test('proactive enrichment yields to higher-priority user work', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /if \(result\.needsEnrichment\) \{[\s\S]*?notificationIds: \[event\.id\],[\s\S]*?interruptible: true/);
+  assert.match(main, /\.catch\(\(\) => \{\s*if \(releaseSupervisorEventClaim\(event\.id\)\) queueMicrotask\(scheduleProactiveCatchUp\)/);
 });
 
 test('dashboard and proactive catch-up share the same persisted event claim', () => {
