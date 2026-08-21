@@ -1599,8 +1599,12 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
     const clarification = transcriptClarification(text, vocabulary, { confidence: transcript.confidence });
     if (clarification) {
       const state = readAgentState();
-      addAgentMessage(state, 'assistant', clarification.prompt, { proactive: true, voiceSummary: clarification.prompt });
-      interactionManagerFor(state).create({
+      addAgentMessage(state, 'assistant', clarification.prompt, {
+        proactive: true,
+        voiceSummary: clarification.prompt,
+        desktopSpeechPresented: supervisorVoiceMode
+      });
+      const interaction = interactionManagerFor(state).create({
         kind: 'supervisor_question',
         prompt: clarification.prompt,
         options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
@@ -1609,7 +1613,10 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
       });
       writeAgentState(state);
       broadcastAgentState();
-      return { ignored: false, text, language: transcript.language, duration: transcript.duration, clarification };
+      return {
+        ignored: false, text, language: transcript.language, duration: transcript.duration,
+        clarification: { ...clarification, interactionId: interaction.id }
+      };
     }
     return { ignored: false, text, language: transcript.language, duration: transcript.duration };
   } finally {
