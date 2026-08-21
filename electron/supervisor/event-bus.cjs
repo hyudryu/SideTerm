@@ -120,6 +120,20 @@ class PriorityEventBus {
     this.onChange(this.events);
     return event;
   }
+
+  transitionForInteraction(interactionId, state) {
+    const id = String(interactionId || '');
+    if (!id) return 0;
+    let changed = 0;
+    for (const event of this.events) {
+      if (String(event.payload?.interactionId || '') !== id) continue;
+      event.state = state;
+      if (['acknowledged', 'superseded'].includes(state)) event.read = true;
+      changed += 1;
+    }
+    if (changed) this.onChange(this.events);
+    return changed;
+  }
 }
 
 module.exports = {
