@@ -22,9 +22,13 @@ function requiresVisualEvidence(question) {
 
 function structuredStateSufficient(question) {
   const text = String(question || '').trim();
-  return Boolean(text
-    && !requiresVisualEvidence(text)
-    && /\b(?:supervisor|agent|sessions?|status|busy|working|active interaction|needs input|pending)\b/i.test(text));
+  if (!text || requiresVisualEvidence(text)) return false;
+  if (/\bactive interaction\b/i.test(text)) return true;
+  if (/(?:\b(?:supervisor|agent)\b[^?.]*\bstatus\b|\bstatus\b[^?.]*\b(?:supervisor|agent)\b)/i.test(text)) return true;
+  if (!/\bsessions?\b/i.test(text)) return false;
+  if (/\bsessions\b/i.test(text)
+    && /\b(?:list|count|how many|status|busy|working|running|idle|active|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text)) return true;
+  return /\b(?:status|busy|working|idle|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text);
 }
 
 class PerceptionRouter {
