@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('../electron/perception/credentials.cjs');
 
@@ -13,4 +15,9 @@ test('remote vision endpoints require encrypted transport', () => {
   assert.equal(visionEndpointConfigurationError('https://vision.example.test/v1'), '');
   assert.equal(visionEndpointConfigurationError('http://127.0.0.1:9000/v1'), '');
   assert.equal(visionEndpointConfigurationError('http://localhost:9000/v1'), '');
+});
+
+test('enabling supervisor-model vision validates the supervisor endpoint', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /if \(visionEnabled && visionUseSupervisorModel\) \{[\s\S]*visionEndpointConfigurationError\(apiUrl\)/);
 });

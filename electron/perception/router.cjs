@@ -17,7 +17,7 @@ function normalizePerception(value = {}, source = 'unknown') {
 }
 
 function requiresVisualEvidence(question) {
-  return /\b(?:background|bold|color|colour|contrast|dark|font|foreground|highlight(?:ed)?|icon|image|italic|layout|light|look(?:s|ing)?|position|screenshot|selected|selection|style|styled|styling|theme|underline|visible|visual|red|green|blue)\b/i.test(String(question || ''));
+  return /\b(?:bold|color|colour|contrast|dark|font|highlight(?:ed)?|icon|image|italic|layout|light|look(?:s|ing)?|position|screenshot|selected|selection|style|styled|styling|theme|underline|visible|visual|red|green|blue)\b/i.test(String(question || ''));
 }
 
 function structuredStateSufficient(question) {
