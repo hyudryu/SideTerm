@@ -25,8 +25,8 @@ function tuiSnapshot(value, terminalId = '') {
 
 function canSubmitTuiKey(snapshot, key) {
   const normalized = String(key || '').toUpperCase();
-  if (!['ENTER', 'SPACE'].includes(normalized)) return true;
-  return Boolean(snapshot && snapshot.confidence >= 0.8 && snapshot.selectedIndex >= 0);
+  return Object.hasOwn(NAMED_KEYS, normalized)
+    && Boolean(snapshot && snapshot.confidence >= 0.8 && snapshot.selectedIndex >= 0);
 }
 
 function selectionKeys(snapshot, targetIndex) {
