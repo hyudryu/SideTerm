@@ -23,5 +23,6 @@ test('submission keys require an explicitly selected TUI option', () => {
   assert.equal(canSubmitTuiKey(numbered, 'ENTER'), false);
   assert.equal(canSubmitTuiKey(bullet, 'SPACE'), false);
   assert.equal(canSubmitTuiKey(selected, 'ENTER'), true);
-  assert.equal(canSubmitTuiKey(numbered, 'UP'), true);
+  assert.equal(canSubmitTuiKey(numbered, 'UP'), false);
+  assert.equal(canSubmitTuiKey(selected, 'UP'), true);
 });

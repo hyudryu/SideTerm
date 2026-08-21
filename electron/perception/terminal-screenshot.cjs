@@ -6,9 +6,13 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function terminalViewportText(text, rows = 30) {
+  return cleanTerminalText(text).split('\n').slice(-rows).join('\n').slice(-30_000);
+}
+
 function terminalScreenshotHtml(text, title = 'Terminal') {
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0c0c0c;color:#f2f2f2;font:16px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace}header{height:44px;box-sizing:border-box;padding:11px 16px;background:#202020;color:#d8d8d8;border-bottom:1px solid #383838;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}pre{box-sizing:border-box;margin:0;height:calc(100% - 44px);padding:14px 16px;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><header>${escapeHtml(title)}</header><pre>${escapeHtml(cleanTerminalText(text).slice(-30_000))}</pre></body></html>`;
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0c0c0c;color:#f2f2f2;font:16px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace}header{height:44px;box-sizing:border-box;padding:11px 16px;background:#202020;color:#d8d8d8;border-bottom:1px solid #383838;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}pre{box-sizing:border-box;margin:0;height:calc(100% - 44px);padding:14px 16px;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><header>${escapeHtml(title)}</header><pre>${escapeHtml(terminalViewportText(text))}</pre></body></html>`;
 }
 
 async function captureTerminalScreenshot(BrowserWindowClass, text, title) {
@@ -26,4 +30,4 @@ async function captureTerminalScreenshot(BrowserWindowClass, text, title) {
   }
 }
 
-module.exports = { captureTerminalScreenshot, escapeHtml, terminalScreenshotHtml };
+module.exports = { captureTerminalScreenshot, escapeHtml, terminalScreenshotHtml, terminalViewportText };
