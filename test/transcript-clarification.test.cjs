@@ -21,3 +21,9 @@ test('ordinary confident transcripts continue without clarification', () => {
 test('high-confidence ordinary words are not fuzzily rewritten as product names', () => {
   assert.equal(transcriptClarification('Please review the code', ['Codex'], { confidence: 0.96 }), null);
 });
+
+test('confidence-less provider transcripts are not treated as uncertain', () => {
+  assert.equal(transcriptClarification('Please review the code', ['Codex'], {
+    allowMissingConfidenceFuzzy: false
+  }), null);
+});

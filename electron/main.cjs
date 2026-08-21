@@ -402,7 +402,11 @@ function saveSettings(update = {}) {
   }
   if (update.clearHarnessBridgeToken) delete next.encryptedHarnessBridgeToken;
 
+  const releaseLocalStt = sttProviderChanged
+    && providerDescriptor(current.sttProvider).location === 'local'
+    && providerDescriptor(next.sttProvider).location === 'cloud';
   writeSettingsRecord(next);
+  if (releaseLocalStt) stopSpeechWorker();
   return publicSettings(next);
 }
 
@@ -2058,7 +2062,10 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
   const wakeResult = applyWakeWord(text, settings.wakeWord, { allowWithoutWakeWord });
   if (wakeResult.ignored) return wakeResult;
   text = wakeResult.text;
-  const clarification = transcriptClarification(text, activeSpeechVocabulary(), { confidence: transcript.confidence });
+  const clarification = transcriptClarification(text, activeSpeechVocabulary(), {
+    confidence: transcript.confidence,
+    allowMissingConfidenceFuzzy: transcript.provider === 'parakeet'
+  });
   if (clarification) {
     const state = readAgentState();
     addAgentMessage(state, 'assistant', clarification.prompt, {
