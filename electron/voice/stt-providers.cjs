@@ -109,7 +109,13 @@ async function transcribeOpenAi(audio, options) {
   const body = await checkedJson(await fetch(endpoint, {
     method: 'POST', headers: { Authorization: `Bearer ${options.credential}` }, body: form, signal: options.signal
   }), 'OpenAI');
-  return { text: String(body.text || ''), confidence: Number(body.confidence), language: options.language || 'en-US', provider: 'openai' };
+  const confidence = typeof body.confidence === 'number' ? body.confidence : NaN;
+  return {
+    text: String(body.text || ''),
+    ...(Number.isFinite(confidence) ? { confidence } : {}),
+    language: options.language || 'en-US',
+    provider: 'openai'
+  };
 }
 
 function awsCredentials(value) {
