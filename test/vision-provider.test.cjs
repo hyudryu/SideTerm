@@ -31,7 +31,7 @@ test('vision permits a keyless local endpoint and aborts stalled requests', asyn
   }), /timed out/);
 });
 
-test('vision sends a low-detail image only to the configured endpoint', async (context) => {
+test('vision sends a readable high-detail image only to the configured endpoint', async (context) => {
   const originalFetch = global.fetch;
   context.after(() => { global.fetch = originalFetch; });
   let request;
@@ -47,5 +47,5 @@ test('vision sends a low-detail image only to the configured endpoint', async (c
   assert.equal(result.summary, 'Ready');
   assert.equal(request.url, 'https://vision.example/v1/chat/completions');
   assert.match(request.body.messages[1].content[1].image_url.url, /^data:image\/png;base64,/);
-  assert.equal(request.body.messages[1].content[1].image_url.detail, 'low');
+  assert.equal(request.body.messages[1].content[1].image_url.detail, 'high');
 });

@@ -47,7 +47,7 @@ async function analyzeScreenshot(image, options = {}) {
                 role: 'user',
                 content: [
                   { type: 'text', text: String(options.question || 'Describe the visible application state.').slice(0, 2000) },
-                  { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } }
+                  { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } }
                 ]
               }
             ]
