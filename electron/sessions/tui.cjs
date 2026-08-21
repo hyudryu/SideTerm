@@ -15,9 +15,10 @@ function tuiSnapshot(value, terminalId = '') {
     const match = line.match(/^\s*([>❯›]|\(\s*[xX ]?\s*\)|\[\s*[xX ]?\s*\]|\d+[.)])\s+(.{1,300})$/u);
     if (!match) continue;
     const index = options.length;
-    const selected = /^[>❯›]$/u.test(match[1]) || /[xX]/.test(match[1]);
+    const selected = /^[>❯›]$/u.test(match[1]);
+    const checked = /[xX]/.test(match[1]);
     if (selected) selectedIndex = index;
-    options.push({ index, label: match[2].trim(), selected });
+    options.push({ index, label: match[2].trim(), selected, checked });
   }
   const confidence = options.length >= 2 ? (selectedIndex >= 0 ? 0.98 : 0.82) : 0;
   return { terminalId: String(terminalId), text, selectedIndex, options, confidence };
