@@ -53,12 +53,14 @@ test('whole-window capture preserves the dashboard while masking sensitive overl
 
 test('collection status inspection includes the bounded live session list', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(main, /const listedSessions = sessionId \? \[\] : workspaceSessions\.slice\(0, 200\)\.map/);
+  assert.match(main, /const listedSessions = sessionId \? \[\] : collectionCandidates\.slice\(0, 200\)\.map/);
   assert.match(main, /const live = sessions\.has\(item\.id\);[\s\S]*const busy = live && Boolean\(item\.busy\)/);
   assert.match(main, /status: !live \? 'stopped' : busy \? 'running' : 'idle'/);
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
   assert.match(main, /active: item\.id === mobileWorkspace\.activeId/);
   assert.match(main, /activeSessionId: mobileWorkspace\.activeId/);
+  assert.match(main, /const activeWorkspaceSession = workspaceSessions\.find\(\(item\) => item\.id === mobileWorkspace\.activeId\)/);
+  assert.match(main, /\[activeWorkspaceSession, \.\.\.workspaceSessions\.filter/);
   assert.match(main, /fitSessionCollection\(\{[\s\S]*sessionCollection: \{[\s\S]*\.\.\.sessionCounts/);
   assert.match(main, /session: structuredSessionRecord\(\{[\s\S]*metadata,[\s\S]*live: Boolean\(session\)/);
 });
@@ -88,7 +90,10 @@ test('capture lifetime locks session activation and terminal input', () => {
 test('active identity publishes immediately and stopped terminals retain local text routing', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(renderer, /function activateSession\(id\) \{[\s\S]*activeId = id;[\s\S]*persistWorkspaceNow\(\);/);
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
+  assert.match(renderer, /function activateSession\(id\) \{[\s\S]*activeId = id;[\s\S]*updateMobileActiveSession\(activeId\);[\s\S]*schedulePersist\(\);/);
+  assert.match(preload, /updateMobileActiveSession: \(activeId\) => ipcRenderer\.send\('mobile:update-active-session', activeId\)/);
+  assert.match(main, /ipcMain\.on\('mobile:update-active-session'[\s\S]*mobileWorkspace = \{ \.\.\.mobileWorkspace, activeId \}/);
   assert.match(renderer, /type === 'read-terminal-text'[\s\S]*terminalHistory\(session\.terminal\)\.slice\(-20_000\)/);
   assert.match(main, /session \|\| activeTerminal \|\| \(sessionId && metadata\) \? async \(\) =>/);
   assert.match(main, /requestRendererAction\('read-terminal-text', \{ sessionId \}\)/);

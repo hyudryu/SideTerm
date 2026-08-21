@@ -2249,7 +2249,8 @@ function activateSession(id) {
     : `${next.shell} · ${next.cwd}`;
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
-  persistWorkspaceNow();
+  api.updateMobileActiveSession(activeId);
+  schedulePersist();
   requestAnimationFrame(() => {
     fitSession(next);
     next.terminal.focus();

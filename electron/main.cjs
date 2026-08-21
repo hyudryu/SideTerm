@@ -1113,7 +1113,11 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         if (item.notified) counts.needsAttention += 1;
         return counts;
       }, { total: 0, running: 0, idle: 0, stopped: 0, needsAttention: 0 });
-      const listedSessions = sessionId ? [] : workspaceSessions.slice(0, 200).map((item) => {
+      const activeWorkspaceSession = workspaceSessions.find((item) => item.id === mobileWorkspace.activeId);
+      const collectionCandidates = activeWorkspaceSession
+        ? [activeWorkspaceSession, ...workspaceSessions.filter((item) => item.id !== activeWorkspaceSession.id)]
+        : workspaceSessions;
+      const listedSessions = sessionId ? [] : collectionCandidates.slice(0, 200).map((item) => {
         const live = sessions.has(item.id);
         const busy = live && Boolean(item.busy);
         return {
@@ -2977,6 +2981,13 @@ function registerIpc() {
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
     reconcileWorkspaceAttention();
+    broadcastMobileSnapshot();
+    broadcastAgentState();
+  });
+  ipcMain.on('mobile:update-active-session', (_event, value) => {
+    const activeId = String(value || '').slice(0, 100);
+    if (activeId && !sessions.has(activeId) && !mobileWorkspace.sessions.some((item) => item.id === activeId)) return;
+    mobileWorkspace = { ...mobileWorkspace, activeId };
     broadcastMobileSnapshot();
     broadcastAgentState();
   });

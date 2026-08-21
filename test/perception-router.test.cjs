@@ -138,6 +138,9 @@ test('truncated collections lower confidence only when the full member list is r
   assert.equal(structuredCollectionRequiresCompleteList('How many terminals are active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('Which session is active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('What is the active terminal?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('Summarize this session.'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('What is this session title?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('Summarize these sessions.'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which sessions are active?'), true);
   assert.equal(structuredCollectionRequiresCompleteList('List all terminal names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('List all session names'), true);
