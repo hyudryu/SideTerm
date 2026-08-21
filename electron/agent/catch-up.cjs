@@ -53,4 +53,8 @@ function isNoUpdateResponse(value) {
   return String(value || '').trim().replace(/[.!]+$/, '').toUpperCase() === 'NO_UPDATE';
 }
 
-module.exports = { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications };
+function shouldScheduleWorkspaceCatchUp({ addedCount = 0, unreadCount = 0, initialized = false } = {}) {
+  return addedCount > 0 || (!initialized && unreadCount > 0);
+}
+
+module.exports = { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };

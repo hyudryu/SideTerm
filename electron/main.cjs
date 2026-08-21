@@ -9,7 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
-const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications } = require('./agent/catch-up.cjs');
+const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -60,6 +60,7 @@ let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
 let mobileWorkspace = { groups: [], sessions: [] };
+let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
 let agentChatInFlight = false;
 let agentStatus = 'idle';
@@ -435,10 +436,14 @@ function reconcileWorkspaceAttention() {
     createId: () => crypto.randomUUID(),
     contextForSession: (id) => captureSessionScreen(sessions.get(id))
   });
-  if (added.length) {
-    writeAgentState(state);
-    scheduleProactiveCatchUp();
-  }
+  if (added.length) writeAgentState(state);
+  const schedule = shouldScheduleWorkspaceCatchUp({
+    addedCount: added.length,
+    unreadCount: pendingNotifications(state.notifications).length,
+    initialized: workspaceAttentionInitialized
+  });
+  workspaceAttentionInitialized = true;
+  if (schedule) scheduleProactiveCatchUp();
   return added;
 }
 
@@ -584,14 +589,7 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
     return;
   }
   try {
-    const candidates = Array.isArray(details.links) ? details.links.filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(url)) : [];
-    let url;
-    try {
-      url = await discoverPullRequest(details.cwd || os.homedir());
-    } catch {
-      url = candidates.at(-1);
-    }
-    if (!url) return;
+    const url = await discoverPullRequest(details.cwd || os.homedir());
     const alreadyQueued = readAgentState().pullRequests.some((pull) => pull.url === url);
     const snapshot = await monitorPullRequest(url, sessionId, { notify: false });
     if (!alreadyQueued) {

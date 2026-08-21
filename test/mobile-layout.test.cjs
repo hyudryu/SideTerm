@@ -18,3 +18,8 @@ test('mobile viewport keeps the device scale and allows safe-area layout', () =>
   assert.match(html, /name="viewport"[^>]*width=device-width[^>]*initial-scale=1[^>]*viewport-fit=cover/i);
   assert.doesNotMatch(html, /user-scalable\s*=\s*no|maximum-scale\s*=\s*1/i);
 });
+
+test('mobile voice mode is reannounced after a WebSocket reconnect', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true \}\)/);
+});

@@ -201,7 +201,7 @@ async function fetchPullRequest(value) {
 }
 
 async function discoverPullRequest(cwd) {
-  const output = await runGh(['pr', 'view', '--json', 'url', '--jq', '.url'], { cwd, owner: githubRepositoryOwner(cwd) });
+  const output = await runGh(['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'], { cwd, owner: githubRepositoryOwner(cwd) });
   return parsePullRequestUrl(output.trim()).url;
 }
 

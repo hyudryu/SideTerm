@@ -159,6 +159,7 @@ export function parseSavedWorkspace(raw) {
     }
 
     return {
+      savedAt: Number.isFinite(value.savedAt) && value.savedAt > 0 ? value.savedAt : 0,
       groups,
       sessions,
       activeId: typeof value.activeId === 'string' ? value.activeId : null,
@@ -169,4 +170,10 @@ export function parseSavedWorkspace(raw) {
   } catch {
     return null;
   }
+}
+
+export function newestSavedWorkspace(primary, fallback) {
+  if (!primary) return fallback || null;
+  if (!fallback) return primary;
+  return fallback.savedAt > primary.savedAt ? fallback : primary;
 }

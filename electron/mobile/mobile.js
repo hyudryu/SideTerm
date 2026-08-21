@@ -334,6 +334,7 @@ function connect() {
     connectionDot.classList.add('online');
     connectionDetail.textContent = 'Connected securely';
     catchupRequested = false;
+    if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true });
   });
   socket.addEventListener('message', (event) => {
     let message;

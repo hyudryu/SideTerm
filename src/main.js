@@ -3,7 +3,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isBareAgentLaunchCommand, isForegroundSession, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
+import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
 import { sessionDisplayLabels } from './session-labels.js';
 import {
@@ -16,6 +17,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
   reorderGroup,
@@ -42,8 +44,10 @@ const GROUP_SORT_OPTIONS = [
   { value: 'name', label: 'Name', initialDirection: 'asc' }
 ];
 const sessions = new Map();
-const restoredWorkspace = parseSavedWorkspace(api.getWorkspaceSync())
-  ?? parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY));
+const restoredWorkspace = newestSavedWorkspace(
+  parseSavedWorkspace(api.getWorkspaceSync()),
+  parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY))
+);
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -755,6 +759,11 @@ function armAiSummaryTimer(session, mode, delayMs) {
 
 function scheduleAiSummary(session) {
   if (sessions.get(session.id) !== session || !settings.llmEnabled || !settings.apiUrl || !settings.model || session.exited || !session.hasUserActivity) return;
+  if (session.aiSummaryFailureCount >= MAX_AI_SUMMARY_FAILURES) {
+    if (session.aiSummaryFailureRevision === session.contextRevision) return;
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
+  }
   if (!session.aiInitialSummaryDone) {
     if (settings.aiInitialContextEnabled) {
       armAiSummaryTimer(session, 'initial', AI_INITIAL_CONTEXT_DELAY_MS);
@@ -770,6 +779,8 @@ function scheduleAiSummary(session) {
 
 function syncAiContextSchedules() {
   for (const session of sessions.values()) {
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
     const preserveInitialDeadline = session.aiSummaryTimer
       && session.aiSummaryMode === 'initial'
       && settings.llmEnabled
@@ -823,6 +834,7 @@ async function requestAiSummary(session, mode) {
   const summarizedContext = session.context;
   const summarizedRevision = session.contextRevision;
   let completed = false;
+  let requestFailed = false;
   try {
     const result = await api.summarizeSession({
       context: summarizedContext,
@@ -830,17 +842,27 @@ async function requestAiSummary(session, mode) {
       requestTimeoutMs: AI_SUMMARY_REQUEST_TIMEOUT_MS
     });
     if (sessions.get(session.id) !== session || session.exited || !aiSummaryModeEnabled(mode)) return;
-    if (!result) return;
+    if (!result) {
+      requestFailed = true;
+      session.aiSummaryFailureCount += 1;
+      session.aiSummaryFailureRevision = summarizedRevision;
+      return;
+    }
     session.displayName = result.name;
     session.summary = result.summary;
     session.lastSummarizedRevision = summarizedRevision;
     session.aiErrorShown = false;
+    session.aiSummaryFailureCount = 0;
+    session.aiSummaryFailureRevision = 0;
     completed = true;
     aiSummaryCooldownUntil = 0;
     updateSessionItem(session);
     resortSessionGroupByName(session);
     schedulePersist();
   } catch (error) {
+    requestFailed = true;
+    session.aiSummaryFailureCount += 1;
+    session.aiSummaryFailureRevision = summarizedRevision;
     aiSummaryCooldownUntil = Date.now() + AI_SUMMARY_FAILURE_COOLDOWN_MS;
     if (!session.aiErrorShown) {
       session.aiErrorShown = true;
@@ -852,7 +874,13 @@ async function requestAiSummary(session, mode) {
     if (sessions.get(session.id) !== session || session.exited) return;
     if (!aiSummaryModeEnabled(mode)) return;
     if (!completed) {
-      armAiSummaryTimer(session, mode, Math.max(AI_SUMMARY_RETRY_DELAY_MS, aiSummaryCooldownUntil - Date.now()));
+      const retryDelay = aiSummaryRetryDelay(session.aiSummaryFailureCount, {
+        baseDelayMs: AI_SUMMARY_RETRY_DELAY_MS,
+        cooldownDelayMs: aiSummaryCooldownUntil - Date.now()
+      });
+      if (!requestFailed || retryDelay !== null) {
+        armAiSummaryTimer(session, mode, retryDelay ?? AI_SUMMARY_RETRY_DELAY_MS);
+      }
       return;
     }
     if (mode === 'initial') session.aiInitialSummaryDone = true;
@@ -947,6 +975,7 @@ function persistWorkspaceNow() {
   }));
   const serializedWorkspace = JSON.stringify({
     version: WORKSPACE_VERSION,
+    savedAt: Date.now(),
     groups: savedGroups,
     sessions: savedSessions,
     activeId,
@@ -2036,7 +2065,13 @@ function cycleSession(direction) {
 }
 
 function isSessionForeground(session) {
-  return !supervisorDashboardActive && session?.id === activeId;
+  return isForegroundSession({
+    sessionId: session?.id,
+    activeId,
+    dashboardActive: supervisorDashboardActive,
+    documentVisible: document.visibilityState === 'visible',
+    windowFocused: document.hasFocus()
+  });
 }
 
 function markSessionNotification(session) {
@@ -2251,6 +2286,8 @@ async function addSession(cwd, options = {}) {
     aiSummaryDueAt: 0,
     aiSummaryInFlight: false,
     aiErrorShown: false,
+    aiSummaryFailureCount: 0,
+    aiSummaryFailureRevision: 0,
     aiInitialSummaryDone: typeof options.aiInitialSummaryDone === 'boolean'
       ? options.aiInitialSummaryDone
       : Boolean(options.summary || restoringWorkspace),

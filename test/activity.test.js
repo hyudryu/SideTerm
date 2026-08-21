@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isForegroundSession, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -121,4 +121,12 @@ test('terminal status scanning follows the cursor instead of trailing blank view
 test('an unread bell notification cannot be auto-armed into a new activity cycle', () => {
   assert.equal(canAutoArmAgentActivity(false, false, true), true);
   assert.equal(canAutoArmAgentActivity(false, true, true), false);
+});
+
+test('an active terminal is foreground only while its window is visible and focused', () => {
+  const foreground = { sessionId: 'one', activeId: 'one', dashboardActive: false, documentVisible: true, windowFocused: true };
+  assert.equal(isForegroundSession(foreground), true);
+  assert.equal(isForegroundSession({ ...foreground, documentVisible: false }), false);
+  assert.equal(isForegroundSession({ ...foreground, windowFocused: false }), false);
+  assert.equal(isForegroundSession({ ...foreground, dashboardActive: true }), false);
 });

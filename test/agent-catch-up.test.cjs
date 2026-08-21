@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications } = require('../electron/agent/catch-up.cjs');
+const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
 
 test('catch-up processes newest unread notifications first without mutating input', () => {
   const notifications = [
@@ -46,4 +46,10 @@ test('automatic no-update responses are recognized without leaking into chat', (
 test('final catch-up may ask what to do next', () => {
   assert.match(catchUpPrompt({ id: 'last' }, 0), /final pending update/);
   assert.equal(catchUpPrompt(null), '');
+});
+
+test('persisted unread updates are scheduled once after workspace restoration', () => {
+  assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: false }), true);
+  assert.equal(shouldScheduleWorkspaceCatchUp({ unreadCount: 1, initialized: true }), false);
+  assert.equal(shouldScheduleWorkspaceCatchUp({ addedCount: 1, unreadCount: 1, initialized: true }), true);
 });

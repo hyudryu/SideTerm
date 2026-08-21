@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { aiSummaryRetryDelay, MAX_AI_SUMMARY_FAILURES } from '../src/ai-summary.js';
+
+test('AI summary retries back off and stop after a bounded failure count', () => {
+  assert.equal(aiSummaryRetryDelay(1, { baseDelayMs: 30_000 }), 30_000);
+  assert.equal(aiSummaryRetryDelay(2, { baseDelayMs: 30_000 }), 60_000);
+  assert.equal(aiSummaryRetryDelay(MAX_AI_SUMMARY_FAILURES, { baseDelayMs: 30_000 }), null);
+});
+
+test('AI summary retry honors a longer provider cooldown', () => {
+  assert.equal(aiSummaryRetryDelay(1, { baseDelayMs: 30_000, cooldownDelayMs: 300_000 }), 300_000);
+});
