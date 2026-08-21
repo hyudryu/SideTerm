@@ -56,6 +56,8 @@ test('perception continues after null and failed preferred sources', async () =>
 
 test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresVisualEvidence('Which option is highlighted in red?'), true);
+  assert.equal(requiresVisualEvidence('Is the prompt bold?'), true);
+  assert.equal(requiresVisualEvidence('Is the terminal using a dark theme?'), true);
   assert.equal(requiresVisualEvidence('What command finished?'), false);
 });
 

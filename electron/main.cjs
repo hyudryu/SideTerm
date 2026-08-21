@@ -83,7 +83,7 @@ let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
-let mobileWorkspace = { groups: [], sessions: [] };
+let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
 let agentStatus = 'idle';
@@ -1105,6 +1105,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         summary: String(item.summary || '').slice(0, 160),
         busy: Boolean(item.busy),
         status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
+        active: item.id === mobileWorkspace.activeId,
         needsAttention: Boolean(item.notified)
       }));
       const fitted = fitSessionCollection({
@@ -1117,6 +1118,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         sessionCollection: {
           ...sessionCounts
         },
+        activeSessionId: mobileWorkspace.activeId,
         supervisorStatus: agentStatus,
         activeInteractionId: readAgentState().activeInteractionId
       }, listedSessions, { includeSessions: !sessionId });
@@ -2305,7 +2307,8 @@ function sanitizeMobileWorkspace(value) {
     notified: Boolean(session?.notified),
     busy: Boolean(session?.busy)
   })).filter((session) => session.id) : [];
-  return { groups, sessions: workspaceSessions };
+  const activeId = String(value?.activeId || '').slice(0, 100);
+  return { groups, sessions: workspaceSessions, activeId: workspaceSessions.some((session) => session.id === activeId) ? activeId : '' };
 }
 
 function mobileSessionSnapshot() {
