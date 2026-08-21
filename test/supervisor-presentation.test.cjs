@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PresentationCoordinator, deterministicPresentation } = require('../electron/supervisor/presentation.cjs');
+const { PresentationCoordinator, deterministicPresentation, presentationDelivered } = require('../electron/supervisor/presentation.cjs');
 
 test('deterministic presenter gives useful trusted updates', () => {
   assert.equal(deterministicPresentation({ kind: 'COMPLETED', title: 'Toolbar', summary: 'Tests pass.' }), 'Toolbar finished. Tests pass.');
@@ -34,4 +34,10 @@ test('presentation coordinator drops stale queued activation speech', async () =
   release();
   await Promise.all([first, stale]);
   assert.deepEqual(spoken, ['blocking']);
+});
+
+test('delivery succeeds only when a surface confirms presentation', () => {
+  assert.equal(presentationDelivered([{ status: 'fulfilled', value: true }]), true);
+  assert.equal(presentationDelivered([{ status: 'fulfilled', value: false }]), false);
+  assert.equal(presentationDelivered([{ status: 'rejected', reason: new Error('TTS failed') }]), false);
 });

@@ -14,6 +14,11 @@ function deterministicPresentation(event = {}) {
   }
 }
 
+function presentationDelivered(results) {
+  return Array.isArray(results)
+    && results.some((result) => result?.status === 'fulfilled' && result.value === true);
+}
+
 class PresentationCoordinator {
   constructor(options = {}) {
     this.surfaces = new Map();
@@ -46,4 +51,4 @@ class PresentationCoordinator {
   }
 }
 
-module.exports = { PresentationCoordinator, deterministicPresentation };
+module.exports = { PresentationCoordinator, deterministicPresentation, presentationDelivered };

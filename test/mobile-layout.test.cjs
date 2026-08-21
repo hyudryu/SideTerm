@@ -34,6 +34,8 @@ test('mobile activation completion waits for guarded speech delivery', () => {
   assert.match(main, /runProactiveCatchUp\(\{ taskId, targets, isCurrent \}\)/);
   assert.match(main, /await speechDelivery;[\s\S]*if \(voice && !speechDelivered\) throw staleActivationError\(\);[\s\S]*acknowledge\(\)/);
   assert.match(main, /requestVoiceActivationUpdate\([\s\S]*\.then\(\(completed\) => \{[\s\S]*completedMobileVoiceActivationIds\.set/);
+  assert.match(main, /return presentationDelivered\(results\) && activationStillCurrent/);
+  assert.match(main, /await speechDelivery;[\s\S]*acknowledge\(presentation\)/);
 });
 
 test('mobile creation and suppressed catch-up recover without a reload', () => {

@@ -47,7 +47,7 @@ const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
 const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
-const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
+const { deterministicPresentation, PresentationCoordinator, presentationDelivered } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
@@ -1571,7 +1571,7 @@ async function speakMobileVoiceUpdate(text, snapshot = voicePresentationSnapshot
     isCurrent: snapshot.isCurrent,
     opensReplyWindow: true
   });
-  return results.some((result) => result.status === 'fulfilled' && result.value === true);
+  return presentationDelivered(results);
 }
 
 function activationStillCurrent(targets, isCurrent) {
@@ -1585,12 +1585,16 @@ function staleActivationError() {
 async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled || !settings.apiUrl || !settings.model || !targets.length) return;
-  const present = (text, options = {}) => presentationCoordinator.present(text, { ...options, targets, isCurrent });
+  const present = async (text, options = {}) => presentationDelivered(
+    await presentationCoordinator.present(text, { ...options, targets, isCurrent })
+  );
   if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-  if (eventBusFor(readAgentState()).next()) {
+  let eventState = readAgentState();
+  if (eventBusFor(eventState).next(eventState.activeInteractionId)) {
     await present('I’ve got an update—one sec.', { opensReplyWindow: false });
     if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-    if (eventBusFor(readAgentState()).next()) {
+    eventState = readAgentState();
+    if (eventBusFor(eventState).next(eventState.activeInteractionId)) {
       const outcome = await runProactiveCatchUp({ taskId, targets, isCurrent });
       if (outcome === 'ran') return;
       if (outcome === 'failed') throw new Error('the queued update could not be processed');
@@ -1610,7 +1614,9 @@ async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } 
     }
   );
   if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-  if (result.speech) await present(result.speech, { opensReplyWindow: true });
+  if (!result.speech || !await present(result.speech, { opensReplyWindow: true })) {
+    throw new Error('the latest update could not be delivered');
+  }
 }
 
 async function requestVoiceActivationUpdate(targets, activation = {}) {
@@ -1620,12 +1626,12 @@ async function requestVoiceActivationUpdate(targets, activation = {}) {
   } catch (error) {
     if (error?.name === 'AbortError' || !activationStillCurrent(targets, activation.isCurrent)) return false;
     const reason = String(error?.message || error || 'unknown error').replace(/\s+/g, ' ').slice(0, 180);
-    await presentationCoordinator.present(`I couldn’t get the latest update. ${reason}.`, {
+    const results = await presentationCoordinator.present(`I couldn’t get the latest update. ${reason}.`, {
       targets,
       opensReplyWindow: true,
       isCurrent: activation.isCurrent
     });
-    return true;
+    return presentationDelivered(results) && activationStillCurrent(targets, activation.isCurrent);
   }
 }
 
@@ -1650,10 +1656,16 @@ async function runProactiveCatchUp(activation = {}) {
       if (!await speakMobileVoiceUpdate(text, voiceSnapshot)) speechDelivered = false;
     });
   };
-  const acknowledge = () => {
+  const acknowledge = (presentation = '') => {
     const completedState = readAgentState();
+    if (presentation) addAgentMessage(completedState, 'assistant', presentation, {
+      proactive: true,
+      voiceSummary: presentation,
+      desktopSpeechPresented: voice && supervisorVoiceMode
+    });
     eventBusFor(completedState).transition(event.id, 'acknowledged');
     writeAgentState(completedState);
+    broadcastAgentState();
   };
   try {
     const presentation = deterministicPresentation(event);
@@ -1696,18 +1708,11 @@ async function runProactiveCatchUp(activation = {}) {
       if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
       return 'ran';
     }
-    addAgentMessage(state, 'assistant', presentation, {
-      proactive: true,
-      voiceSummary: presentation,
-      desktopSpeechPresented: voice && supervisorVoiceMode
-    });
-    writeAgentState(state);
-    broadcastAgentState();
     if (voice) queueSpeech(presentation);
     else notifyHiddenSupervisorUpdate(presentation);
     await speechDelivery;
     if (voice && !speechDelivered) throw staleActivationError();
-    acknowledge();
+    acknowledge(presentation);
     const latest = readAgentState();
     if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
