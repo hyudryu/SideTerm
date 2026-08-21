@@ -114,6 +114,7 @@ let voiceTranscriptionInFlight = false;
 let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
+let voiceReplyInteractionId = '';
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -1515,13 +1516,13 @@ function closeAgentPanel() {
   });
 }
 
-async function submitAgentChat(text, { spokenRequest = false } = {}) {
+async function submitAgentChat(text, { spokenRequest = false, interactionId = '' } = {}) {
   const input = document.querySelector('#agent-chat-input');
   const prompt = String(text ?? input.value).trim();
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest });
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest, interactionId });
     renderAgentState(result.state);
     await queueAgentSpeech(result.speech || result.response);
   } catch (error) {
@@ -1534,6 +1535,20 @@ function restoreTerminalVisualCapture() {
   const restore = terminalCaptureRestore;
   terminalCaptureRestore = null;
   restore?.();
+}
+
+function waitForTerminalCaptureRepaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(done, 80);
+    if (document.visibilityState === 'visible') requestAnimationFrame(() => requestAnimationFrame(done));
+  });
 }
 
 async function handleAgentAction({ requestId, type, payload }) {
@@ -1557,8 +1572,8 @@ async function handleAgentAction({ requestId, type, payload }) {
         session.pane.classList.add('active');
         supervisorDashboard.hidden = true;
         shellElement.classList.remove('supervisor-active');
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         session.fit.fit();
+        await waitForTerminalCaptureRepaint();
         const rect = session.pane.getBoundingClientRect();
         if (rect.width < 1 || rect.height < 1) throw new Error('The terminal has no visible capture area.');
         api.resolveAgentAction(requestId, {
@@ -1758,12 +1773,15 @@ async function processVoiceUtterance(blob, durationMs) {
     }
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
+      voiceReplyInteractionId = transcript.clarification.interactionId || '';
       await queueAgentSpeech(transcript.clarification.prompt, { openReplyWindow: true });
       return;
     }
     voiceReplyUntil = 0;
+    const interactionId = voiceReplyInteractionId;
+    voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
-    await submitAgentChat(transcript.text, { spokenRequest: true });
+    await submitAgentChat(transcript.text, { spokenRequest: true, interactionId });
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   } finally {
@@ -1863,6 +1881,7 @@ function stopDesktopVoiceMode() {
   desktopVoiceMode = false;
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
+  voiceReplyInteractionId = '';
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;

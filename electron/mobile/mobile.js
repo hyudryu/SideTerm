@@ -50,6 +50,7 @@ let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
 let mobileSttLocation = 'local';
+let mobileVoiceInteractionId = '';
 let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
@@ -411,6 +412,11 @@ function connect() {
     if (message.type === 'voice:transcript') {
       mobileTranscriptionInFlight = false;
       if (!message.transcript.ignored) mobileReplyUntil = 0;
+      if (message.transcript.clarification?.interactionId) {
+        mobileVoiceInteractionId = message.transcript.clarification.interactionId;
+      } else if (!message.transcript.ignored) {
+        mobileVoiceInteractionId = '';
+      }
       document.querySelector('#mobile-wave-detail').textContent = message.transcript.ignored
         ? message.transcript.reason
         : message.transcript.text;
@@ -492,6 +498,7 @@ async function submitVoiceBlob(blob, duration) {
     data: bytesToBase64(bytes),
     mimeType: blob.type,
     allowWithoutWakeWord: Date.now() <= mobileReplyUntil,
+    interactionId: mobileVoiceInteractionId,
     sendToAgent: true,
     speakResponse: true
   });
@@ -576,6 +583,7 @@ function stopMobileVoice() {
   mobileVoiceMode = false;
   mobileTranscriptionInFlight = false;
   mobileReplyUntil = 0;
+  mobileVoiceInteractionId = '';
   send({ type: 'voice:mode', enabled: false });
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
