@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { analyzeScreenshot, parseStructuredPerception } = require('../electron/perception/vision-provider.cjs');
+const { MAX_VISION_RESPONSE_BYTES, analyzeScreenshot, parseStructuredPerception, readBoundedResponseText } = require('../electron/perception/vision-provider.cjs');
 
 test('vision output is normalized from JSON or safe non-JSON text', () => {
   assert.equal(parseStructuredPerception('{"summary":"Dialog","confidence":0.9}').summary, 'Dialog');
@@ -45,6 +45,17 @@ test('vision refuses plaintext remote screenshot uploads', async () => {
   await assert.rejects(analyzeScreenshot(Buffer.from('png'), {
     endpoint: 'http://vision.example.test/v1/chat/completions', model: 'vision-model', apiKey: 'secret'
   }), /must use HTTPS/);
+});
+
+test('vision provider responses are bounded before JSON parsing', async () => {
+  await assert.rejects(
+    readBoundedResponseText(new Response('x'.repeat(MAX_VISION_RESPONSE_BYTES + 1))),
+    /response exceeded/
+  );
+  await assert.rejects(
+    readBoundedResponseText(new Response('small', { headers: { 'Content-Length': String(MAX_VISION_RESPONSE_BYTES + 1) } })),
+    /response exceeded/
+  );
 });
 
 test('vision does not follow screenshot upload redirects', async (context) => {
