@@ -20,3 +20,13 @@ test('cloud vision is opt-in and returns structured text only', async () => {
   assert.equal((await router.inspect()).source, 'none');
   assert.equal((await router.inspect({ allowCloudVision: true })).source, 'separate-vision');
 });
+
+test('native vision is also gated because the supervisor endpoint may be remote', async () => {
+  let called = false;
+  const router = new PerceptionRouter({
+    nativeVision: async () => { called = true; return { summary: 'visible', confidence: 1 }; }
+  });
+  assert.equal((await router.inspect()).source, 'none');
+  assert.equal(called, false);
+  assert.equal((await router.inspect({ allowCloudVision: true })).source, 'native-vision');
+});

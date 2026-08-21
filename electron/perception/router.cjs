@@ -22,6 +22,7 @@ class PerceptionRouter {
   }
 
   async inspect(request = {}) {
+    const errors = [];
     const routes = [
       ['structured-state', this.providers.structuredState],
       ['accessibility', this.providers.accessibility],
@@ -31,11 +32,19 @@ class PerceptionRouter {
     ];
     for (const [source, provider] of routes) {
       if (typeof provider !== 'function') continue;
-      if (source === 'separate-vision' && !request.allowCloudVision) continue;
-      const result = normalizePerception(await provider(request), source);
-      if (result.confidence >= (request.minimumConfidence ?? 0.75)) return result;
+      if (['native-vision', 'separate-vision'].includes(source) && !request.allowCloudVision) continue;
+      try {
+        const result = normalizePerception(await provider(request), source);
+        errors.push(...result.errors);
+        if (result.confidence >= (request.minimumConfidence ?? 0.75)) return result;
+      } catch (error) {
+        errors.push(`${source}: ${String(error?.message || error || 'inspection failed').slice(0, 500)}`);
+      }
     }
-    return normalizePerception({ summary: 'SideTerm could not inspect that view reliably.', errors: ['No configured perception source reached the required confidence.'] }, 'none');
+    return normalizePerception({
+      summary: 'SideTerm could not inspect that view reliably.',
+      errors: [...errors, 'No configured perception source reached the required confidence.']
+    }, 'none');
   }
 }
 

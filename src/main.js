@@ -62,6 +62,7 @@ let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
+let clearVisionApiKeyRequested = false;
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -73,6 +74,11 @@ let settings = {
   model: '',
   agentEnabled: false,
   supervisorBackgroundEnabled: true,
+  visionEnabled: false,
+  visionUseSupervisorModel: true,
+  visionApiUrl: '',
+  visionModel: '',
+  hasVisionApiKey: false,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
@@ -248,6 +254,18 @@ document.querySelector('#app').innerHTML = `
                 <span><strong>Keep running in background</strong><small>Closing the window keeps monitoring active in the tray. SideTerm does not start at login.</small></span>
                 <input id="supervisor-background-enabled" type="checkbox"><i></i>
               </label>
+              <label class="toggle-row">
+                <span><strong>Enable visual inspection</strong><small>Allows the Perception Router to send a screenshot only when structured state and terminal text are insufficient.</small></span>
+                <input id="vision-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row" id="vision-supervisor-row">
+                <span><strong>Use supervisor model for vision</strong><small>Turn this off when the supervisor model is text-only.</small></span>
+                <input id="vision-use-supervisor-model" type="checkbox"><i></i>
+              </label>
+              <label class="field-row" id="vision-endpoint-row"><span>Separate vision endpoint</span><input id="vision-api-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+              <label class="field-row" id="vision-model-row"><span>Separate vision model</span><input id="vision-model" type="text" autocomplete="off" spellcheck="false"></label>
+              <label class="field-row" id="vision-key-row"><span>Separate vision API key</span><input id="vision-api-key" type="password" autocomplete="off" placeholder="Vision provider key"></label>
+              <div class="credential-actions" id="vision-key-actions"><span id="vision-key-state">No separate vision key configured</span><button id="clear-vision-api-key" type="button">Clear key</button></div>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
               <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
@@ -414,6 +432,7 @@ function renderHotkeyInputs() {
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
   clearSttCredentialRequested = false;
+  clearVisionApiKeyRequested = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -427,6 +446,14 @@ function populateSettingsPanel() {
   document.querySelector('#ai-model').value = settings.model;
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
   document.querySelector('#supervisor-background-enabled').checked = settings.supervisorBackgroundEnabled !== false;
+  document.querySelector('#vision-enabled').checked = Boolean(settings.visionEnabled);
+  document.querySelector('#vision-use-supervisor-model').checked = settings.visionUseSupervisorModel !== false;
+  document.querySelector('#vision-api-url').value = settings.visionApiUrl || '';
+  document.querySelector('#vision-model').value = settings.visionModel || '';
+  document.querySelector('#vision-api-key').value = '';
+  document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+  document.querySelector('#vision-key-state').textContent = settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+  document.querySelector('#clear-vision-api-key').hidden = !settings.hasVisionApiKey;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
   document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
@@ -451,6 +478,7 @@ function populateSettingsPanel() {
   syncProviderFeatureAvailability();
   void refreshSpeechStatus();
   syncSttProviderFields();
+  syncVisionFields();
 }
 
 async function openSettingsPanel() {
@@ -479,6 +507,15 @@ function syncSttProviderFields() {
   document.querySelector('#install-stt').hidden = cloud;
 }
 
+function syncVisionFields() {
+  const enabled = document.querySelector('#vision-enabled').checked;
+  const separate = enabled && !document.querySelector('#vision-use-supervisor-model').checked;
+  document.querySelector('#vision-supervisor-row').hidden = !enabled;
+  for (const id of ['vision-endpoint-row', 'vision-model-row', 'vision-key-row', 'vision-key-actions']) {
+    document.querySelector(`#${id}`).hidden = !separate;
+  }
+}
+
 function settingsPayload() {
   const hotkeys = {};
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
@@ -493,6 +530,12 @@ function settingsPayload() {
     model: document.querySelector('#ai-model').value,
     agentEnabled: document.querySelector('#agent-enabled').checked,
     supervisorBackgroundEnabled: document.querySelector('#supervisor-background-enabled').checked,
+    visionEnabled: document.querySelector('#vision-enabled').checked,
+    visionUseSupervisorModel: document.querySelector('#vision-use-supervisor-model').checked,
+    visionApiUrl: document.querySelector('#vision-api-url').value,
+    visionModel: document.querySelector('#vision-model').value,
+    visionApiKey: document.querySelector('#vision-api-key').value,
+    clearVisionApiKey: clearVisionApiKeyRequested,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
     githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
@@ -2844,6 +2887,18 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
+document.querySelector('#vision-enabled').addEventListener('change', syncVisionFields);
+document.querySelector('#vision-use-supervisor-model').addEventListener('change', syncVisionFields);
+document.querySelector('#vision-api-key').addEventListener('input', (event) => {
+  if (event.target.value) clearVisionApiKeyRequested = false;
+});
+document.querySelector('#clear-vision-api-key').addEventListener('click', () => {
+  clearVisionApiKeyRequested = true;
+  document.querySelector('#vision-api-key').value = '';
+  document.querySelector('#vision-api-key').placeholder = 'Key will be removed on save';
+  document.querySelector('#vision-key-state').textContent = 'Key will be removed';
+  document.querySelector('#clear-vision-api-key').hidden = true;
+});
 document.querySelector('#stt-provider').addEventListener('change', () => {
   syncSttProviderFields();
   document.querySelector('#stt-status').textContent = document.querySelector('#stt-provider').value === 'parakeet'
