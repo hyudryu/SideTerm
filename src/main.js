@@ -1739,16 +1739,16 @@ async function startDesktopVoiceMode() {
       silenceAt = 0;
     } else if (speaking) {
       silenceAt ||= now;
-      if (now - silenceAt > 850 || now - startedAt > 14_000) {
-        const duration = now - startedAt;
-        const material = header ? [header, ...utterance] : utterance;
-        const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
-        speaking = false;
-        silenceAt = 0;
-        utterance = [];
-        preRoll = [];
-        void processVoiceUtterance(blob, duration);
-      }
+    }
+    if (speaking && (now - startedAt > 14_000 || (silenceAt && now - silenceAt > 850))) {
+      const duration = now - startedAt;
+      const material = header ? [header, ...utterance] : utterance;
+      const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      speaking = false;
+      silenceAt = 0;
+      utterance = [];
+      preRoll = [];
+      void processVoiceUtterance(blob, duration);
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
