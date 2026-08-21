@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-_whisper_models = {}
+_parakeet_models = {}
 _tts_model = None
 _tts_voices = {}
 
@@ -18,59 +18,38 @@ def configure_cache(root: Path) -> None:
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(cache / "huggingface" / "hub")
 
 
-def whisper_device() -> tuple[str, str]:
-    try:
-        import ctranslate2
-        if ctranslate2.get_cuda_device_count() > 0:
-            return "cuda", "float16"
-    except Exception:
-        pass
-    return "cpu", "int8"
+def load_parakeet(model: str, root: Path):
+    import torch
+    import nemo.collections.asr as nemo_asr
 
-
-def load_whisper(model: str, root: Path, download_only: bool = False):
-    from faster_whisper import WhisperModel
-    device, compute_type = ("cpu", "int8") if download_only else whisper_device()
-    key = (model, str(root), device, compute_type)
-    if key in _whisper_models:
-        return _whisper_models[key]
-    loaded = WhisperModel(
-        model,
-        device=device,
-        compute_type=compute_type,
-        download_root=str(root / "models" / "whisper"),
-        local_files_only=False,
-    )
-    _whisper_models[key] = loaded
+    resolved = model or "nvidia/parakeet-tdt-0.6b-v2"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    key = (resolved, str(root), device)
+    if key in _parakeet_models:
+        return _parakeet_models[key]
+    loaded = nemo_asr.models.ASRModel.from_pretrained(resolved)
+    loaded.eval()
+    loaded.to(device)
+    _parakeet_models[key] = loaded
     return loaded
 
 
 def download_stt(args) -> None:
-    load_whisper(args.model, args.root, download_only=True)
+    load_parakeet(args.model, args.root)
     print(json.dumps({"ok": True, "model": args.model}))
 
 
 def transcribe_result(args):
-    model = load_whisper(args.model, args.root)
-    language = str(getattr(args, "language", "") or "").strip() or None
-    initial_prompt = str(getattr(args, "initialPrompt", "") or "").strip() or None
-    segments, info = model.transcribe(
-        args.input,
-        beam_size=5,
-        language=language,
-        initial_prompt=initial_prompt,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 450, "speech_pad_ms": 180},
-        condition_on_previous_text=False,
-    )
-    materialized = list(segments)
-    text = " ".join(segment.text.strip() for segment in materialized if segment.text.strip()).strip()
-    probabilities = [float(segment.no_speech_prob) for segment in materialized]
+    model = load_parakeet(args.model, args.root)
+    outputs = model.transcribe([args.input], batch_size=1)
+    first = outputs[0] if outputs else ""
+    text = str(getattr(first, "text", first) or "").strip()
     return {
         "text": text,
-        "language": info.language,
-        "duration": float(info.duration),
-        "noSpeechProbability": sum(probabilities) / len(probabilities) if probabilities else 1.0,
+        "language": "en",
+        "duration": 0.0,
+        "noSpeechProbability": 0.0 if text else 1.0,
+        "provider": "parakeet",
     }
 
 

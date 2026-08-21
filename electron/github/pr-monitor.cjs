@@ -147,10 +147,10 @@ function commentRevisionKey(comment) {
   ])).digest('hex');
 }
 
-function hasCodexThumbsUp(pull) {
+function hasCodexThumbsUp(pull, actorLogins) {
   return (pull?.reactions || []).some((reaction) => reaction.name === '+1'
     && reaction.count > 0
-    && (reaction.authors || []).some(isCodexAuthor));
+    && (reaction.authors || []).some((author) => isCodexAuthor(author, actorLogins)));
 }
 
 function successfulGitCommit(output) {
@@ -158,8 +158,8 @@ function successfulGitCommit(output) {
   return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+([0-9a-f]{7,40})\]\s+[^\r\n]+/i)?.[1] || '';
 }
 
-function isActionableCodexComment(comment) {
-  if (!isCodexAuthor(comment?.author) || !String(comment?.body || '').trim()) return false;
+function isActionableCodexComment(comment, actorLogins) {
+  if (!isCodexAuthor(comment?.author, actorLogins) || !String(comment?.body || '').trim()) return false;
   return comment.kind !== 'review' || String(comment.state || '').toUpperCase() !== 'APPROVED';
 }
 
@@ -169,9 +169,9 @@ function sameGitRevision(left, right) {
   return Boolean(first && second && (first === second || first.startsWith(second) || second.startsWith(first)));
 }
 
-function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '') {
-  const approved = hasCodexThumbsUp(snapshot);
-  const wasApproved = hasCodexThumbsUp(previous);
+function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '', actorLogins) {
+  const approved = hasCodexThumbsUp(snapshot, actorLogins);
+  const wasApproved = hasCodexThumbsUp(previous, actorLogins);
   let approvalHeadSha = String(previous?.codexApprovalHeadSha || '');
   let promptedHeadSha = String(previous?.mergePromptedHeadSha || (previous?.mergePrompted ? previous?.headSha : '') || '');
   let pendingHeadSha = String(pendingLocalHeadSha || previous?.pendingLocalHeadSha || '');
@@ -254,12 +254,14 @@ async function postPullRequestComment(value, body) {
   return { id: result.id, url: result.html_url, body: result.body, createdAt: result.created_at };
 }
 
-function isCodexAuthor(author) {
-  return /^(?:chatgpt-codex-connector|codex|openai-codex)(?:\[bot\])?$/i.test(String(author || '').trim());
+function isCodexAuthor(author, actorLogins = ['chatgpt-codex-connector', 'codex', 'openai-codex']) {
+  const normalized = String(author || '').trim().replace(/\[bot\]$/i, '').toLowerCase();
+  return actorLogins.map((item) => String(item).trim().replace(/\[bot\]$/i, '').toLowerCase()).includes(normalized);
 }
 
 function shouldPollPullRequest(pull) {
-  return String(pull?.state || '').toLowerCase() === 'open';
+  return String(pull?.state || '').toLowerCase() === 'open'
+    && !(pull?.headSha && pull?.codexApprovalHeadSha && sameGitRevision(pull.headSha, pull.codexApprovalHeadSha));
 }
 
 function pullRequestChanged(previous, next) {

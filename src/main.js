@@ -74,7 +74,9 @@ let settings = {
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
-  sttModel: 'turbo',
+  sttProvider: 'parakeet',
+  sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: 1,
@@ -239,16 +241,17 @@ document.querySelector('#app').innerHTML = `
               </label>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
+              <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
               <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Voice mode</strong><span>Local · opt in only</span></div>
               <label class="field-row"><span>Wake word</span><input id="voice-wake-word" type="text" maxlength="80" placeholder="Hey Agent"></label>
-              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <div class="model-install-row"><label><span>Speech to text · LOCAL</span><select id="stt-model"><option value="nvidia/parakeet-tdt-0.6b-v2">NVIDIA Parakeet TDT 0.6B V2</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
               <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
-              <p class="settings-note">Recommended: Whisper turbo for accurate English coding terms on this GPU, or Distil-Whisper large-v3 for a lighter English model. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
+              <p class="settings-note">LOCAL — Parakeet keeps microphone audio on this device and never falls back to cloud transcription. Pocket TTS is a small English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
@@ -411,8 +414,9 @@ function populateSettingsPanel() {
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
+  document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
   document.querySelector('#voice-wake-word').value = settings.wakeWord || '';
-  document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
+  document.querySelector('#stt-model').value = settings.sttModel || 'nvidia/parakeet-tdt-0.6b-v2';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
@@ -457,8 +461,10 @@ function settingsPayload() {
     agentEnabled: document.querySelector('#agent-enabled').checked,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
+    githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
     wakeWord: document.querySelector('#voice-wake-word').value,
     sttModel: document.querySelector('#stt-model').value,
+    sttProvider: 'parakeet',
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
@@ -1584,6 +1590,11 @@ async function processVoiceUtterance(blob, durationMs) {
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
+      return;
+    }
+    if (transcript.clarification) {
+      label.textContent = 'Waiting for clarification';
+      await queueAgentSpeech(transcript.clarification.prompt, { openReplyWindow: true });
       return;
     }
     voiceReplyUntil = 0;
