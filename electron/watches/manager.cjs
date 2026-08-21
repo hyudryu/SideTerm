@@ -11,6 +11,7 @@ function normalizeWatch(value = {}, options = {}) {
     exitCondition: String(value.exitCondition || '').slice(0, 100),
     lastFingerprint: String(value.lastFingerprint || '').slice(0, 500),
     headSha: String(value.headSha || '').slice(0, 100),
+    lastCheckedAt: Number(value.lastCheckedAt) || 0,
     cancelledAt: Number(value.cancelledAt) || 0,
     createdAt: Number(value.createdAt) || (options.now?.() ?? Date.now()),
     updatedAt: Number(value.updatedAt) || (options.now?.() ?? Date.now())
@@ -58,6 +59,28 @@ class WatchManager {
     return watch;
   }
 
+  activate(id, { headSha = '', intervalSeconds = 60 } = {}) {
+    const watch = this.watches.find((item) => item.id === String(id));
+    if (!watch) return null;
+    watch.state = 'active';
+    watch.cancelledAt = 0;
+    watch.headSha = String(headSha || watch.headSha || '').slice(0, 100);
+    watch.intervalSeconds = Math.max(60, Math.floor(Number(intervalSeconds) || 60));
+    watch.lastFingerprint = '';
+    watch.updatedAt = this.now();
+    this.onChange(this.watches);
+    return watch;
+  }
+
+  markChecked(id, checkedAt = this.now()) {
+    const watch = this.watches.find((item) => item.id === String(id));
+    if (!watch) return null;
+    watch.lastCheckedAt = Number(checkedAt) || this.now();
+    watch.updatedAt = this.now();
+    this.onChange(this.watches);
+    return watch;
+  }
+
   cancel(id) {
     const watch = this.watches.find((item) => item.id === String(id));
     if (!watch) return false;
@@ -71,4 +94,9 @@ class WatchManager {
   active() { return this.watches.filter((item) => item.state === 'active'); }
 }
 
-module.exports = { WatchManager, normalizeWatch };
+function watchIsDue(watch, now = Date.now()) {
+  if (watch?.state !== 'active') return false;
+  return Number(now) - (Number(watch.lastCheckedAt) || 0) >= Math.max(60, Number(watch.intervalSeconds) || 60) * 1000;
+}
+
+module.exports = { WatchManager, normalizeWatch, watchIsDue };
