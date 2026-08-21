@@ -45,6 +45,17 @@ function structuredCollectionRequiresCompleteList(question) {
   return /\b(?:which|list|all|each|every|names?|titles?|summar(?:y|ies|ize[ds]?))\b/i.test(text);
 }
 
+function structuredSessionSummaryAvailable(question, payload = {}) {
+  if (!/\bsummar(?:y|ies|ize[ds]?|ise[ds]?)\b/i.test(String(question || ''))) return true;
+  const requestedSession = payload.session;
+  if (requestedSession) return Boolean(String(requestedSession.summary || '').trim());
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const targets = /\b(?:sessions|terminals)\b/i.test(String(question || ''))
+    ? sessions
+    : sessions.filter((item) => item?.active || item?.id === payload.activeSessionId);
+  return targets.length > 0 && targets.every((item) => Boolean(String(item?.summary || '').trim()));
+}
+
 class PerceptionRouter {
   constructor(providers = {}) {
     this.providers = providers;
@@ -83,5 +94,6 @@ module.exports = {
   normalizePerception,
   requiresVisualEvidence,
   structuredCollectionRequiresCompleteList,
+  structuredSessionSummaryAvailable,
   structuredStateSufficient
 };
