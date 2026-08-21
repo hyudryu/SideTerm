@@ -31,6 +31,12 @@ function structuredStateSufficient(question) {
   return /\b(?:status|busy|working|idle|names?|titles?|summar(?:y|ies|ize[ds]?)|needs? attention)\b/i.test(text);
 }
 
+function structuredCollectionRequiresCompleteList(question) {
+  const text = String(question || '');
+  if (!/\bsessions?\b/i.test(text) || /\b(?:count|how many|number of)\b/i.test(text)) return false;
+  return /\b(?:which|list|all|each|every|names?|titles?|summar(?:y|ies|ize[ds]?))\b/i.test(text);
+}
+
 class PerceptionRouter {
   constructor(providers = {}) {
     this.providers = providers;
@@ -64,4 +70,10 @@ class PerceptionRouter {
   }
 }
 
-module.exports = { PerceptionRouter, normalizePerception, requiresVisualEvidence, structuredStateSufficient };
+module.exports = {
+  PerceptionRouter,
+  normalizePerception,
+  requiresVisualEvidence,
+  structuredCollectionRequiresCompleteList,
+  structuredStateSufficient
+};

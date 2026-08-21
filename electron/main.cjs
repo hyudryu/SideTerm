@@ -55,7 +55,8 @@ const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
-const { PerceptionRouter, requiresVisualEvidence, structuredStateSufficient } = require('./perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredStateSufficient } = require('./perception/router.cjs');
+const { fitSessionCollection } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
 
@@ -1096,31 +1097,31 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
       const listedSessions = sessionId ? [] : workspaceSessions.slice(0, 200).map((item) => ({
         id: item.id,
         title: item.title,
-        summary: item.summary,
+        summary: String(item.summary || '').slice(0, 160),
         busy: Boolean(item.busy),
         status: item.busy ? 'running' : sessions.has(item.id) ? 'idle' : 'stopped',
         needsAttention: Boolean(item.notified)
       }));
+      const fitted = fitSessionCollection({
+        session: metadata ? {
+          id: metadata.id,
+          title: metadata.title,
+          summary: metadata.summary,
+          busy: Boolean(metadata.busy),
+          status: metadata.busy ? 'running' : sessions.has(metadata.id) ? 'idle' : 'stopped',
+          needsAttention: Boolean(metadata.notified)
+        } : null,
+        sessionCollection: {
+          ...sessionCounts
+        },
+        supervisorStatus: agentStatus,
+        activeInteractionId: readAgentState().activeInteractionId
+      }, listedSessions, { includeSessions: !sessionId });
+      const listIsIncomplete = fitted.payload.sessionCollection.truncated
+        && structuredCollectionRequiresCompleteList(question);
       return {
-        summary: JSON.stringify({
-          session: metadata ? {
-            id: metadata.id,
-            title: metadata.title,
-            summary: metadata.summary,
-            busy: Boolean(metadata.busy),
-            status: metadata.busy ? 'running' : sessions.has(metadata.id) ? 'idle' : 'stopped',
-            needsAttention: Boolean(metadata.notified)
-          } : null,
-          sessions: listedSessions,
-          sessionCollection: {
-            ...sessionCounts,
-            returned: listedSessions.length,
-            truncated: !sessionId && listedSessions.length < sessionCounts.total
-          },
-          supervisorStatus: agentStatus,
-          activeInteractionId: readAgentState().activeInteractionId
-        }),
-        confidence: structuredStateSufficient(question) ? 0.9 : 0.7
+        summary: fitted.summary,
+        confidence: structuredStateSufficient(question) && !listIsIncomplete ? 0.9 : 0.7
       };
     },
     terminalText: session ? async () => {
