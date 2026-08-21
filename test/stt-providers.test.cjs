@@ -82,6 +82,27 @@ test('Google joins every final recognition segment', async (context) => {
   assert.equal(result.confidence, 0.9);
 });
 
+test('OpenAI transcripts without confidence do not manufacture an uncertainty score', async (context) => {
+  const originalFetch = global.fetch;
+  context.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response(JSON.stringify({ text: 'Review the code' }), {
+    status: 200, headers: { 'Content-Type': 'application/json' }
+  });
+  const result = await transcribeCloud('openai', Buffer.from('audio'), {
+    credential: 'secret', mimeType: 'audio/webm', timeoutMs: 1000
+  });
+  assert.equal(result.text, 'Review the code');
+  assert.equal(result.confidence, undefined);
+});
+
+test('switching from local to cloud STT releases the persistent local speech worker', () => {
+  const fs = require('node:fs');
+  const main = fs.readFileSync(require.resolve('../electron/main.cjs'), 'utf8');
+  assert.match(main, /providerDescriptor\(current\.sttProvider\)\.location === 'local'/);
+  assert.match(main, /providerDescriptor\(next\.sttProvider\)\.location === 'cloud'/);
+  assert.match(main, /writeSettingsRecord\(next\);\s*if \(releaseLocalStt\) stopSpeechWorker\(\)/);
+});
+
 test('Azure labels canonical WAV input with its required PCM format', async (context) => {
   const originalFetch = global.fetch;
   let request;

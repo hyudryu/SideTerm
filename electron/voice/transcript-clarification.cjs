@@ -49,7 +49,9 @@ function transcriptClarification(text, vocabulary = [], options = {}) {
   const normalized = normalize(text);
   const known = KNOWN_CONFUSIONS.get(normalized);
   const lowConfidence = Number.isFinite(options.confidence) && options.confidence < 0.55;
-  const uncertainRecognition = !Number.isFinite(options.confidence) || options.confidence < 0.75;
+  const uncertainRecognition = Number.isFinite(options.confidence)
+    ? options.confidence < 0.75
+    : options.allowMissingConfidenceFuzzy !== false;
   const closest = uncertainRecognition ? closestVocabularyTerm(text, vocabulary) : null;
   const correctedVocabulary = closest
     ? String(text).replace(new RegExp(`\\b${closest.heard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), closest.term)
