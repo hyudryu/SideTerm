@@ -1147,8 +1147,11 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         confidence: structuredStateSufficient(question) && !listIsIncomplete ? 0.9 : 0.7
       };
     },
-    terminalText: session || activeTerminal ? async () => {
-      const text = captureSessionScreen(session || activeTerminal).slice(-20_000);
+    terminalText: session || activeTerminal || (sessionId && metadata) ? async () => {
+      const liveTerminal = session || activeTerminal;
+      const text = liveTerminal
+        ? captureSessionScreen(liveTerminal).slice(-20_000)
+        : String((await requestRendererAction('read-terminal-text', { sessionId }))?.text || '').slice(-20_000);
       return {
         summary: text,
         visibleText: text.split('\n').filter(Boolean).slice(-200),
