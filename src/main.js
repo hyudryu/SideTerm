@@ -1580,17 +1580,25 @@ function restoreCapturedTerminalLayout(sessionId, token, onRestored) {
   });
 }
 
-function hideNonterminalCaptureOverlays({ hideDashboard = true } = {}) {
+function hideNonterminalCaptureOverlays({ hideDashboard = true, preserveOverlays = false } = {}) {
   const dashboardWasHidden = supervisorDashboard.hidden;
   const supervisorWasActive = shellElement.classList.contains('supervisor-active');
   const overlayStates = [...document.querySelectorAll('.settings-backdrop, .link-popover, .toast-region')]
     .map((element) => ({ element, hidden: element.hidden }));
+  const credentialStates = [...document.querySelectorAll('input[type="password"]')]
+    .map((element) => ({ element, value: element.value }));
   if (hideDashboard) {
     supervisorDashboard.hidden = true;
     shellElement.classList.remove('supervisor-active');
   }
-  for (const overlay of overlayStates) overlay.element.hidden = true;
+  for (const credential of credentialStates) {
+    if (credential.value) credential.element.value = '••••••••';
+  }
+  if (!preserveOverlays) {
+    for (const overlay of overlayStates) overlay.element.hidden = true;
+  }
   return () => {
+    for (const credential of credentialStates) credential.element.value = credential.value;
     for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
     if (hideDashboard) {
       supervisorDashboard.hidden = dashboardWasHidden;
@@ -1650,7 +1658,7 @@ async function handleAgentAction({ requestId, type, payload }) {
     }
     if (type === 'prepare-window-capture') {
       restoreTerminalVisualCapture();
-      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false });
+      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false, preserveOverlays: true });
       const restoreInteraction = lockTerminalCaptureInteraction();
       terminalCaptureRestore = () => {
         restoreInteraction();
