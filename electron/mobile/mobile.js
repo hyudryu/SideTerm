@@ -446,7 +446,13 @@ function connect() {
     if (message.type === 'voice:audio') {
       if (message.continueCatchUp && !mobileVoiceMode) {
         releaseCatchUpQueue();
-      } else void queueMobileAudio(message);
+      } else void queueMobileAudio(message).then((delivered) => {
+        if (message.presentationId) send({
+          type: 'voice:presented',
+          presentationId: message.presentationId,
+          delivered
+        });
+      });
     }
     if (message.type === 'voice:error') {
       mobileTranscriptionInFlight = false;

@@ -31,11 +31,16 @@ test('mobile refreshes both speech provider location and name', () => {
 
 test('mobile activation completion waits for guarded speech delivery', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
   assert.match(main, /runProactiveCatchUp\(\{ taskId, targets, isCurrent \}\)/);
   assert.match(main, /await speechDelivery;[\s\S]*if \(voice && !speechDelivered\) throw staleActivationError\(\);[\s\S]*acknowledge\(\)/);
   assert.match(main, /requestVoiceActivationUpdate\([\s\S]*\.then\(\(completed\) => \{[\s\S]*completedMobileVoiceActivationIds\.set/);
   assert.match(main, /return presentationDelivered\(results\) && activationStillCurrent/);
   assert.match(main, /await speechDelivery;[\s\S]*acknowledge\(presentation\)/);
+  assert.match(main, /pendingMobilePresentations\.set\(presentationId, \{ resolve, timer, client \}\)/);
+  assert.match(main, /message\.type === 'voice:presented'[\s\S]*pending\.resolve\(message\.delivered === true\)/);
+  assert.match(main, /client\.once\('close',[\s\S]*settleMobilePresentations\(client, false\)/);
+  assert.match(script, /queueMobileAudio\(message\)\.then\(\(delivered\) => \{[\s\S]*type: 'voice:presented'/);
 });
 
 test('mobile creation and suppressed catch-up recover without a reload', () => {

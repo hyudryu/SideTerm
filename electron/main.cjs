@@ -96,6 +96,7 @@ let githubMonitorTimer = null;
 const mobileCatchUpCoordinator = createCatchUpCoordinator();
 const pendingRendererActions = new Map();
 const pendingDesktopPresentations = new Map();
+const pendingMobilePresentations = new Map();
 const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
 const presentationCoordinator = new PresentationCoordinator();
@@ -1639,15 +1640,31 @@ function ensureMobilePresentationSurface(client) {
     if (!client.sideTermVoiceMode || client.readyState !== 1) return false;
     const audio = await synthesizeSpeech(spokenText);
     if (!client.sideTermVoiceMode || client.readyState !== 1 || (typeof options.isCurrent === 'function' && !options.isCurrent(id))) return false;
-    sendMobile(client, {
-      type: 'voice:audio', audio, opensReplyWindow: options.opensReplyWindow !== false,
-      eventId: options.eventId || '', interactionId: options.interactionId || ''
+    const presentationId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingMobilePresentations.delete(presentationId);
+        resolve(false);
+      }, 120_000);
+      pendingMobilePresentations.set(presentationId, { resolve, timer, client });
+      sendMobile(client, {
+        type: 'voice:audio', audio, opensReplyWindow: options.opensReplyWindow !== false,
+        eventId: options.eventId || '', interactionId: options.interactionId || '', presentationId
+      });
     });
-    return true;
   });
   surface = { id, dispose };
   mobilePresentationSurfaces.set(client, surface);
   return surface;
+}
+
+function settleMobilePresentations(client, delivered = false) {
+  for (const [id, pending] of pendingMobilePresentations) {
+    if (pending.client !== client) continue;
+    clearTimeout(pending.timer);
+    pending.resolve(Boolean(delivered));
+    pendingMobilePresentations.delete(id);
+  }
 }
 
 function voicePresentationSnapshot() {
@@ -2768,6 +2785,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
       if (client.sideTermVoiceActivationTaskId) supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
+      settleMobilePresentations(client, false);
       mobilePresentationSurfaces.get(client)?.dispose();
       mobilePresentationSurfaces.delete(client);
       if (mobileCatchUpCoordinator.release(client)) broadcastAgentState();
@@ -2776,6 +2794,15 @@ async function startMobileServer({ persist = true } = {}) {
       let message;
       try { message = JSON.parse(String(raw)); } catch { return; }
       const session = sessions.get(String(message.id || ''));
+      if (message.type === 'voice:presented') {
+        const presentationId = String(message.presentationId || '');
+        const pending = pendingMobilePresentations.get(presentationId);
+        if (!pending || pending.client !== client) return;
+        clearTimeout(pending.timer);
+        pendingMobilePresentations.delete(presentationId);
+        pending.resolve(message.delivered === true);
+        return;
+      }
       if (message.type === 'input' && session && typeof message.data === 'string' && message.data.length <= 65_536) {
         send('terminal:remote-input', { id: message.id, data: message.data });
         session.processHandle.write(message.data);
@@ -2868,6 +2895,7 @@ async function startMobileServer({ persist = true } = {}) {
           supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
           client.sideTermVoiceActivationTaskId = '';
         }
+        if (!client.sideTermVoiceMode) settleMobilePresentations(client, false);
         if (client.sideTermVoiceMode) {
           const activationId = String(message.activationId || '').slice(0, 100);
           const now = Date.now();
