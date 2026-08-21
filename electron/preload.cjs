@@ -59,5 +59,6 @@ contextBridge.exposeInMainWorld('sideTerm', {
   }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),
   resumeDesktopMedia: () => ipcRenderer.invoke('voice:resume-media'),
-  onSpeechStatus: (callback) => subscribe('voice:status', callback)
+  onSpeechStatus: (callback) => subscribe('voice:status', callback),
+  onWindowWillHide: (callback) => subscribe('app:will-hide', callback)
 });

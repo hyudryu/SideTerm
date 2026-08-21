@@ -30,3 +30,15 @@ test('native vision is also gated because the supervisor endpoint may be remote'
   assert.equal(called, false);
   assert.equal((await router.inspect({ allowCloudVision: true })).source, 'native-vision');
 });
+
+test('explicit screenshot inspection bypasses non-visual high-confidence sources', async () => {
+  const calls = [];
+  const router = new PerceptionRouter({
+    structuredState: async () => { calls.push('structured'); return { summary: 'text', confidence: 1 }; },
+    terminalText: async () => { calls.push('terminal'); return { summary: 'text', confidence: 1 }; },
+    nativeVision: async () => { calls.push('vision'); return { summary: 'pixels', confidence: 0.9 }; }
+  });
+  const result = await router.inspect({ allowCloudVision: true, forceVision: true });
+  assert.equal(result.source, 'native-vision');
+  assert.deepEqual(calls, ['vision']);
+});
