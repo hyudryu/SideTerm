@@ -9,7 +9,7 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
 const { claimConfirmation, restoreConfirmation } = require('./agent/confirmation-state.cjs');
-const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
+const { catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -52,7 +52,7 @@ const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
-const { WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
+const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -362,7 +362,7 @@ function cleanAgentEntry(value, limits = {}) {
 function readAgentState() {
   try {
     const parsed = JSON.parse(fs.readFileSync(agentStateFile(), 'utf8'));
-    return {
+    const state = {
       version: 2,
       messages: Array.isArray(parsed.messages) ? parsed.messages.slice(-240).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
@@ -442,6 +442,8 @@ function readAgentState() {
         createdAt: Number(item?.createdAt) || Date.now()
       })).filter((item) => item.name && item.description && item.instructions) : []
     };
+    migrateLegacyPullRequestWatches(state.watches, state.pullRequests);
+    return state;
   } catch {
     return emptyAgentState();
   }
@@ -1280,6 +1282,7 @@ async function runProactiveCatchUp() {
     if (!presentation) {
       let streamed = false;
       const sentences = new SentenceBuffer((sentence) => {
+        if (isAutomaticPresenterSentinel(sentence)) return;
         streamed = true;
         if (voice) void speakMobileVoiceUpdate(sentence);
       });
@@ -1337,7 +1340,8 @@ function scheduleProactiveCatchUp() {
 
 async function catchUpWithSupervisor({ voice = false } = {}) {
   const state = readAgentState();
-  const { notification, remainingCount } = nextCatchUp(state.notifications);
+  const notification = eventBusFor(state).next(state.activeInteractionId);
+  const remainingCount = Math.max(0, pendingNotifications(state.notifications).length - (notification ? 1 : 0));
   if (!notification) {
     return {
       response: '',

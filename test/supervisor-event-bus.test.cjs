@@ -35,3 +35,10 @@ test('interaction-bound events wait until their question is active', () => {
   assert.equal(bus.next('other-question').id, 'completion');
   assert.equal(bus.next('merge-question').id, 'merge');
 });
+
+test('catch-up selection can use the event bus priority order', () => {
+  const bus = new PriorityEventBus([]);
+  bus.enqueue({ id: 'new-completion', kind: 'COMPLETED', createdAt: 20 });
+  bus.enqueue({ id: 'old-failure', kind: 'FAILED', createdAt: 10 });
+  assert.equal(bus.next('').id, 'old-failure');
+});
