@@ -18,6 +18,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
@@ -2583,6 +2584,17 @@ function groupElementAt(clientY, eventTarget) {
   }, null)?.element ?? null;
 }
 
+function groupGapAt(clientY) {
+  const elements = [...sessionList.querySelectorAll('.session-group')];
+  const gapIndex = nearestGroupGap(elements.map((element) => element.getBoundingClientRect()), clientY);
+  if (gapIndex < 0) return null;
+  return {
+    gapIndex,
+    upperElement: elements[gapIndex - 1] ?? null,
+    lowerElement: elements[gapIndex] ?? null
+  };
+}
+
 function clearDropIndicators() {
   sessionDropMarker.remove();
   for (const element of sessionList.querySelectorAll('.session-group')) {
@@ -2631,18 +2643,20 @@ sessionList.addEventListener('dragover', (event) => {
   event.dataTransfer.dropEffect = 'move';
   autoScrollDrag(event.clientY);
   clearDropIndicators();
+
+  if (dragState.type === 'group') {
+    const gap = groupGapAt(event.clientY);
+    if (!gap) return;
+    gap.upperElement?.classList.add('drop-focus', 'drop-after');
+    gap.lowerElement?.classList.add('drop-focus', 'drop-before');
+    dropTarget = { gapIndex: gap.gapIndex };
+    return;
+  }
+
   const groupElement = groupElementAt(event.clientY, event.target);
   if (!groupElement) return;
   groupElement.classList.add('drop-focus');
   const groupId = groupElement.dataset.groupId;
-
-  if (dragState.type === 'group') {
-    const rect = groupElement.getBoundingClientRect();
-    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-    groupElement.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
-    dropTarget = { groupId, position };
-    return;
-  }
 
   const group = getGroup(groupId);
   const body = groupElement.querySelector('.group-sessions');
@@ -2662,7 +2676,7 @@ sessionList.addEventListener('drop', (event) => {
   if (!dragState || !dropTarget) return;
   event.preventDefault();
   if (dragState.type === 'group') {
-    groups = reorderGroup(groups, dragState.id, dropTarget.groupId, dropTarget.position);
+    groups = reorderGroup(groups, dragState.id, dropTarget.gapIndex);
   } else {
     const sourceGroup = getGroupForSession(dragState.id);
     const targetGroup = getGroup(dropTarget.groupId);

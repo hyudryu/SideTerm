@@ -54,14 +54,29 @@ export function sortedSessionIds(group, sessionLookup) {
   });
 }
 
-export function reorderGroup(groups, sourceId, targetId, position) {
-  if (sourceId === targetId || !['before', 'after'].includes(position)) return groups;
-  const source = groups.find((group) => group.id === sourceId);
-  if (!source || !groups.some((group) => group.id === targetId)) return groups;
+export function nearestGroupGap(rects, clientY) {
+  if (!rects.length || !Number.isFinite(clientY)) return -1;
+  const gapPositions = [rects[0].top];
+  for (let index = 1; index < rects.length; index += 1) {
+    gapPositions.push((rects[index - 1].bottom + rects[index].top) / 2);
+  }
+  gapPositions.push(rects[rects.length - 1].bottom);
 
+  return gapPositions.reduce((nearestIndex, position, index) => (
+    Math.abs(clientY - position) < Math.abs(clientY - gapPositions[nearestIndex])
+      ? index
+      : nearestIndex
+  ), 0);
+}
+
+export function reorderGroup(groups, sourceId, gapIndex) {
+  const sourceIndex = groups.findIndex((group) => group.id === sourceId);
+  if (sourceIndex < 0 || !Number.isInteger(gapIndex) || gapIndex < 0 || gapIndex > groups.length) return groups;
+
+  const source = groups[sourceIndex];
   const reordered = groups.filter((group) => group.id !== sourceId);
-  const targetIndex = reordered.findIndex((group) => group.id === targetId);
-  reordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, source);
+  const adjustedIndex = gapIndex - (sourceIndex < gapIndex ? 1 : 0);
+  reordered.splice(adjustedIndex, 0, source);
   return reordered;
 }
 

@@ -5,6 +5,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
@@ -20,10 +21,26 @@ function fixture() {
   return [first, second];
 }
 
-test('groups reorder before and after snap targets', () => {
+test('groups reorder at gaps and adjust for the removed source', () => {
   const groups = [...fixture(), createGroup('third', 'Third')];
-  assert.deepEqual(reorderGroup(groups, 'first', 'third', 'after').map((group) => group.id), ['second', 'third', 'first']);
-  assert.deepEqual(reorderGroup(groups, 'third', 'first', 'before').map((group) => group.id), ['third', 'first', 'second']);
+  assert.deepEqual(reorderGroup(groups, 'first', 3).map((group) => group.id), ['second', 'third', 'first']);
+  assert.deepEqual(reorderGroup(groups, 'third', 0).map((group) => group.id), ['third', 'first', 'second']);
+  assert.deepEqual(reorderGroup(groups, 'second', 1).map((group) => group.id), ['first', 'second', 'third']);
+  assert.deepEqual(reorderGroup(groups, 'second', 2).map((group) => group.id), ['first', 'second', 'third']);
+});
+
+test('group drag positions resolve to shared gaps between adjacent groups', () => {
+  const rects = [
+    { top: 10, bottom: 100 },
+    { top: 108, bottom: 198 },
+    { top: 206, bottom: 296 }
+  ];
+  assert.equal(nearestGroupGap(rects, 10), 0);
+  assert.equal(nearestGroupGap(rects, 95), 1);
+  assert.equal(nearestGroupGap(rects, 104), 1);
+  assert.equal(nearestGroupGap(rects, 113), 1);
+  assert.equal(nearestGroupGap(rects, 193), 2);
+  assert.equal(nearestGroupGap(rects, 296), 3);
 });
 
 test('sessions reorder within a group and transfer across groups', () => {
