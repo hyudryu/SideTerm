@@ -95,6 +95,11 @@ test('approval prompts are tied to the approved remote head and reset when withd
   assert.equal(restored.shouldPrompt, true);
 });
 
+test('withdrawn approval retires the pending merge interaction', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /else if \(!approval\.ready\) \{\s*retireMergeConfirmations\(state, snapshot\.url\)/);
+});
+
 test('an approval on the remote revision is not offered while a local commit is unpushed', () => {
   const oldHead = { headSha: 'aaaa1111', reactions: [{ name: '+1', count: 1, authors: ['codex[bot]'] }] };
   const pending = reconcileCodexApproval(null, oldHead, 'bbbb2222');
