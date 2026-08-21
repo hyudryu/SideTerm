@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import array
+import gc
 import json
 import math
 import os
@@ -40,6 +41,16 @@ def load_parakeet(model: str, root: Path):
 def download_stt(args) -> None:
     load_parakeet(args.model, args.root)
     print(json.dumps({"ok": True, "model": args.model}))
+
+
+def release_stt_models():
+    released = len(_parakeet_models)
+    _parakeet_models.clear()
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {"released": released}
 
 
 def wav_speech_metrics(input_path):
@@ -193,6 +204,8 @@ def serve(args) -> None:
             operation = SimpleNamespace(root=args.root, **request)
             if command == "transcribe":
                 result = transcribe_result(operation)
+            elif command == "release-stt":
+                result = release_stt_models()
             elif command == "synthesize":
                 result = synthesize_result(operation)
             elif command == "warm-tts":

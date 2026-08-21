@@ -9,15 +9,37 @@ function parseStructuredPerception(text) {
   const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
     const parsed = JSON.parse(raw);
-    const useful = parsed && !Array.isArray(parsed) && typeof parsed === 'object'
-      && (typeof parsed.summary === 'string'
-        || Array.isArray(parsed.visibleText)
-        || Array.isArray(parsed.controls)
-        || Array.isArray(parsed.errors));
-    if (!useful) {
+    const shaped = parsed && !Array.isArray(parsed) && typeof parsed === 'object'
+      && (Object.hasOwn(parsed, 'summary')
+        || Object.hasOwn(parsed, 'visibleText')
+        || Object.hasOwn(parsed, 'controls')
+        || Object.hasOwn(parsed, 'errors'));
+    if (!shaped) {
       return { summary: '', visibleText: [], controls: [], errors: ['Vision provider returned JSON without perception fields.'], confidence: 0 };
     }
-    return { ...parsed, confidence: Number.isFinite(parsed.confidence) ? parsed.confidence : 0.75 };
+    const summary = typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 4000) : '';
+    const visibleText = Array.isArray(parsed.visibleText)
+      ? parsed.visibleText.filter((item) => ['string', 'number'].includes(typeof item)).map(String).map((item) => item.trim()).filter(Boolean).slice(0, 200)
+      : [];
+    const controls = Array.isArray(parsed.controls)
+      ? parsed.controls.filter((item) => item && typeof item === 'object' && (
+        String(item.type || '').trim()
+        || String(item.label || '').trim()
+        || String(item.state || '').trim()
+        || (item.bounds && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(item.bounds[key])))
+      )).slice(0, 200)
+      : [];
+    const errors = Array.isArray(parsed.errors)
+      ? parsed.errors.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 50)
+      : [];
+    const hasEvidence = Boolean(summary || visibleText.length || controls.length);
+    return {
+      summary,
+      visibleText,
+      controls,
+      errors,
+      confidence: hasEvidence ? (Number.isFinite(parsed.confidence) ? parsed.confidence : 0.75) : 0
+    };
   } catch {
     return { summary: raw.slice(0, 4000), visibleText: [], controls: [], errors: ['Vision provider returned non-JSON text.'], confidence: raw ? 0.75 : 0 };
   }

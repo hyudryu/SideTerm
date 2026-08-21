@@ -105,12 +105,15 @@ test('OpenAI transcripts without confidence do not manufacture an uncertainty sc
   assert.equal(result.confidence, undefined);
 });
 
-test('switching from local to cloud STT releases the persistent local speech worker', () => {
+test('switching from local to cloud STT releases only Parakeet state', () => {
   const fs = require('node:fs');
   const main = fs.readFileSync(require.resolve('../electron/main.cjs'), 'utf8');
+  const sidecar = fs.readFileSync(require.resolve('../electron/voice/sidecar.py'), 'utf8');
   assert.match(main, /providerDescriptor\(current\.sttProvider\)\.location === 'local'/);
   assert.match(main, /providerDescriptor\(next\.sttProvider\)\.location === 'cloud'/);
-  assert.match(main, /writeSettingsRecord\(next\);\s*if \(releaseLocalStt\) stopSpeechWorker\(\)/);
+  assert.match(main, /writeSettingsRecord\(next\);\s*if \(releaseLocalStt\) void releaseLocalSpeechRecognition\(\)\.catch/);
+  assert.match(main, /function releaseLocalSpeechRecognition\(\)[\s\S]*speechWorker\.request\('release-stt'\)/);
+  assert.match(sidecar, /elif command == "release-stt":\s*result = release_stt_models\(\)/);
 });
 
 test('Azure labels canonical WAV input with its required PCM format', async (context) => {
