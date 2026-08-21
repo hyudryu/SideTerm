@@ -17,3 +17,7 @@ test('known wrong-language recognition asks about the intended acknowledgement',
 test('ordinary confident transcripts continue without clarification', () => {
   assert.equal(transcriptClarification('Please run the tests', ['Codex'], { confidence: 0.9 }), null);
 });
+
+test('high-confidence ordinary words are not fuzzily rewritten as product names', () => {
+  assert.equal(transcriptClarification('Please review the code', ['Codex'], { confidence: 0.96 }), null);
+});

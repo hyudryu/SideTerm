@@ -254,6 +254,12 @@ async function postPullRequestComment(value, body) {
   return { id: result.id, url: result.html_url, body: result.body, createdAt: result.created_at };
 }
 
+async function mergePullRequest(value, options = {}) {
+  const ref = parsePullRequestUrl(value);
+  await (options.runGh || runGh)(['pr', 'merge', ref.url, '--merge'], { owner: ref.owner, timeout: 120_000 });
+  return { merged: true, url: ref.url, number: ref.number };
+}
+
 function isCodexAuthor(author, actorLogins = ['chatgpt-codex-connector', 'codex', 'openai-codex']) {
   const normalized = String(author || '').trim().replace(/\[bot\]$/i, '').toLowerCase();
   return actorLogins.map((item) => String(item).trim().replace(/\[bot\]$/i, '').toLowerCase()).includes(normalized);
@@ -281,6 +287,7 @@ module.exports = {
   isCodexAuthor,
   isActionableCodexComment,
   hasCodexThumbsUp,
+  mergePullRequest,
   parsePullRequestUrl,
   parseJsonLines,
   postPullRequestComment,

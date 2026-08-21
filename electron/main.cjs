@@ -20,6 +20,7 @@ const {
   hasCodexThumbsUp,
   isActionableCodexComment,
   isCodexAuthor,
+  mergePullRequest,
   postPullRequestComment,
   pullRequestChanged,
   reconcileCodexApproval,
@@ -445,7 +446,7 @@ function readAgentState() {
       })) : [],
       confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-40).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
-        kind: ['archive', 'terminal-input', 'github-comment'].includes(item?.kind) ? item.kind : 'terminal-input',
+        kind: ['archive', 'terminal-input', 'github-comment', 'merge-pull-request'].includes(item?.kind) ? item.kind : 'terminal-input',
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
@@ -646,7 +647,13 @@ function sendCodexFixRequest(pull, commentCount) {
 
 function addMergeReadyMessage(state, pull) {
   const text = `Codex gave PR #${pull.number} — ${pull.title} — a thumbs-up. Would you like me to merge it?`;
+  const confirmation = {
+    id: crypto.randomUUID(), kind: 'merge-pull-request', sessionId: pull.sessionId,
+    title: `PR #${pull.number} · ${pull.title}`, pullRequestUrl: pull.url, createdAt: Date.now()
+  };
+  state.confirmations.push(confirmation);
   const interaction = interactionManagerFor(state).create({
+    id: confirmation.id,
     sessionId: pull.sessionId,
     kind: 'approval',
     prompt: text,
@@ -1562,12 +1569,19 @@ async function resolveAgentConfirmation(id, approved) {
         ? `archiving ${confirmation.title}`
         : confirmation.kind === 'github-comment'
           ? `posting a comment to ${confirmation.pullRequestUrl}`
+          : confirmation.kind === 'merge-pull-request'
+            ? `merging ${confirmation.title}`
           : `terminal input for ${confirmation.title}`}.`;
     } else if (confirmation.kind === 'github-comment') {
       const posted = await postPullRequestComment(confirmation.pullRequestUrl, confirmation.body);
       actionCommitted = true;
       refreshPullRequestUrl = confirmation.pullRequestUrl;
       resultText = `The user approved the GitHub comment and SideTerm posted it: ${posted.url}`;
+    } else if (confirmation.kind === 'merge-pull-request') {
+      const merged = await mergePullRequest(confirmation.pullRequestUrl);
+      actionCommitted = true;
+      refreshPullRequestUrl = confirmation.pullRequestUrl;
+      resultText = `The user approved the merge and SideTerm merged ${confirmation.title}: ${merged.url}`;
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
