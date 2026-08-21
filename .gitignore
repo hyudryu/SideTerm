@@ -4,3 +4,4 @@ release/
 .vite/
 *.log
 build/icon.png
+!build/icon.png

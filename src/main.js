@@ -2939,6 +2939,10 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', persistWorkspaceNow);
+api.onWindowWillHide(() => {
+  if (desktopVoiceMode) stopDesktopVoiceMode();
+  persistWorkspaceNow();
+});
 window.setInterval(() => void refreshRuntimeStateAndPersist(), 2_000);
 
 async function restoreSavedWorkspace() {

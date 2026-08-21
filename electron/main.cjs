@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, ipcMain, Menu, net, safeStorage, shell, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, Menu, net, Notification, safeStorage, shell, Tray } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -1256,6 +1256,7 @@ async function runProactiveCatchUp() {
       });
       sentences.flush();
       if (voice && result.speech && !streamed) void speakMobileVoiceUpdate(result.speech);
+      if (!voice && result.response) notifyHiddenSupervisorUpdate(result.response);
       if (result.needsEnrichment) {
         void chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
           synthetic: true,
@@ -1265,6 +1266,7 @@ async function runProactiveCatchUp() {
           voice
         }).then((enriched) => {
           if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech);
+          if (!voice && enriched.response) notifyHiddenSupervisorUpdate(enriched.response);
           return null;
         }).catch(() => {});
       }
@@ -1276,6 +1278,7 @@ async function runProactiveCatchUp() {
     writeAgentState(state);
     broadcastAgentState();
     if (voice) void speakMobileVoiceUpdate(presentation);
+    else notifyHiddenSupervisorUpdate(presentation);
     if (eventBusFor(readAgentState()).next()) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
   } catch (error) {
@@ -2579,6 +2582,18 @@ function trayIconPath() {
   return path.join(__dirname, '..', 'build', 'icon.png');
 }
 
+function notifyHiddenSupervisorUpdate(text) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible() || !Notification.isSupported()) return false;
+  const notification = new Notification({
+    title: 'SideTerm Supervisor',
+    body: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    icon: trayIconPath()
+  });
+  notification.on('click', showMainWindow);
+  notification.show();
+  return true;
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     if (app.isReady()) createWindow();
@@ -2630,7 +2645,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   });
 
@@ -2653,6 +2669,8 @@ function createWindow() {
       quitRequested
     })) return;
     event.preventDefault();
+    send('app:will-hide');
+    supervisorVoiceMode = false;
     mainWindow.hide();
     syncBackgroundTray();
   });
@@ -2671,7 +2689,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
   void pollMonitoredPullRequests();
   if (readSettingsRecord().mobileEnabled) void startMobileServer({ persist: false }).catch(() => {});
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    showMainWindow();
   });
 });
 
