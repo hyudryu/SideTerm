@@ -42,7 +42,7 @@ const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs'
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
 const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
-const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
+const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -373,6 +373,9 @@ function saveSettings(update = {}) {
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
+
+  const sttEndpointError = sttEndpointConfigurationError(next.sttEndpoint);
+  if (sttEndpointError) throw new Error(sttEndpointError);
 
   if (next.sttProvider !== current.sttProvider) delete next.encryptedSttCredential;
 

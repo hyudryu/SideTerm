@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
+const { awsAudioEvents, awsClientConfiguration, awsCredentials, providerConfigurationError, providerDescriptor, sttEndpointConfigurationError, transcribeCloud } = require('../electron/voice/stt-providers.cjs');
 
 test('STT provider descriptors visibly distinguish local and cloud', () => {
   assert.equal(providerDescriptor('parakeet').location, 'local');
@@ -66,6 +66,16 @@ test('cloud readiness includes each provider specific region requirement', () =>
   assert.equal(providerConfigurationError('aws', {
     credential: '{"accessKeyId":"id","secretAccessKey":"secret"}', region: 'us-west-2'
   }), '');
+});
+
+test('cloud STT endpoints require encrypted transport except on explicit loopback', () => {
+  assert.match(sttEndpointConfigurationError('http://speech.example.test/v1'), /must use HTTPS/);
+  assert.equal(sttEndpointConfigurationError('https://speech.example.test/v1'), '');
+  assert.equal(sttEndpointConfigurationError('http://127.0.0.1:9000/v1'), '');
+  assert.equal(sttEndpointConfigurationError('http://localhost:9000/v1'), '');
+  assert.match(providerConfigurationError('deepgram', {
+    credential: 'secret', endpoint: 'http://speech.example.test/v1'
+  }), /must use HTTPS/);
 });
 
 test('Google joins every final recognition segment', async (context) => {
