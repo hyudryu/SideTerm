@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
 
 test('catch-up processes newest unread notifications first without mutating input', () => {
   const notifications = [
@@ -47,6 +47,7 @@ test('automatic presenter sentinels are never spoken as updates', () => {
   assert.equal(isAutomaticPresenterSentinel('NO_UPDATE.'), true);
   assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
   assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
+  assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
 });
 
 test('final catch-up may ask what to do next', () => {

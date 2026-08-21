@@ -256,8 +256,16 @@ async function postPullRequestComment(value, body) {
 
 async function mergePullRequest(value, options = {}) {
   const ref = parsePullRequestUrl(value);
-  await (options.runGh || runGh)(['pr', 'merge', ref.url, '--merge'], { owner: ref.owner, timeout: 120_000 });
-  return { merged: true, url: ref.url, number: ref.number };
+  const headSha = String(options.headSha || '');
+  if (!/^[0-9a-f]{7,40}$/i.test(headSha)) throw new Error('The approved pull-request revision is missing or invalid. Refresh the pull request before merging.');
+  const execute = options.runGh || runGh;
+  await execute(['pr', 'merge', ref.url, '--merge', '--match-head-commit', headSha], { owner: ref.owner, timeout: 120_000 });
+  let state = 'UNKNOWN';
+  try {
+    const output = await execute(['pr', 'view', ref.url, '--json', 'state'], { owner: ref.owner, timeout: 20_000 });
+    state = String(JSON.parse(output || '{}').state || 'UNKNOWN').toUpperCase();
+  } catch {}
+  return { merged: state === 'MERGED', submitted: true, state, url: ref.url, number: ref.number, headSha };
 }
 
 function isCodexAuthor(author, actorLogins = ['chatgpt-codex-connector', 'codex', 'openai-codex']) {
