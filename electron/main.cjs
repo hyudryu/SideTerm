@@ -211,7 +211,7 @@ function readSettingsRecord() {
       supervisorBackgroundEnabled: typeof parsed.supervisorBackgroundEnabled === 'boolean'
         ? parsed.supervisorBackgroundEnabled
         : DEFAULT_SETTINGS.supervisorBackgroundEnabled,
-      visionEnabled: Boolean(parsed.visionEnabled),
+      visionEnabled: parsed.visionEnabled === true,
       visionUseSupervisorModel: typeof parsed.visionUseSupervisorModel === 'boolean' ? parsed.visionUseSupervisorModel : true,
       visionApiUrl: typeof parsed.visionApiUrl === 'string' ? parsed.visionApiUrl.slice(0, 1000) : '',
       visionModel: typeof parsed.visionModel === 'string' ? parsed.visionModel.slice(0, 160) : '',
@@ -1061,6 +1061,13 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
     structuredState: async () => ({
       summary: JSON.stringify({
         session: metadata ? { id: metadata.id, title: metadata.title, summary: metadata.summary, busy: metadata.busy } : null,
+        sessions: sessionId ? [] : mobileWorkspace.sessions.slice(0, 200).map((item) => ({
+          id: item.id,
+          title: item.title,
+          summary: item.summary,
+          busy: Boolean(item.busy),
+          needsAttention: Boolean(item.notified)
+        })),
         supervisorStatus: agentStatus,
         activeInteractionId: readAgentState().activeInteractionId
       }),
