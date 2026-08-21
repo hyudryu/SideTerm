@@ -39,8 +39,9 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
+const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
-const { providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
+const { providerConfigurationError, providerDescriptor, STT_PROVIDERS, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -49,7 +50,7 @@ const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
-const { namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
+const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSnapshot } = require('./sessions/tui.cjs');
 const { WatchManager, normalizeWatch } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 
@@ -296,6 +297,8 @@ function saveSettings(update = {}) {
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
+
+  if (next.sttProvider !== current.sttProvider) delete next.encryptedSttCredential;
 
   if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
@@ -623,6 +626,9 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', { notify = false, 
   const watchManager = watchManagerFor(state);
   const repository = snapshot.url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i)?.[1] || '';
   let reviewWatch = state.watches.find((item) => item.kind === 'github_codex_review' && item.repo === repository && item.prNumber === snapshot.number);
+  // A fetch that was already in flight when the user cancelled the watch must
+  // not silently recreate its pull-request queue entry.
+  if (reviewWatch?.cancelledAt) return publicAgentState();
   if (!reviewWatch) {
     reviewWatch = watchManager.create({
       kind: 'github_codex_review', repo: repository, prNumber: snapshot.number, intervalSeconds: 60,
@@ -760,20 +766,24 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
       const state = readAgentState();
       const linkedPull = { ...snapshot, sessionId };
       const queuedPull = state.pullRequests.find((pull) => pull.url === snapshot.url);
-      const codexComments = snapshot.comments.filter(isActionableCodexComment);
+      const codexActors = readSettingsRecord().githubCodexActorLogins;
+      const codexComments = snapshot.comments.filter((comment) => isActionableCodexComment(comment, codexActors));
       const codexCount = codexComments.length;
-      if (codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
+      if (queuedPull && codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
         queuedPull.handledCodexComments = codexComments.map(commentRevisionKey).slice(-1000);
         const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
         addAgentMessage(state, 'event', `SideTerm told ${metadata?.title || sessionId} to address the existing Codex comments on PR #${snapshot.number}.`);
       }
-      if (queuedPull && reconcileCodexApproval(queuedPull, queuedPull).shouldPrompt) {
+      let mergeReadyAdded = false;
+      if (queuedPull && reconcileCodexApproval(queuedPull, queuedPull, '', codexActors).shouldPrompt) {
         queuedPull.mergePrompted = true;
         queuedPull.mergePromptedHeadSha = queuedPull.headSha;
         addMergeReadyMessage(state, snapshot);
+        mergeReadyAdded = true;
       }
       writeAgentState(state);
       broadcastAgentState();
+      if (mergeReadyAdded) scheduleProactiveCatchUp();
     }
   } catch {
     // A push can target a branch without an open PR. Monitoring starts once one can be discovered.
@@ -974,7 +984,7 @@ const supervisorActions = {
     if (['CTRL_C', 'CTRL_D'].includes(normalized)) throw new Error('Interrupt and EOF keys require direct user confirmation.');
     const session = sessions.get(sessionId);
     if (!session) throw new Error('That terminal session is not active.');
-    if (['ENTER', 'SPACE'].includes(normalized) && tuiSnapshot(captureSessionScreen(session), sessionId).confidence < 0.8) {
+    if (!canSubmitTuiKey(tuiSnapshot(captureSessionScreen(session), sessionId), normalized)) {
       throw new Error('SideTerm will not submit a key unless a structured TUI menu is visible.');
     }
     const data = namedKeyData(normalized);
@@ -1009,8 +1019,15 @@ const supervisorActions = {
   },
   watchCancel({ watchId }) {
     const state = readAgentState();
+    const watch = state.watches.find((item) => item.id === String(watchId));
     const cancelled = watchManagerFor(state).cancel(watchId);
     if (!cancelled) throw new Error('Watch not found.');
+    if (watch?.kind === 'github_codex_review') {
+      state.pullRequests = state.pullRequests.filter((pull) => {
+        const repository = pull.url?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i)?.[1] || '';
+        return repository !== watch.repo || Number(pull.number) !== Number(watch.prNumber);
+      });
+    }
     writeAgentState(state);
     broadcastAgentState();
     return { cancelled: true, watchId };
@@ -1146,7 +1163,7 @@ function chatWithSupervisor(text, options = {}) {
   return supervisorActor.enqueue(
     () => performSupervisorChat(text, options),
     {
-      priority: options.proactive ? 2 : 0,
+      priority: options.automatic || options.proactive ? 2 : 0,
       interruptible: Boolean(options.automatic),
       cancel: () => supervisorRuntime?.cancelAutomatic?.()
     }
@@ -1443,7 +1460,13 @@ function speechStatus() {
   const settings = readSettingsRecord();
   const descriptor = providerDescriptor(settings.sttProvider);
   let sttInstalled = false;
-  if (descriptor.location === 'cloud') sttInstalled = Boolean(readSttCredential(settings));
+  let sttConfigurationError = '';
+  if (descriptor.location === 'cloud') {
+    sttConfigurationError = providerConfigurationError(settings.sttProvider, {
+      credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion
+    });
+    sttInstalled = !sttConfigurationError;
+  }
   else {
     try {
       const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
@@ -1457,6 +1480,7 @@ function speechStatus() {
     sttProvider: settings.sttProvider,
     sttLocation: descriptor.location,
     sttProviderName: descriptor.name,
+    sttConfigurationError,
     ttsModel: DEFAULT_SETTINGS.ttsModel
   };
 }
@@ -1577,7 +1601,12 @@ function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
 }
 
 async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWithoutWakeWord = false } = {}) {
-  if (!speechStatus().sttInstalled) throw new Error('Install the speech-to-text model in Settings first.');
+  const currentSpeechStatus = speechStatus();
+  if (!currentSpeechStatus.sttInstalled) {
+    throw new Error(currentSpeechStatus.sttLocation === 'cloud'
+      ? currentSpeechStatus.sttConfigurationError || `Configure ${currentSpeechStatus.sttProviderName} in Settings first.`
+      : 'Install the speech-to-text model in Settings first.');
+  }
   if (speechTranscriptionInFlight) {
     return { ignored: true, reason: 'Still transcribing the previous utterance.' };
   }
@@ -1586,27 +1615,43 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   const settings = readSettingsRecord();
   const descriptor = providerDescriptor(settings.sttProvider);
   if (descriptor.location === 'cloud') {
+    const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
+    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${/ogg/i.test(mimeType) ? 'ogg' : /wav/i.test(mimeType) ? 'wav' : 'webm'}`);
+    const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
     speechTranscriptionInFlight = true;
     try {
-      const transcript = await transcribeCloud(settings.sttProvider, bytes, {
+      let providerAudio = bytes;
+      let providerMimeType = mimeType;
+      if (settings.sttProvider === 'aws' && !/^(?:audio\/ogg|audio\/wav)/i.test(mimeType)) {
+        fs.mkdirSync(outputDirectory, { recursive: true });
+        fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
+        await convertToSpeechWav(inputPath, wavPath);
+        providerAudio = fs.readFileSync(wavPath);
+        providerMimeType = 'audio/wav';
+      }
+      const transcript = await transcribeCloud(settings.sttProvider, providerAudio, {
         credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
-        mimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
+        mimeType: providerMimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
       });
       return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
     } finally {
       speechTranscriptionInFlight = false;
+      try { fs.unlinkSync(inputPath); } catch {}
+      try { fs.unlinkSync(wavPath); } catch {}
     }
   }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
   const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${extension}`);
+  const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
   fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
   speechTranscriptionInFlight = true;
   try {
+    await convertToSpeechWav(inputPath, wavPath);
     const transcript = await getSpeechWorker().request('transcribe', {
       model: settings.sttModel,
-      input: inputPath,
+      input: wavPath,
       language: 'en',
       initialPrompt: `English conversation with a coding assistant. The wake phrase is "${settings.wakeWord || 'Hey Agent'}".`
     });
@@ -1614,6 +1659,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   } finally {
     speechTranscriptionInFlight = false;
     try { fs.unlinkSync(inputPath); } catch {}
+    try { fs.unlinkSync(wavPath); } catch {}
   }
 }
 
@@ -2070,6 +2116,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
     sendMobile(client, { type: 'agent:state', state: publicAgentState() });
     sendMobile(client, mobileVoiceSettings());
+    sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
       mobilePresentationSurfaces.get(client)?.dispose();
       mobilePresentationSurfaces.delete(client);
@@ -2450,6 +2497,7 @@ function registerIpc() {
   ipcMain.handle('settings:save', (_event, update) => {
     const saved = saveSettings(update);
     syncBackgroundTray(saved);
+    broadcastMobile({ type: 'voice:status', status: speechStatus() });
     broadcastAgentState();
     return saved;
   });

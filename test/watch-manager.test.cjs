@@ -12,3 +12,12 @@ test('Codex watch terminates at approval and rearms for a new head', () => {
   assert.equal(manager.active().length, 1);
   assert.equal(watch.headSha, 'two');
 });
+
+test('a cancelled watch is distinguishable from a met condition', () => {
+  const watches = [];
+  const manager = new WatchManager(watches, { createId: () => 'watch-1', now: () => 42 });
+  const watch = manager.create({ kind: 'github_codex_review', repo: 'a/b', prNumber: 9 });
+  manager.cancel(watch.id);
+  assert.equal(watch.state, 'terminal');
+  assert.equal(watch.cancelledAt, 42);
+});
