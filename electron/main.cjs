@@ -55,7 +55,7 @@ const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
-const { PerceptionRouter, requiresVisualEvidence } = require('./perception/router.cjs');
+const { PerceptionRouter, requiresVisualEvidence, structuredStateSufficient } = require('./perception/router.cjs');
 const { shouldRetainVisionCredential } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
 
@@ -1036,7 +1036,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         supervisorStatus: agentStatus,
         activeInteractionId: readAgentState().activeInteractionId
       }),
-      confidence: 0.7
+      confidence: structuredStateSufficient(question) ? 0.9 : 0.7
     }),
     terminalText: session ? async () => {
       const text = captureSessionScreen(session).slice(-20_000);

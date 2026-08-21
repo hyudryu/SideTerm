@@ -20,6 +20,13 @@ function requiresVisualEvidence(question) {
   return /\b(?:color|colour|highlight(?:ed)?|selected|selection|cursor|layout|position|icon|image|screenshot|look(?:s|ing)?|visible|visual|red|green|blue)\b/i.test(String(question || ''));
 }
 
+function structuredStateSufficient(question) {
+  const text = String(question || '').trim();
+  return Boolean(text
+    && !requiresVisualEvidence(text)
+    && /\b(?:supervisor|agent|sessions?|status|busy|working|active interaction|needs input|pending)\b/i.test(text));
+}
+
 class PerceptionRouter {
   constructor(providers = {}) {
     this.providers = providers;
@@ -53,4 +60,4 @@ class PerceptionRouter {
   }
 }
 
-module.exports = { PerceptionRouter, normalizePerception, requiresVisualEvidence };
+module.exports = { PerceptionRouter, normalizePerception, requiresVisualEvidence, structuredStateSufficient };
