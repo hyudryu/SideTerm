@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import array
 import json
 import math
 import os
 import sys
+import wave
 from pathlib import Path
 
 
@@ -40,6 +42,49 @@ def download_stt(args) -> None:
     print(json.dumps({"ok": True, "model": args.model}))
 
 
+def wav_speech_metrics(input_path):
+    """Estimate deliberate speech from canonical 16-bit PCM without a cloud VAD."""
+    try:
+        with wave.open(str(input_path), "rb") as recording:
+            sample_rate = recording.getframerate()
+            channels = recording.getnchannels()
+            sample_width = recording.getsampwidth()
+            frame_count = recording.getnframes()
+            frames = recording.readframes(frame_count)
+    except (OSError, EOFError, wave.Error):
+        return 0.5, 0.0
+    duration = frame_count / sample_rate if sample_rate else 0.0
+    if sample_width != 2 or sample_rate <= 0 or not frames:
+        return 1.0, duration
+    samples = array.array("h")
+    samples.frombytes(frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    mono = samples[::max(1, channels)]
+    if not mono:
+        return 1.0, duration
+    rms = math.sqrt(sum(sample * sample for sample in mono) / len(mono)) / 32768.0
+    zero_crossings = sum(1 for left, right in zip(mono, mono[1:]) if (left < 0) != (right < 0))
+    zero_crossing_rate = zero_crossings / max(1, len(mono) - 1)
+    window_size = max(1, round(sample_rate * 0.02))
+    window_rms = []
+    for offset in range(0, len(mono), window_size):
+        window = mono[offset:offset + window_size]
+        window_rms.append(math.sqrt(sum(sample * sample for sample in window) / len(window)) / 32768.0)
+    mean_window = sum(window_rms) / len(window_rms)
+    variation = math.sqrt(sum((value - mean_window) ** 2 for value in window_rms) / len(window_rms)) / max(mean_window, 1e-6)
+    energy_score = max(0.0, min(1.0, (rms - 0.002) / 0.025))
+    variation_score = max(0.25, min(1.0, (variation - 0.04) / 0.30))
+    if zero_crossing_rate < 0.005:
+        crossing_score = zero_crossing_rate / 0.005
+    elif zero_crossing_rate <= 0.30:
+        crossing_score = 1.0
+    else:
+        crossing_score = max(0.0, 1.0 - (zero_crossing_rate - 0.30) / 0.20)
+    speech_probability = energy_score * variation_score * crossing_score
+    return 1.0 - max(0.0, min(1.0, speech_probability)), duration
+
+
 def transcribe_result(args):
     model = load_parakeet(args.model, args.root)
     outputs = model.transcribe([args.input], batch_size=1, return_hypotheses=True)
@@ -55,11 +100,12 @@ def transcribe_result(args):
             confidence = max(0.0, min(1.0, math.exp(max(-20.0, average_log_probability))))
         except (TypeError, ValueError, OverflowError):
             confidence = None
+    no_speech_probability, duration = wav_speech_metrics(args.input)
     return {
         "text": text,
         "language": "en",
-        "duration": 0.0,
-        "noSpeechProbability": 0.0 if text else 1.0,
+        "duration": duration,
+        "noSpeechProbability": 1.0 if not text else no_speech_probability,
         "provider": "parakeet",
         "confidence": confidence,
     }
