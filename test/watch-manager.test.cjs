@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { WatchManager, watchIsDue } = require('../electron/watches/manager.cjs');
+const { migrateLegacyPullRequestWatches, WatchManager, watchIsDue } = require('../electron/watches/manager.cjs');
 
 test('Codex watch terminates at approval and rearms for a new head', () => {
   const watches = [];
@@ -33,4 +33,20 @@ test('explicit creation can reactivate a cancelled watch at its requested cadenc
   assert.equal(watch.intervalSeconds, 300);
   assert.equal(watchIsDue(watch, 419_999), false);
   assert.equal(watchIsDue(watch, 420_000), true);
+});
+
+test('legacy open pull requests migrate into active Codex watches', () => {
+  const watches = [];
+  const migrated = migrateLegacyPullRequestWatches(watches, [{
+    url: 'https://github.com/a/b/pull/9', number: 9, state: 'open', headSha: 'abc', lastCheckedAt: 100
+  }], { createId: () => 'legacy-watch', now: () => 200 });
+  assert.equal(migrated.length, 1);
+  assert.deepEqual(watches[0], {
+    id: 'legacy-watch', kind: 'github_codex_review', repo: 'a/b', prNumber: 9,
+    intervalSeconds: 60, state: 'active', exitCondition: 'codex_thumbs_up', lastFingerprint: '',
+    headSha: 'abc', lastCheckedAt: 100, cancelledAt: 0, createdAt: 100, updatedAt: 200
+  });
+  assert.equal(migrateLegacyPullRequestWatches(watches, [{
+    url: 'https://github.com/a/b/pull/9', state: 'open'
+  }]).length, 0);
 });
