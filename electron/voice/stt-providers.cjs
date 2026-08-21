@@ -79,9 +79,12 @@ async function transcribeAzure(audio, options) {
   const url = new URL(endpoint);
   url.searchParams.set('language', options.language || 'en-US');
   url.searchParams.set('format', 'detailed');
+  const contentType = /^audio\/wav(?:\s*;|$)/i.test(options.mimeType || '')
+    ? 'audio/wav; codecs=audio/pcm; samplerate=16000'
+    : options.mimeType;
   const body = await checkedJson(await fetch(url, {
     method: 'POST',
-    headers: { 'Ocp-Apim-Subscription-Key': options.credential, 'Content-Type': options.mimeType, Accept: 'application/json' },
+    headers: { 'Ocp-Apim-Subscription-Key': options.credential, 'Content-Type': contentType, Accept: 'application/json' },
     body: audio, signal: options.signal
   }), 'Azure');
   const candidate = body.NBest?.[0] || {};
