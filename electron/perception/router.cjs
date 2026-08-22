@@ -31,6 +31,10 @@ function structuredStateSufficient(question, payload = {}) {
   if (payload.session
     && /\b(?:status|busy|working|running|idle|stopped|active|failed)\b/i.test(text)
     && !/\b(?:command|terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
+  if (payload.session
+    && /\b(?:names?|titles?)\b/i.test(text)
+    && /\b(?:it|its|this|that|selected|current|session|terminal)\b/i.test(text)
+    && !/\b(?:command|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\bcommand\b/i.test(text)) return false;
   if (/\b(?:sessions|terminals)\b/i.test(text)
@@ -46,7 +50,7 @@ function structuredCollectionRequiresCompleteList(question) {
   if (/\b(?:which|what)\b/i.test(text)
     && /\b(?:session|terminal)\b/i.test(text)
     && /\bactive\b/i.test(text)) return false;
-  return /\b(?:which|list|all|each|every|names?|titles?|summar(?:y|ies|ize[ds]?))\b/i.test(text);
+  return /\b(?:which|what|list|all|each|every|names?|titles?|summar(?:y|ies|ize[ds]?))\b/i.test(text);
 }
 
 function structuredSessionSummaryAvailable(question, payload = {}) {
