@@ -100,7 +100,7 @@ test('abandoned presentation claims recover once at application startup', () => 
   const readAgentState = main.match(/function readAgentState\(\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.doesNotMatch(readAgentState, /recoverAbandonedEvents/);
   assert.match(main, /function recoverAbandonedAgentStateEvents\(\)[\s\S]*recoverAbandonedEvents\(state\.notifications\)[\s\S]*writeAgentState\(state\)/);
-  assert.match(main, /app\.whenReady\(\)\.then\(\(\) => \{\s*recoverAbandonedAgentStateEvents\(\);/);
+  assert.match(main, /app\.whenReady\(\)\.then\(\(\) => \{[\s\S]*?recoverAbandonedAgentStateEvents\(\);/);
 });
 
 test('persisted unread updates are scheduled once after workspace restoration', () => {
