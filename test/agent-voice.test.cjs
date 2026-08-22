@@ -1,12 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  allowsImmediateVoiceExecution,
   applyWakeWord,
   VoiceAcknowledgementPicker,
   VOICE_ACKNOWLEDGEMENTS,
   VOICE_MODE_INSTRUCTION,
-  VOICE_EXECUTION_INSTRUCTION,
   speechSummary
 } = require('../electron/agent/voice.cjs');
 
@@ -29,17 +27,10 @@ test('direct voice acknowledgements vary without repeating consecutively', () =>
   assert.notEqual(third, second);
 });
 
-test('voice execution tells the agent spoken requests are the approval', () => {
-  assert.match(VOICE_EXECUTION_INSTRUCTION, /spoken request is the approval/);
-  assert.match(VOICE_EXECUTION_INSTRUCTION, /executes immediately/);
-  assert.match(VOICE_EXECUTION_INSTRUCTION, /Never tell the user to click Approve/);
-});
-
-test('only a directly transcribed spoken request can bypass confirmation', () => {
-  assert.equal(allowsImmediateVoiceExecution(true), true);
-  assert.equal(allowsImmediateVoiceExecution(false), false);
-  assert.equal(allowsImmediateVoiceExecution(undefined), false);
-  assert.equal(allowsImmediateVoiceExecution('true'), false);
+test('voice module exposes no turn-wide execution bypass', () => {
+  const voice = require('../electron/agent/voice.cjs');
+  assert.equal(Object.hasOwn(voice, 'allowsImmediateVoiceExecution'), false);
+  assert.equal(Object.hasOwn(voice, 'VOICE_EXECUTION_INSTRUCTION'), false);
 });
 
 test('the wake word is required for an unsolicited request and removed when present', () => {

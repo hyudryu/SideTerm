@@ -63,6 +63,13 @@ let persistInFlight = false;
 let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
+let clearSttCredentialRequested = false;
+let sttCredentialRemovalIntent = false;
+let clearVisionApiKeyRequested = false;
+let clearHarnessBridgeTokenRequested = false;
+let visionKeyExplicitClearRequested = false;
+let visionKeyPersistedEndpoint = '';
+let visionReplacementKeyOrigin = '';
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -73,10 +80,24 @@ let settings = {
   apiUrl: '',
   model: '',
   agentEnabled: false,
+  supervisorBackgroundEnabled: true,
+  visionEnabled: false,
+  visionUseSupervisorModel: true,
+  visionApiUrl: '',
+  visionModel: '',
+  hasVisionApiKey: false,
+  harnessBridgeEnabled: false,
+  harnessBridgeEndpoint: 'http://127.0.0.1:43111',
+  hasHarnessBridgeToken: false,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
-  sttModel: 'turbo',
+  sttProvider: 'parakeet',
+  sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  sttEndpoint: '',
+  sttRegion: '',
+  hasSttCredential: false,
+  githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: 1,
@@ -87,6 +108,8 @@ let linkPopoverTimer = null;
 let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
 let agentCatchUpInFlight = false;
 let supervisorDashboardActive = false;
+let terminalCaptureRestore = null;
+const terminalCaptureResizeTokens = new Map();
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
@@ -97,6 +120,7 @@ let voiceTranscriptionInFlight = false;
 let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
+let voiceReplyInteractionId = '';
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -239,18 +263,46 @@ document.querySelector('#app').innerHTML = `
                 <span><strong>Enable Supervisor <em class="llm-required-label">LLM required</em></strong><small>Track completed session work and enable the desktop/mobile agent dashboard.</small></span>
                 <input id="agent-enabled" type="checkbox"><i></i>
               </label>
+              <label class="toggle-row">
+                <span><strong>Keep running in background</strong><small>Closing the window keeps monitoring active in the tray. SideTerm does not start at login.</small></span>
+                <input id="supervisor-background-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row">
+                <span><strong>Enable visual inspection</strong><small>Allows the Perception Router to send a screenshot only when structured state and terminal text are insufficient.</small></span>
+                <input id="vision-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row" id="vision-supervisor-row">
+                <span><strong>Use supervisor model for vision</strong><small>Turn this off when the supervisor model is text-only.</small></span>
+                <input id="vision-use-supervisor-model" type="checkbox"><i></i>
+              </label>
+              <label class="field-row" id="vision-endpoint-row"><span>Separate vision endpoint</span><input id="vision-api-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+              <label class="field-row" id="vision-model-row"><span>Separate vision model</span><input id="vision-model" type="text" autocomplete="off" spellcheck="false"></label>
+              <label class="field-row" id="vision-key-row"><span>Separate vision API key</span><input id="vision-api-key" type="password" autocomplete="off" placeholder="Vision provider key"></label>
+              <div class="credential-actions" id="vision-key-actions"><span id="vision-key-state">No separate vision key configured</span><button id="clear-vision-api-key" type="button">Clear key</button></div>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
+              <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
+              <label class="toggle-row">
+                <span><strong>Connect DeepSeek Harness</strong><small>Use the authenticated local SideTerm bridge and semantic agent delivery instead of PTY typing.</small></span>
+                <input id="harness-bridge-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="field-row" id="harness-endpoint-row"><span>Harness bridge endpoint</span><input id="harness-bridge-endpoint" type="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:43111"></label>
+              <label class="field-row" id="harness-token-row"><span>Harness bridge token</span><input id="harness-bridge-token" type="password" autocomplete="off" placeholder="Shared local bridge token"></label>
+              <div class="credential-actions" id="harness-token-actions"><span id="harness-token-state">No bridge token configured</span><button id="clear-harness-bridge-token" type="button">Clear token</button></div>
               <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
             </section>
             <section class="settings-section">
-              <div class="settings-section-title"><strong>Voice mode</strong><span>Local · opt in only</span></div>
+              <div class="settings-section-title"><strong>Voice mode</strong><span>Local by default · cloud is explicit opt in</span></div>
               <label class="field-row"><span>Wake word</span><input id="voice-wake-word" type="text" maxlength="80" placeholder="Hey Agent"></label>
-              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-provider"><option value="parakeet">LOCAL — NVIDIA Parakeet</option><option value="deepgram">CLOUD — Deepgram</option><option value="google">CLOUD — Google</option><option value="azure">CLOUD — Azure</option><option value="aws">CLOUD — AWS</option><option value="openai">CLOUD — OpenAI</option></select><select id="stt-model" hidden><option value="nvidia/parakeet-tdt-0.6b-v2">NVIDIA Parakeet TDT 0.6B V2</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <label class="field-row" id="stt-credential-row"><span>Cloud STT credential</span><input id="stt-credential" type="password" autocomplete="off" placeholder="Selected provider credential"></label>
+              <div class="credential-actions" id="stt-credential-actions"><span id="stt-credential-state">No cloud credential configured</span><button id="clear-stt-credential" type="button">Clear credential</button></div>
+              <label class="field-row" id="stt-endpoint-row"><span>Cloud endpoint <small>(optional)</small></span><input id="stt-endpoint" type="url" autocomplete="off" spellcheck="false"></label>
+              <label class="field-row" id="stt-region-row"><span>Cloud region <small>(Azure/AWS)</small></span><input id="stt-region" type="text" autocomplete="off" spellcheck="false"></label>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
               <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
-              <p class="settings-note">Recommended: Whisper turbo for accurate English coding terms on this GPU, or Distil-Whisper large-v3 for a lighter English model. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
+              <p class="settings-note">LOCAL — Parakeet keeps microphone audio on this device and never falls back to cloud transcription. Pocket TTS is a small English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
@@ -399,6 +451,12 @@ function renderHotkeyInputs() {
 
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
+  clearSttCredentialRequested = false;
+  sttCredentialRemovalIntent = false;
+  clearVisionApiKeyRequested = false;
+  clearHarnessBridgeTokenRequested = false;
+  visionKeyExplicitClearRequested = false;
+  visionReplacementKeyOrigin = '';
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -411,10 +469,34 @@ function populateSettingsPanel() {
   document.querySelector('#ai-api-url').value = settings.apiUrl || '';
   document.querySelector('#ai-model').value = settings.model;
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
+  document.querySelector('#supervisor-background-enabled').checked = settings.supervisorBackgroundEnabled !== false;
+  document.querySelector('#vision-enabled').checked = Boolean(settings.visionEnabled);
+  document.querySelector('#vision-use-supervisor-model').checked = settings.visionUseSupervisorModel !== false;
+  document.querySelector('#vision-api-url').value = settings.visionApiUrl || '';
+  visionKeyPersistedEndpoint = settings.visionApiUrl || '';
+  document.querySelector('#vision-model').value = settings.visionModel || '';
+  document.querySelector('#vision-api-key').value = '';
+  document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+  document.querySelector('#vision-key-state').textContent = settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+  document.querySelector('#clear-vision-api-key').hidden = !settings.hasVisionApiKey;
+  document.querySelector('#harness-bridge-enabled').checked = Boolean(settings.harnessBridgeEnabled);
+  document.querySelector('#harness-bridge-endpoint').value = settings.harnessBridgeEndpoint || 'http://127.0.0.1:43111';
+  document.querySelector('#harness-bridge-token').value = '';
+  document.querySelector('#harness-bridge-token').placeholder = settings.hasHarnessBridgeToken ? 'Encrypted token configured' : 'Shared local bridge token';
+  document.querySelector('#harness-token-state').textContent = settings.hasHarnessBridgeToken ? 'Encrypted token configured' : 'No bridge token configured';
+  document.querySelector('#clear-harness-bridge-token').hidden = !settings.hasHarnessBridgeToken;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
+  document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
   document.querySelector('#voice-wake-word').value = settings.wakeWord || '';
-  document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
+  document.querySelector('#stt-provider').value = settings.sttProvider || 'parakeet';
+  document.querySelector('#stt-model').value = settings.sttModel || 'nvidia/parakeet-tdt-0.6b-v2';
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = settings.hasSttCredential ? 'Encrypted credential configured' : 'Selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = settings.hasSttCredential ? 'Encrypted credential configured' : 'No cloud credential configured';
+  document.querySelector('#clear-stt-credential').hidden = !settings.hasSttCredential;
+  document.querySelector('#stt-endpoint').value = settings.sttEndpoint || '';
+  document.querySelector('#stt-region').value = settings.sttRegion || '';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
@@ -426,6 +508,9 @@ function populateSettingsPanel() {
   renderHotkeyInputs();
   syncProviderFeatureAvailability();
   void refreshSpeechStatus();
+  syncSttProviderFields();
+  syncVisionFields();
+  syncHarnessBridgeFields();
 }
 
 async function openSettingsPanel() {
@@ -444,6 +529,32 @@ function closeSettingsPanel() {
   }, 160);
 }
 
+function syncSttProviderFields() {
+  const provider = document.querySelector('#stt-provider').value;
+  const cloud = provider !== 'parakeet';
+  document.querySelector('#stt-credential-row').hidden = !cloud;
+  document.querySelector('#stt-credential-actions').hidden = !cloud;
+  document.querySelector('#stt-endpoint-row').hidden = !cloud;
+  document.querySelector('#stt-region-row').hidden = !['azure', 'aws'].includes(provider);
+  document.querySelector('#install-stt').hidden = cloud;
+}
+
+function syncVisionFields() {
+  const enabled = document.querySelector('#vision-enabled').checked;
+  const separate = enabled && !document.querySelector('#vision-use-supervisor-model').checked;
+  document.querySelector('#vision-supervisor-row').hidden = !enabled;
+  for (const id of ['vision-endpoint-row', 'vision-model-row', 'vision-key-row', 'vision-key-actions']) {
+    document.querySelector(`#${id}`).hidden = !separate;
+  }
+}
+
+function syncHarnessBridgeFields() {
+  const enabled = document.querySelector('#harness-bridge-enabled').checked;
+  for (const id of ['harness-endpoint-row', 'harness-token-row', 'harness-token-actions']) {
+    document.querySelector(`#${id}`).hidden = !enabled;
+  }
+}
+
 function settingsPayload() {
   const hotkeys = {};
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
@@ -457,10 +568,27 @@ function settingsPayload() {
     apiUrl: document.querySelector('#ai-api-url').value,
     model: document.querySelector('#ai-model').value,
     agentEnabled: document.querySelector('#agent-enabled').checked,
+    supervisorBackgroundEnabled: document.querySelector('#supervisor-background-enabled').checked,
+    visionEnabled: document.querySelector('#vision-enabled').checked,
+    visionUseSupervisorModel: document.querySelector('#vision-use-supervisor-model').checked,
+    visionApiUrl: document.querySelector('#vision-api-url').value,
+    visionModel: document.querySelector('#vision-model').value,
+    visionApiKey: document.querySelector('#vision-api-key').value,
+    clearVisionApiKey: clearVisionApiKeyRequested,
+    harnessBridgeEnabled: document.querySelector('#harness-bridge-enabled').checked,
+    harnessBridgeEndpoint: document.querySelector('#harness-bridge-endpoint').value,
+    harnessBridgeToken: document.querySelector('#harness-bridge-token').value,
+    clearHarnessBridgeToken: clearHarnessBridgeTokenRequested,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
+    githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
     wakeWord: document.querySelector('#voice-wake-word').value,
     sttModel: document.querySelector('#stt-model').value,
+    sttProvider: document.querySelector('#stt-provider').value,
+    sttCredential: document.querySelector('#stt-credential').value,
+    clearSttCredential: clearSttCredentialRequested,
+    sttEndpoint: document.querySelector('#stt-endpoint').value,
+    sttRegion: document.querySelector('#stt-region').value,
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
@@ -1028,6 +1156,7 @@ function persistWorkspaceNow() {
   });
   api.updateMobileWorkspace({
     groups: mobileGroups,
+    activeId,
     sessions: savedSessions.map((session) => ({
       id: session.id,
       groupId: session.groupId,
@@ -1038,6 +1167,7 @@ function persistWorkspaceNow() {
       summary: session.summary,
       agent: session.agent,
       attentionCycleId: session.attentionCycleId,
+      lastActivityAt: session.lastResponseAt || session.createdAt,
       notified: session.notified,
       inputRequired: session.inputRequired,
       busy: sessions.get(session.id)?.busy
@@ -1207,7 +1337,7 @@ function handleProactiveMessages() {
     if (spokenProactiveMessageIds.has(message.id)) continue;
     spokenProactiveMessageIds.add(message.id);
     const brief = message.voiceSummary || message.text;
-    if (desktopVoiceMode) void queueAgentSpeech(brief);
+    if (desktopVoiceMode && !message.desktopSpeechPresented) void queueAgentSpeech(brief);
     else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
   }
 }
@@ -1343,12 +1473,20 @@ function renderAgentState(nextState) {
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post comment to ${confirmation.pullRequestUrl}?`
+      : confirmation.kind === 'merge-pull-request'
+          ? `Merge ${confirmation.title}?`
+        : confirmation.kind === 'tui-selection'
+          ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detailText = document.createElement('code');
     detailText.textContent = confirmation.kind === 'archive'
       ? confirmation.summary
       : confirmation.kind === 'github-comment'
         ? confirmation.body
+      : confirmation.kind === 'merge-pull-request'
+          ? confirmation.pullRequestUrl
+        : confirmation.kind === 'tui-selection'
+          ? confirmation.optionLabel
         : confirmation.input;
     copy.append(heading, detailText);
     if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
@@ -1404,7 +1542,9 @@ async function runAgentCatchUpQueue() {
         if (result.hasMore) continue;
         break;
       }
-      const speechCompleted = await queueAgentSpeech(result.speech || result.response);
+      const speechCompleted = await queueAgentSpeech(result.speech || result.response, {
+        interactionId: result.interactionId || ''
+      });
       if (!speechCompleted) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
@@ -1426,23 +1566,214 @@ function closeAgentPanel() {
   });
 }
 
-async function submitAgentChat(text, { spokenRequest = false } = {}) {
+async function submitAgentChat(text, { spokenRequest = false, interactionId = '' } = {}) {
   const input = document.querySelector('#agent-chat-input');
   const prompt = String(text ?? input.value).trim();
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest });
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest, interactionId });
     renderAgentState(result.state);
-    await queueAgentSpeech(result.speech || result.response);
+    await queueAgentSpeech(result.speech || result.response, {
+      interactionId: result.interactionId || ''
+    });
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));
   }
 }
 
+function restoreTerminalVisualCapture() {
+  const restore = terminalCaptureRestore;
+  terminalCaptureRestore = null;
+  restore?.();
+}
+
+function lockTerminalCaptureInteraction() {
+  shellElement.classList.add('capture-locked');
+  return () => shellElement.classList.remove('capture-locked');
+}
+
+function restoreCapturedTerminalLayout(sessionId, token, originalDimensions, onRestored) {
+  let settled = false;
+  const restore = () => {
+    if (settled || terminalCaptureResizeTokens.get(sessionId) !== token) return;
+    settled = true;
+    try {
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && sessionId !== activeId
+        && originalDimensions.cols > 0 && originalDimensions.rows > 0) {
+        capturedSession.terminal.resize(originalDimensions.cols, originalDimensions.rows);
+      }
+      fitActive();
+    } finally {
+      if (terminalCaptureResizeTokens.get(sessionId) === token) terminalCaptureResizeTokens.delete(sessionId);
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && !capturedSession.exited) {
+        api.resize(sessionId, capturedSession.terminal.cols, capturedSession.terminal.rows);
+      }
+      onRestored?.();
+    }
+  };
+  const timer = window.setTimeout(restore, 80);
+  requestAnimationFrame(() => {
+    window.clearTimeout(timer);
+    restore();
+  });
+}
+
+function hideNonterminalCaptureOverlays({ hideDashboard = true, preserveOverlays = false } = {}) {
+  const dashboardWasHidden = supervisorDashboard.hidden;
+  const supervisorWasActive = shellElement.classList.contains('supervisor-active');
+  const overlayStates = [...document.querySelectorAll('.settings-backdrop, .link-popover, .toast-region')]
+    .map((element) => ({ element, hidden: element.hidden }));
+  const credentialStates = [...document.querySelectorAll('input[type="password"]')]
+    .map((element) => ({ element, value: element.value }));
+  const mobileUrlStates = [...document.querySelectorAll('#mobile-urls code')]
+    .map((element) => ({ element, text: element.textContent }));
+  const mobileQrStates = [...document.querySelectorAll('#mobile-urls canvas')]
+    .map((element) => ({
+      element,
+      visibility: element.style.visibility,
+      ariaHidden: element.getAttribute('aria-hidden')
+    }));
+  if (hideDashboard) {
+    supervisorDashboard.hidden = true;
+    shellElement.classList.remove('supervisor-active');
+  }
+  for (const credential of credentialStates) {
+    if (credential.value) credential.element.value = '••••••••';
+  }
+  for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = '[redacted mobile access URL]';
+  for (const mobileQr of mobileQrStates) {
+    mobileQr.element.style.visibility = 'hidden';
+    mobileQr.element.setAttribute('aria-hidden', 'true');
+  }
+  if (!preserveOverlays) {
+    for (const overlay of overlayStates) overlay.element.hidden = true;
+  }
+  return () => {
+    for (const credential of credentialStates) credential.element.value = credential.value;
+    for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = mobileUrl.text;
+    for (const mobileQr of mobileQrStates) {
+      mobileQr.element.style.visibility = mobileQr.visibility;
+      if (mobileQr.ariaHidden === null) mobileQr.element.removeAttribute('aria-hidden');
+      else mobileQr.element.setAttribute('aria-hidden', mobileQr.ariaHidden);
+    }
+    for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
+    if (hideDashboard) {
+      supervisorDashboard.hidden = dashboardWasHidden;
+      shellElement.classList.toggle('supervisor-active', supervisorWasActive);
+    }
+  };
+}
+
+function waitForTerminalCaptureRepaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(done, 80);
+    if (document.visibilityState === 'visible') requestAnimationFrame(() => requestAnimationFrame(done));
+  });
+}
+
 async function handleAgentAction({ requestId, type, payload }) {
   try {
+    if (type === 'prepare-session-chrome-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session?.item) throw new Error('The requested session chrome is no longer available.');
+      const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      const previousScrollTop = sessionList.scrollTop;
+      terminalCaptureRestore = () => {
+        sessionList.scrollTop = previousScrollTop;
+        restoreInteraction();
+        restoreOverlays();
+      };
+      try {
+        const captureElement = payload.chromeRegion === 'header' && session.id === activeId
+          ? document.querySelector('.command-bar')
+          : session.item;
+        if (captureElement === session.item) session.item.scrollIntoView({ block: 'nearest' });
+        await waitForTerminalCaptureRepaint();
+        const rect = captureElement.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The requested session chrome is not visible.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
+    if (type === 'prepare-terminal-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The session is no longer available.');
+      const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      const resizeToken = Symbol(session.id);
+      const originalDimensions = { cols: session.terminal.cols, rows: session.terminal.rows };
+      terminalCaptureResizeTokens.set(session.id, resizeToken);
+      terminalCaptureRestore = () => {
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
+        sessions.get(activeId)?.pane.classList.add('active');
+        restoreOverlays();
+        restoreCapturedTerminalLayout(session.id, resizeToken, originalDimensions, restoreInteraction);
+      };
+      try {
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
+        session.pane.classList.add('active');
+        session.fit.fit();
+        await waitForTerminalCaptureRepaint();
+        const rect = session.pane.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The terminal has no visible capture area.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
+    if (type === 'prepare-window-capture') {
+      restoreTerminalVisualCapture();
+      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false, preserveOverlays: true });
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      terminalCaptureRestore = () => {
+        restoreInteraction();
+        restoreOverlays();
+        requestAnimationFrame(fitActive);
+      };
+      await waitForTerminalCaptureRepaint();
+      api.resolveAgentAction(requestId, { prepared: true });
+      return;
+    }
+    if (type === 'restore-terminal-capture') {
+      restoreTerminalVisualCapture();
+      api.resolveAgentAction(requestId, { restored: true });
+      return;
+    }
+    if (type === 'read-terminal-text') {
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The retained terminal is no longer available.');
+      api.resolveAgentAction(requestId, { text: terminalHistory(session.terminal).slice(-20_000) });
+      return;
+    }
     if (type === 'create-session') {
       let group = payload.createGroup
         ? null
@@ -1499,9 +1830,15 @@ function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
   if (stt) {
-    stt.textContent = status.sttInstalled ? 'Installed' : 'Not installed';
-    stt.classList.remove('install-error');
-    stt.removeAttribute('title');
+    const configurationError = String(status.sttConfigurationError || '').trim();
+    stt.textContent = status.sttLocation === 'cloud'
+      ? status.sttInstalled
+        ? `Configured · CLOUD — ${status.sttProviderName}`
+        : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
+      : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
+    stt.classList.toggle('install-error', Boolean(configurationError));
+    if (configurationError) stt.title = configurationError;
+    else stt.removeAttribute('title');
   }
   if (tts) {
     tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
@@ -1581,11 +1918,14 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text, { openReplyWindow = true } = {}) {
+async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}) {
   if (!desktopVoiceMode) return true;
   try {
     const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
-    if (completed && openReplyWindow) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) {
+      voiceReplyInteractionId = String(interactionId || '');
+      voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    }
     return completed;
   } catch (error) {
     showToast(`Voice: ${error.message}`);
@@ -1606,20 +1946,36 @@ async function processVoiceUtterance(blob, durationMs) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
-  label.textContent = 'Transcribing locally…';
+  const descriptor = (settings.sttProviders || []).find((provider) => provider.id === settings.sttProvider);
+  label.textContent = settings.sttProvider === 'parakeet'
+    ? 'Transcribing locally with Parakeet…'
+    : `Transcribing with ${descriptor?.name || settings.sttProvider}…`;
   try {
+    const replyWindowActive = Date.now() <= voiceReplyUntil;
+    if (!replyWindowActive) voiceReplyInteractionId = '';
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
-      Date.now() <= voiceReplyUntil
+      replyWindowActive
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
       return;
     }
+    if (transcript.clarification) {
+      label.textContent = 'Waiting for clarification';
+      voiceReplyInteractionId = transcript.clarification.interactionId || '';
+      await queueAgentSpeech(transcript.clarification.prompt, {
+        openReplyWindow: true,
+        interactionId: transcript.clarification.interactionId || ''
+      });
+      return;
+    }
     voiceReplyUntil = 0;
+    const interactionId = replyWindowActive ? voiceReplyInteractionId : '';
+    voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
-    await submitAgentChat(transcript.text, { spokenRequest: true });
+    await submitAgentChat(transcript.text, { spokenRequest: true, interactionId });
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   } finally {
@@ -1634,7 +1990,7 @@ async function processVoiceUtterance(blob, durationMs) {
 
 async function startDesktopVoiceMode() {
   const status = await refreshSpeechStatus();
-  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Install both local speech models in Settings first.');
+  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Configure speech-to-text and install Pocket TTS in Settings first.');
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Microphone recording is unavailable in this desktop session.');
   voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   voiceAudioContext = new AudioContext();
@@ -1693,16 +2049,16 @@ async function startDesktopVoiceMode() {
       silenceAt = 0;
     } else if (speaking) {
       silenceAt ||= now;
-      if (now - silenceAt > 850 || now - startedAt > 14_000) {
-        const duration = now - startedAt;
-        const material = header ? [header, ...utterance] : utterance;
-        const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
-        speaking = false;
-        silenceAt = 0;
-        utterance = [];
-        preRoll = [];
-        void processVoiceUtterance(blob, duration);
-      }
+    }
+    if (speaking && (now - startedAt > 14_000 || (silenceAt && now - silenceAt > 850))) {
+      const duration = now - startedAt;
+      const material = header ? [header, ...utterance] : utterance;
+      const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      speaking = false;
+      silenceAt = 0;
+      utterance = [];
+      preRoll = [];
+      void processVoiceUtterance(blob, duration);
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
@@ -1719,6 +2075,7 @@ function stopDesktopVoiceMode() {
   desktopVoiceMode = false;
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
+  voiceReplyInteractionId = '';
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -2040,6 +2397,7 @@ function renderSessionItem(session) {
 }
 
 function activateSession(id) {
+  if (terminalCaptureRestore) return;
   const next = sessions.get(id);
   if (!next) return;
   if (supervisorDashboardActive) closeAgentPanel();
@@ -2067,6 +2425,7 @@ function activateSession(id) {
     : `${next.shell} · ${next.cwd}`;
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
+  api.updateMobileActiveSession(activeId);
   schedulePersist();
   requestAnimationFrame(() => {
     fitSession(next);
@@ -2077,6 +2436,7 @@ function activateSession(id) {
 
 function fitSession(session) {
   if (!session || !session.pane.classList.contains('active')) return;
+  if (shellElement.classList.contains('supervisor-active') || terminalStack.getClientRects().length === 0) return;
   try {
     session.fit.fit();
   } catch {
@@ -2430,12 +2790,15 @@ async function addSession(cwd, options = {}) {
   }
 
   terminal.onData((data) => {
-    if (!session.exited) {
-      trackTerminalInput(session, data);
-      api.write(id, data);
-    }
+    if (session.exited) return;
+    const userInput = stripTerminalControlInput(data);
+    if (terminalCaptureRestore && userInput) return;
+    if (userInput) trackTerminalInput(session, data);
+    api.write(id, data);
   });
-  terminal.onResize(({ cols, rows }) => api.resize(id, cols, rows));
+  terminal.onResize(({ cols, rows }) => {
+    if (!terminalCaptureResizeTokens.has(id)) api.resize(id, cols, rows);
+  });
   terminal.onTitleChange((title) => {
     if (session.manualTitle) return;
     const cleaned = title.trim();
@@ -2453,6 +2816,7 @@ async function addSession(cwd, options = {}) {
   });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
+    if (terminalCaptureRestore) return false;
     const action = resolveTerminalShortcut(event, terminal.hasSelection(), settings.hotkeys);
     if (!action) return true;
     if (!consumeTerminalShortcutEvent(event, action)) return true;
@@ -2888,6 +3252,95 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
+document.querySelector('#vision-enabled').addEventListener('change', syncVisionFields);
+document.querySelector('#vision-use-supervisor-model').addEventListener('change', syncVisionFields);
+document.querySelector('#harness-bridge-enabled').addEventListener('change', syncHarnessBridgeFields);
+document.querySelector('#harness-bridge-token').addEventListener('input', (event) => {
+  if (event.target.value) clearHarnessBridgeTokenRequested = false;
+});
+document.querySelector('#clear-harness-bridge-token').addEventListener('click', () => {
+  clearHarnessBridgeTokenRequested = true;
+  document.querySelector('#harness-bridge-token').value = '';
+  document.querySelector('#harness-bridge-token').placeholder = 'Token will be removed on save';
+  document.querySelector('#harness-token-state').textContent = 'Token will be removed';
+  document.querySelector('#clear-harness-bridge-token').hidden = true;
+});
+const visionEndpointOrigin = (value) => {
+  try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
+};
+document.querySelector('#vision-api-url').addEventListener('change', (event) => {
+  const draftOrigin = visionEndpointOrigin(event.target.value);
+  const endpointChanged = draftOrigin !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+  const keyInput = document.querySelector('#vision-api-key');
+  if (keyInput.value && visionReplacementKeyOrigin !== draftOrigin) {
+    keyInput.value = '';
+    visionReplacementKeyOrigin = '';
+  }
+  if (endpointChanged) {
+    clearVisionApiKeyRequested = !keyInput.value;
+    keyInput.placeholder = 'Enter a key for this endpoint';
+    document.querySelector('#vision-key-state').textContent = keyInput.value ? 'Replacement key ready' : 'Key cleared for endpoint change';
+    document.querySelector('#clear-vision-api-key').hidden = !keyInput.value;
+  } else if (keyInput.value) {
+    visionKeyExplicitClearRequested = false;
+    clearVisionApiKeyRequested = false;
+    document.querySelector('#vision-key-state').textContent = 'Replacement key ready';
+    document.querySelector('#clear-vision-api-key').hidden = false;
+  } else {
+    clearVisionApiKeyRequested = visionKeyExplicitClearRequested;
+    keyInput.placeholder = clearVisionApiKeyRequested
+      ? 'Key will be removed on save'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+    document.querySelector('#vision-key-state').textContent = clearVisionApiKeyRequested
+      ? 'Key will be removed'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+    document.querySelector('#clear-vision-api-key').hidden = clearVisionApiKeyRequested || !settings.hasVisionApiKey;
+  }
+});
+document.querySelector('#vision-api-key').addEventListener('input', (event) => {
+  visionReplacementKeyOrigin = event.target.value
+    ? visionEndpointOrigin(document.querySelector('#vision-api-url').value)
+    : '';
+  if (event.target.value) visionKeyExplicitClearRequested = false;
+  clearVisionApiKeyRequested = event.target.value
+    ? false
+    : visionKeyExplicitClearRequested
+      || visionEndpointOrigin(document.querySelector('#vision-api-url').value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+});
+document.querySelector('#clear-vision-api-key').addEventListener('click', () => {
+  visionKeyExplicitClearRequested = true;
+  clearVisionApiKeyRequested = true;
+  document.querySelector('#vision-api-key').value = '';
+  visionReplacementKeyOrigin = '';
+  document.querySelector('#vision-api-key').placeholder = 'Key will be removed on save';
+  document.querySelector('#vision-key-state').textContent = 'Key will be removed';
+  document.querySelector('#clear-vision-api-key').hidden = true;
+});
+document.querySelector('#stt-provider').addEventListener('change', () => {
+  sttCredentialRemovalIntent = true;
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = 'Credential cleared for provider change';
+  document.querySelector('#clear-stt-credential').hidden = true;
+  document.querySelector('#stt-endpoint').value = '';
+  document.querySelector('#stt-region').value = '';
+  syncSttProviderFields();
+  document.querySelector('#stt-status').textContent = document.querySelector('#stt-provider').value === 'parakeet'
+    ? 'LOCAL — Parakeet'
+    : 'CLOUD — save settings to configure';
+});
+document.querySelector('#stt-credential').addEventListener('input', (event) => {
+  clearSttCredentialRequested = sttCredentialRemovalIntent && !event.target.value.trim();
+});
+document.querySelector('#clear-stt-credential').addEventListener('click', () => {
+  sttCredentialRemovalIntent = true;
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Credential will be removed on save';
+  document.querySelector('#stt-credential-state').textContent = 'Credential will be removed';
+  document.querySelector('#clear-stt-credential').hidden = true;
+});
 document.querySelector('#preview-voice').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -2922,13 +3375,23 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
+api.onAgentVoicePing(async ({ text, acknowledgement, interactionId, presentationId } = {}) => {
+  const delivered = desktopVoiceMode
+    ? await queueAgentSpeech(String(text || ''), {
+      openReplyWindow: !acknowledgement,
+      interactionId: String(interactionId || '')
+    })
+    : false;
+  if (presentationId) api.reportAgentVoicePresentation(presentationId, delivered);
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (terminalCaptureRestore) {
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && sessionList.querySelector('.group-sort[aria-expanded="true"]')) {
     event.preventDefault();
     closeGroupSortMenus();
@@ -2969,6 +3432,14 @@ window.setInterval(() => {
   const now = Date.now();
   for (const session of sessions.values()) updateSessionResponseTime(session, now);
 }, 1_000);
+api.onWindowWillHide(() => {
+  if (desktopVoiceMode) stopDesktopVoiceMode();
+  persistWorkspaceNow();
+});
+api.onWindowWillHide(() => {
+  if (desktopVoiceMode) stopDesktopVoiceMode();
+  persistWorkspaceNow();
+});
 window.setInterval(() => void refreshRuntimeStateAndPersist(), 2_000);
 
 async function restoreSavedWorkspace() {

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 import argparse
+import array
+import gc
 import json
+import math
 import os
 import sys
+import wave
 from pathlib import Path
 
 
-_whisper_models = {}
+_parakeet_models = {}
 _tts_model = None
 _tts_voices = {}
 
@@ -18,59 +22,103 @@ def configure_cache(root: Path) -> None:
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(cache / "huggingface" / "hub")
 
 
-def whisper_device() -> tuple[str, str]:
-    try:
-        import ctranslate2
-        if ctranslate2.get_cuda_device_count() > 0:
-            return "cuda", "float16"
-    except Exception:
-        pass
-    return "cpu", "int8"
+def load_parakeet(model: str, root: Path):
+    import torch
+    import nemo.collections.asr as nemo_asr
 
-
-def load_whisper(model: str, root: Path, download_only: bool = False):
-    from faster_whisper import WhisperModel
-    device, compute_type = ("cpu", "int8") if download_only else whisper_device()
-    key = (model, str(root), device, compute_type)
-    if key in _whisper_models:
-        return _whisper_models[key]
-    loaded = WhisperModel(
-        model,
-        device=device,
-        compute_type=compute_type,
-        download_root=str(root / "models" / "whisper"),
-        local_files_only=False,
-    )
-    _whisper_models[key] = loaded
+    resolved = model or "nvidia/parakeet-tdt-0.6b-v2"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    key = (resolved, str(root), device)
+    if key in _parakeet_models:
+        return _parakeet_models[key]
+    loaded = nemo_asr.models.ASRModel.from_pretrained(resolved)
+    loaded.eval()
+    loaded.to(device)
+    _parakeet_models[key] = loaded
     return loaded
 
 
 def download_stt(args) -> None:
-    load_whisper(args.model, args.root, download_only=True)
+    load_parakeet(args.model, args.root)
     print(json.dumps({"ok": True, "model": args.model}))
 
 
+def release_stt_models():
+    released = len(_parakeet_models)
+    _parakeet_models.clear()
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {"released": released}
+
+
+def wav_speech_metrics(input_path):
+    """Estimate deliberate speech from canonical 16-bit PCM without a cloud VAD."""
+    try:
+        with wave.open(str(input_path), "rb") as recording:
+            sample_rate = recording.getframerate()
+            channels = recording.getnchannels()
+            sample_width = recording.getsampwidth()
+            frame_count = recording.getnframes()
+            frames = recording.readframes(frame_count)
+    except (OSError, EOFError, wave.Error):
+        return 0.5, 0.0
+    duration = frame_count / sample_rate if sample_rate else 0.0
+    if sample_width != 2 or sample_rate <= 0 or not frames:
+        return 1.0, duration
+    samples = array.array("h")
+    samples.frombytes(frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    mono = samples[::max(1, channels)]
+    if not mono:
+        return 1.0, duration
+    rms = math.sqrt(sum(sample * sample for sample in mono) / len(mono)) / 32768.0
+    zero_crossings = sum(1 for left, right in zip(mono, mono[1:]) if (left < 0) != (right < 0))
+    zero_crossing_rate = zero_crossings / max(1, len(mono) - 1)
+    window_size = max(1, round(sample_rate * 0.02))
+    window_rms = []
+    for offset in range(0, len(mono), window_size):
+        window = mono[offset:offset + window_size]
+        window_rms.append(math.sqrt(sum(sample * sample for sample in window) / len(window)) / 32768.0)
+    mean_window = sum(window_rms) / len(window_rms)
+    variation = math.sqrt(sum((value - mean_window) ** 2 for value in window_rms) / len(window_rms)) / max(mean_window, 1e-6)
+    energy_score = max(0.0, min(1.0, (rms - 0.002) / 0.025))
+    variation_score = max(0.25, min(1.0, (variation - 0.04) / 0.30))
+    if zero_crossing_rate < 0.005:
+        crossing_score = zero_crossing_rate / 0.005
+    elif zero_crossing_rate <= 0.30:
+        crossing_score = 1.0
+    else:
+        crossing_score = max(0.0, 1.0 - (zero_crossing_rate - 0.30) / 0.20)
+    speech_probability = energy_score * variation_score * crossing_score
+    return 1.0 - max(0.0, min(1.0, speech_probability)), duration
+
+
 def transcribe_result(args):
-    model = load_whisper(args.model, args.root)
-    language = str(getattr(args, "language", "") or "").strip() or None
-    initial_prompt = str(getattr(args, "initialPrompt", "") or "").strip() or None
-    segments, info = model.transcribe(
-        args.input,
-        beam_size=5,
-        language=language,
-        initial_prompt=initial_prompt,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 450, "speech_pad_ms": 180},
-        condition_on_previous_text=False,
-    )
-    materialized = list(segments)
-    text = " ".join(segment.text.strip() for segment in materialized if segment.text.strip()).strip()
-    probabilities = [float(segment.no_speech_prob) for segment in materialized]
+    model = load_parakeet(args.model, args.root)
+    outputs = model.transcribe([args.input], batch_size=1, return_hypotheses=True)
+    first = outputs[0] if outputs else ""
+    text = str(getattr(first, "text", first) or "").strip()
+    confidence = None
+    score = getattr(first, "score", None)
+    if score is not None:
+        try:
+            sequence = getattr(first, "y_sequence", None)
+            token_count = max(1, len(sequence) if sequence is not None else len(text.split()))
+            average_log_probability = min(0.0, float(score) / token_count)
+            confidence = max(0.0, min(1.0, math.exp(max(-20.0, average_log_probability))))
+        except (TypeError, ValueError, OverflowError):
+            confidence = None
+    no_speech_probability, duration = wav_speech_metrics(args.input)
     return {
         "text": text,
-        "language": info.language,
-        "duration": float(info.duration),
-        "noSpeechProbability": sum(probabilities) / len(probabilities) if probabilities else 1.0,
+        "language": "en",
+        "duration": duration,
+        "noSpeechProbability": 1.0 if not text else no_speech_probability,
+        "provider": "parakeet",
+        "confidence": confidence,
     }
 
 
@@ -156,6 +204,8 @@ def serve(args) -> None:
             operation = SimpleNamespace(root=args.root, **request)
             if command == "transcribe":
                 result = transcribe_result(operation)
+            elif command == "release-stt":
+                result = release_stt_models()
             elif command == "synthesize":
                 result = synthesize_result(operation)
             elif command == "warm-tts":

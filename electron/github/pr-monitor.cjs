@@ -147,10 +147,10 @@ function commentRevisionKey(comment) {
   ])).digest('hex');
 }
 
-function hasCodexThumbsUp(pull) {
+function hasCodexThumbsUp(pull, actorLogins) {
   return (pull?.reactions || []).some((reaction) => reaction.name === '+1'
     && reaction.count > 0
-    && (reaction.authors || []).some(isCodexAuthor));
+    && (reaction.authors || []).some((author) => isCodexAuthor(author, actorLogins)));
 }
 
 function successfulGitCommit(output) {
@@ -158,8 +158,8 @@ function successfulGitCommit(output) {
   return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+([0-9a-f]{7,40})\]\s+[^\r\n]+/i)?.[1] || '';
 }
 
-function isActionableCodexComment(comment) {
-  if (!isCodexAuthor(comment?.author) || !String(comment?.body || '').trim()) return false;
+function isActionableCodexComment(comment, actorLogins) {
+  if (!isCodexAuthor(comment?.author, actorLogins) || !String(comment?.body || '').trim()) return false;
   return comment.kind !== 'review' || String(comment.state || '').toUpperCase() !== 'APPROVED';
 }
 
@@ -169,9 +169,9 @@ function sameGitRevision(left, right) {
   return Boolean(first && second && (first === second || first.startsWith(second) || second.startsWith(first)));
 }
 
-function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '') {
-  const approved = hasCodexThumbsUp(snapshot);
-  const wasApproved = hasCodexThumbsUp(previous);
+function reconcileCodexApproval(previous, snapshot, pendingLocalHeadSha = '', actorLogins) {
+  const approved = hasCodexThumbsUp(snapshot, actorLogins);
+  const wasApproved = hasCodexThumbsUp(previous, actorLogins);
   let approvalHeadSha = String(previous?.codexApprovalHeadSha || '');
   let promptedHeadSha = String(previous?.mergePromptedHeadSha || (previous?.mergePrompted ? previous?.headSha : '') || '');
   let pendingHeadSha = String(pendingLocalHeadSha || previous?.pendingLocalHeadSha || '');
@@ -254,11 +254,57 @@ async function postPullRequestComment(value, body) {
   return { id: result.id, url: result.html_url, body: result.body, createdAt: result.created_at };
 }
 
-function isCodexAuthor(author) {
-  return /^(?:chatgpt-codex-connector|codex|openai-codex)(?:\[bot\])?$/i.test(String(author || '').trim());
+async function mergePullRequest(value, options = {}) {
+  const ref = parsePullRequestUrl(value);
+  const headSha = String(options.headSha || '');
+  if (!/^[0-9a-f]{7,40}$/i.test(headSha)) throw new Error('The approved pull-request revision is missing or invalid. Refresh the pull request before merging.');
+  const execute = options.runGh || runGh;
+  const currentOutput = await execute(['pr', 'view', ref.url, '--json', 'state,headRefOid'], { owner: ref.owner, timeout: 20_000 });
+  const current = JSON.parse(currentOutput || '{}');
+  if (String(current.state || '').toUpperCase() !== 'OPEN' || !sameGitRevision(current.headRefOid, headSha)) {
+    throw new Error('The pull request is no longer open at the approved revision. Refresh it before merging.');
+  }
+  const reactionsOutput = await execute([
+    'api', '--paginate', '--slurp', `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/reactions?per_page=100`
+  ], { owner: ref.owner, timeout: 20_000 });
+  const reactions = reactionSummary(flattenPages(JSON.parse(reactionsOutput || '[]')));
+  if (!hasCodexThumbsUp({ reactions }, options.codexActorLogins)) {
+    throw new Error('Codex approval is no longer present on the pull request. Refresh it before merging.');
+  }
+  let strategy = '--merge';
+  try {
+    const output = await execute(['api', `repos/${ref.owner}/${ref.repo}`], { owner: ref.owner, timeout: 20_000 });
+    const repository = JSON.parse(output || '{}');
+    strategy = repository.allow_merge_commit
+      ? '--merge'
+      : repository.allow_squash_merge
+        ? '--squash'
+        : repository.allow_rebase_merge
+          ? '--rebase'
+          : '';
+    if (!strategy) throw new Error('This repository does not have an enabled pull-request merge strategy.');
+  } catch (error) {
+    if (/does not have an enabled/.test(String(error?.message || ''))) throw error;
+    throw new Error(`SideTerm could not determine the repository's enabled merge strategy: ${String(error?.message || error)}`);
+  }
+  await execute(['pr', 'merge', ref.url, strategy, '--match-head-commit', headSha], { owner: ref.owner, timeout: 120_000 });
+  let state = 'UNKNOWN';
+  try {
+    const output = await execute(['pr', 'view', ref.url, '--json', 'state'], { owner: ref.owner, timeout: 20_000 });
+    state = String(JSON.parse(output || '{}').state || 'UNKNOWN').toUpperCase();
+  } catch {}
+  return { merged: state === 'MERGED', submitted: true, state, url: ref.url, number: ref.number, headSha };
+}
+
+function isCodexAuthor(author, actorLogins = ['chatgpt-codex-connector', 'codex', 'openai-codex']) {
+  const normalized = String(author || '').trim().replace(/\[bot\]$/i, '').toLowerCase();
+  return actorLogins.map((item) => String(item).trim().replace(/\[bot\]$/i, '').toLowerCase()).includes(normalized);
 }
 
 function shouldPollPullRequest(pull) {
+  // Keep a lightweight observation loop for every open PR. An approval is not
+  // permanent: the reaction can be withdrawn and GitHub can advance the head
+  // without SideTerm seeing a local commit first.
   return String(pull?.state || '').toLowerCase() === 'open';
 }
 
@@ -277,6 +323,7 @@ module.exports = {
   isCodexAuthor,
   isActionableCodexComment,
   hasCodexThumbsUp,
+  mergePullRequest,
   parsePullRequestUrl,
   parseJsonLines,
   postPullRequestComment,

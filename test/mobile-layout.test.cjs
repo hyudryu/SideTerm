@@ -21,7 +21,28 @@ test('mobile viewport keeps the device scale and allows safe-area layout', () =>
 
 test('mobile voice mode is reannounced after a WebSocket reconnect', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
-  assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true \}\)/);
+  assert.match(script, /socket\.addEventListener\('open',[\s\S]*if \(mobileVoiceMode\) send\(\{ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId \}\)/);
+  assert.match(script, /socket\.addEventListener\('close',[\s\S]*mobileAudioGeneration \+= 1;[\s\S]*interruptMobileVoicePlayback\(\);[\s\S]*mobileAudioQueue = Promise\.resolve\(false\)/);
+  assert.match(script, /generation === mobileAudioGeneration \? playMobileAudio/);
+});
+
+test('mobile refreshes both speech provider location and name', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /message\.type === 'voice:status'[\s\S]*mobileSttLocation[\s\S]*mobileSttProviderName/);
+});
+
+test('mobile activation completion waits for guarded speech delivery', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(main, /runProactiveCatchUp\(\{ taskId, targets, isCurrent \}\)/);
+  assert.match(main, /await speechDelivery;[\s\S]*if \(voice && !speechDelivered\) throw staleActivationError\(\);[\s\S]*acknowledge\(\)/);
+  assert.match(main, /requestVoiceActivationUpdate\([\s\S]*\.then\(\(completed\) => \{[\s\S]*completedMobileVoiceActivationIds\.set/);
+  assert.match(main, /return presentationDelivered\(results\) && activationStillCurrent/);
+  assert.match(main, /await speechDelivery;[\s\S]*acknowledge\(presentation\)/);
+  assert.match(main, /pendingMobilePresentations\.set\(presentationId, \{ resolve, timer, client \}\)/);
+  assert.match(main, /message\.type === 'voice:presented'[\s\S]*pending\.resolve\(message\.delivered === true\)/);
+  assert.match(main, /client\.once\('close',[\s\S]*settleMobilePresentations\(client, false\)/);
+  assert.match(script, /queueMobileAudio\(message\)\.then\(\(delivered\) => \{[\s\S]*type: 'voice:presented'/);
 });
 
 test('mobile creation and suppressed catch-up recover without a reload', () => {

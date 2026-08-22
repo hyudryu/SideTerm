@@ -48,17 +48,6 @@ function speechSummary(value, maxWords = 40) {
   return sentence || `${bounded.replace(/[,:;\s]+$/, '')}.`;
 }
 
-const VOICE_EXECUTION_INSTRUCTION = [
-  'This request was transcribed directly from the user\'s speech, so that spoken request is the approval.',
-  'request_terminal_input executes immediately and reports back what happened, so act first, then say what you did in one short sentence.',
-  'Never tell the user to click Approve or wait for a confirmation card.',
-  'Only pause to double-check genuinely irreversible or destructive commands (deletes, force pushes, published writes).'
-].join(' ');
-
-function allowsImmediateVoiceExecution(spokenRequest) {
-  return spokenRequest === true;
-}
-
 function applyWakeWord(text, wakeWord, { allowWithoutWakeWord = false } = {}) {
   const transcript = String(text || '').trim();
   const phrase = String(wakeWord || '').trim();
@@ -73,11 +62,9 @@ function applyWakeWord(text, wakeWord, { allowWithoutWakeWord = false } = {}) {
 }
 
 module.exports = {
-  allowsImmediateVoiceExecution,
   applyWakeWord,
   VoiceAcknowledgementPicker,
   VOICE_ACKNOWLEDGEMENTS,
   VOICE_MODE_INSTRUCTION,
-  VOICE_EXECUTION_INSTRUCTION,
   speechSummary
 };
