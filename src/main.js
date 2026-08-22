@@ -34,6 +34,9 @@ const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
+// Restored sessions get a longer window: tmux attach redraws and slow shell
+// startup output must not count as a fresh response after an app reboot.
+const RESTORE_REDRAW_SUPPRESS_MS = 5_000;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_BUSY_RETRY_DELAY_MS = 1_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
@@ -2730,7 +2733,7 @@ async function addSession(cwd, options = {}) {
     notifyWhenIdle: false,
     busy: false,
     busyTimer: null,
-    busySuppressedUntil: Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS,
+    busySuppressedUntil: Date.now() + (restoringWorkspace ? RESTORE_REDRAW_SUPPRESS_MS : ACTIVATION_REDRAW_SUPPRESS_MS),
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
