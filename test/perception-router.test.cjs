@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('../electron/perception/router.cjs');
+const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('../electron/perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
@@ -60,10 +60,15 @@ test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresVisualEvidence('Is the terminal using a dark theme?'), true);
   assert.equal(requiresVisualEvidence('Is the background job still running?'), false);
   assert.equal(requiresVisualEvidence('Is the settings dialog open?'), true);
+  assert.equal(requiresVisualEvidence('Is the warning yellow?'), true);
+  assert.equal(requiresVisualEvidence('Is the badge orange?'), true);
   assert.equal(requiresVisualEvidence('Which option is selected?'), true);
   assert.equal(requiresVisualEvidence("What is the selected session's title?"), false);
   assert.equal(requiresVisualEvidence('Is the selected terminal running?'), false);
   assert.equal(requiresVisualEvidence('What command finished?'), false);
+  assert.equal(requiresSessionChrome("Is this session's status dot red?"), true);
+  assert.equal(requiresSessionChrome('Is its title highlighted?'), true);
+  assert.equal(requiresSessionChrome('Is the terminal using a dark theme?'), false);
 });
 
 test('structured status questions do not require screenshot upload', () => {
@@ -81,6 +86,9 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('Is it still running?', { session: { status: 'running' } }), true);
   assert.equal(structuredStateSufficient('What is its title?', { session: { title: 'API work' } }), true);
   assert.equal(structuredStateSufficient('What is its name?', { session: { title: 'API work' } }), true);
+  assert.equal(structuredStateSufficient('Which group is this session in?', {
+    session: { title: 'API work', groupId: 'backend', group: 'Backend' }
+  }), true);
   assert.equal(structuredStateSufficient('What is the command name?', { session: { title: 'API work' } }), false);
   assert.equal(structuredStateSufficient('Is it still running?'), false);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
@@ -147,6 +155,17 @@ test('authoritative process exit overrides stale busy renderer metadata', () => 
   });
   assert.equal(record.status, 'stopped');
   assert.equal(record.busy, false);
+});
+
+test('requested session records retain group identity', () => {
+  const record = structuredSessionRecord({
+    sessionId: 'api',
+    metadata: { id: 'api', title: 'API', groupId: 'backend' },
+    live: true,
+    groupName: 'Backend'
+  });
+  assert.equal(record.groupId, 'backend');
+  assert.equal(record.group, 'Backend');
 });
 
 test('truncated collections lower confidence only when the full member list is required', () => {

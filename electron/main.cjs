@@ -58,7 +58,7 @@ const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
-const { PerceptionRouter, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('./perception/router.cjs');
+const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('./perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
@@ -1219,7 +1219,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   let capturedImage = null;
   const screenshot = async () => {
     if (capturedImage) return capturedImage;
-    if (sessionId) {
+    if (sessionId && !requiresSessionChrome(question)) {
       if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The SideTerm window is not available to capture.');
       try {
         const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
@@ -1322,7 +1322,8 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
           sessionId,
           metadata,
           live: Boolean(session),
-          indexed: sessionIndex.get(sessionId)
+          indexed: sessionIndex.get(sessionId),
+          groupName: groupNames.get(metadata?.groupId) || ''
         }),
         sessionCollection: {
           ...sessionCounts

@@ -52,7 +52,7 @@ function mergeLiveSessionRecords(metadata = [], liveSessionIds = [], indexedReco
   return merged;
 }
 
-function structuredSessionRecord({ sessionId = '', metadata = null, live = false, indexed = null } = {}) {
+function structuredSessionRecord({ sessionId = '', metadata = null, live = false, indexed = null, groupName = '' } = {}) {
   if (metadata) {
     const busy = live && Boolean(metadata.busy);
     return {
@@ -61,7 +61,9 @@ function structuredSessionRecord({ sessionId = '', metadata = null, live = false
       summary: String(metadata.summary || indexed?.currentTask || ''),
       busy,
       status: !live ? 'stopped' : busy ? 'running' : 'idle',
-      needsAttention: Boolean(metadata.notified)
+      needsAttention: Boolean(metadata.notified),
+      groupId: String(metadata.groupId || ''),
+      group: String(groupName || metadata.group || 'Ungrouped')
     };
   }
   if (!live) return null;
