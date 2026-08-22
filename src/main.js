@@ -1533,15 +1533,24 @@ function lockTerminalCaptureInteraction() {
   return () => shellElement.classList.remove('capture-locked');
 }
 
-function restoreCapturedTerminalLayout(sessionId, token, onRestored) {
+function restoreCapturedTerminalLayout(sessionId, token, originalDimensions, onRestored) {
   let settled = false;
   const restore = () => {
     if (settled || terminalCaptureResizeTokens.get(sessionId) !== token) return;
     settled = true;
     try {
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && sessionId !== activeId
+        && originalDimensions.cols > 0 && originalDimensions.rows > 0) {
+        capturedSession.terminal.resize(originalDimensions.cols, originalDimensions.rows);
+      }
       fitActive();
     } finally {
       if (terminalCaptureResizeTokens.get(sessionId) === token) terminalCaptureResizeTokens.delete(sessionId);
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && !capturedSession.exited) {
+        api.resize(sessionId, capturedSession.terminal.cols, capturedSession.terminal.rows);
+      }
       onRestored?.();
     }
   };
@@ -1621,12 +1630,13 @@ async function handleAgentAction({ requestId, type, payload }) {
       const restoreOverlays = hideNonterminalCaptureOverlays();
       const restoreInteraction = lockTerminalCaptureInteraction();
       const resizeToken = Symbol(session.id);
+      const originalDimensions = { cols: session.terminal.cols, rows: session.terminal.rows };
       terminalCaptureResizeTokens.set(session.id, resizeToken);
       terminalCaptureRestore = () => {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
         sessions.get(activeId)?.pane.classList.add('active');
         restoreOverlays();
-        restoreCapturedTerminalLayout(session.id, resizeToken, restoreInteraction);
+        restoreCapturedTerminalLayout(session.id, resizeToken, originalDimensions, restoreInteraction);
       };
       try {
         for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
