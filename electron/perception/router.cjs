@@ -47,7 +47,10 @@ function structuredStateSufficient(question, payload = {}) {
 
 function structuredCollectionRequiresCompleteList(question) {
   const text = String(question || '');
-  if (!/\b(?:sessions?|terminals?)\b/i.test(text) || /\b(?:count|how many|number of)\b/i.test(text)) return false;
+  if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
+  if (/\b(?:count|how many|number of)\b/i.test(text)) {
+    return /\bgroups?\b/i.test(text);
+  }
   if (!/\b(?:sessions|terminals)\b/i.test(text)
     && !/\b(?:which|list|all|each|every|names|titles)\b/i.test(text)) return false;
   if (/\b(?:which|what)\b/i.test(text)
