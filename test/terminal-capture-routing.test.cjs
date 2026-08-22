@@ -103,8 +103,11 @@ test('capture lifetime locks session activation and terminal input', () => {
 test('capture-only fits do not resize the backing PTY', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(main, /const terminalCaptureResizeTokens = new Map\(\)/);
+  assert.match(main, /const originalDimensions = \{ cols: session\.terminal\.cols, rows: session\.terminal\.rows \}/);
   assert.match(main, /terminalCaptureResizeTokens\.set\(session\.id, resizeToken\)[\s\S]*session\.fit\.fit\(\)/);
-  assert.match(main, /restoreCapturedTerminalLayout\(session\.id, resizeToken, restoreInteraction\)/);
+  assert.match(main, /restoreCapturedTerminalLayout\(session\.id, resizeToken, originalDimensions, restoreInteraction\)/);
+  assert.match(main, /sessionId !== activeId[\s\S]*capturedSession\.terminal\.resize\(originalDimensions\.cols, originalDimensions\.rows\)/);
+  assert.match(main, /terminalCaptureResizeTokens\.delete\(sessionId\)[\s\S]*api\.resize\(sessionId, capturedSession\.terminal\.cols, capturedSession\.terminal\.rows\)/);
   assert.match(main, /terminal\.onResize\(\(\{ cols, rows \}\) => \{\s*if \(!terminalCaptureResizeTokens\.has\(id\)\) api\.resize\(id, cols, rows\)/);
 });
 
