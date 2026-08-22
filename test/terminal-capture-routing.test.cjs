@@ -6,8 +6,8 @@ const test = require('node:test');
 test('visual inspection captures the styled live terminal and preserves fallback routing', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  assert.match(main, /requestRendererAction\('prepare-terminal-capture'/);
-  assert.match(main, /try \{[\s\S]*requestRendererAction\('prepare-terminal-capture'[\s\S]*finally \{[\s\S]*requestRendererAction\('restore-terminal-capture'/);
+  assert.match(main, /'prepare-session-chrome-capture' : 'prepare-terminal-capture'/);
+  assert.match(main, /try \{[\s\S]*requiresSessionChrome\(question\) \? 'prepare-session-chrome-capture' : 'prepare-terminal-capture'[\s\S]*finally \{[\s\S]*requestRendererAction\('restore-terminal-capture'/);
   assert.match(main, /webContents\.capturePage\(bounds\)/);
   assert.doesNotMatch(main, /forceVision:\s*true/);
   assert.match(renderer, /type === 'prepare-terminal-capture'[\s\S]*session\.pane\.classList\.add\('active'\)/);
@@ -18,13 +18,16 @@ test('visual inspection captures the styled live terminal and preserves fallback
 test('retained stopped sessions remain eligible for structured and visual inspection', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.doesNotMatch(main, /sessionId && !session\) throw new Error\('That session is stopped/);
-  assert.match(main, /const screenshot = async \(\) => \{[\s\S]*if \(sessionId && !requiresSessionChrome\(question\)\) \{[\s\S]*prepare-terminal-capture/);
+  assert.match(main, /const screenshot = async \(\) => \{[\s\S]*if \(sessionId\) \{[\s\S]*prepare-terminal-capture/);
 });
 
-test('targeted session chrome questions use a sanitized whole-window capture', () => {
+test('targeted session chrome questions capture only the requested sidebar item', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(main, /if \(sessionId && !requiresSessionChrome\(question\)\) \{/);
-  assert.match(main, /requiresSessionChrome\(question\)[\s\S]*requestRendererAction\('prepare-window-capture'/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /requiresSessionChrome\(question\) \? 'prepare-session-chrome-capture' : 'prepare-terminal-capture'/);
+  assert.match(renderer, /type === 'prepare-session-chrome-capture'[\s\S]*session\.item\.getBoundingClientRect\(\)/);
+  assert.match(renderer, /session\.item\.scrollIntoView\(\{ block: 'nearest' \}\)/);
+  assert.doesNotMatch(main, /requiresSessionChrome\(question\)[\s\S]{0,200}'prepare-window-capture'/);
 });
 
 test('terminal capture hides credential-bearing and nonterminal overlays', () => {

@@ -60,6 +60,8 @@ test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresVisualEvidence('Is the terminal using a dark theme?'), true);
   assert.equal(requiresVisualEvidence('Is the background job still running?'), false);
   assert.equal(requiresVisualEvidence('Is the settings dialog open?'), true);
+  assert.equal(requiresVisualEvidence('Is the sidebar collapsed?'), true);
+  assert.equal(requiresVisualEvidence('Is the panel expanded?'), true);
   assert.equal(requiresVisualEvidence('Is the warning yellow?'), true);
   assert.equal(requiresVisualEvidence('Is the badge orange?'), true);
   assert.equal(requiresVisualEvidence('Which option is selected?'), true);
@@ -172,6 +174,8 @@ test('truncated collections lower confidence only when the full member list is r
   assert.equal(structuredCollectionRequiresCompleteList('How many sessions are active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('How many terminals are active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('How many sessions are in the Backend group?'), true);
+  assert.equal(structuredCollectionRequiresCompleteList('How many sessions have API in the title?'), true);
+  assert.equal(structuredCollectionRequiresCompleteList('How many sessions mention authentication in their summary?'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which session is active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('What is the active terminal?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('Summarize this session.'), false);

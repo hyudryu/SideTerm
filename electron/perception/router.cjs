@@ -20,7 +20,7 @@ function requiresVisualEvidence(question) {
   const text = String(question || '');
   if (/\b(?:selected|selection)\b/i.test(text)
     && /\b(?:button|control|field|item|menu|option|row|tab|text|ui)\b/i.test(text)) return true;
-  return /\b(?:beige|black|blue|bold|brown|color|colour|contrast|cyan|dark|dialog|font|gray|green|grey|highlight(?:ed)?|icon|image|indigo|italic|layout|light|look(?:s|ing)?|magenta|modal|orange|overlay|pink|popup|popover|position|purple|red|screenshot|silver|style|styled|styling|teal|theme|underline|visible|visual|white|yellow)\b/i.test(text);
+  return /\b(?:beige|black|blue|bold|brown|collapsed?|color|colour|contrast|cyan|dark|dialog|expand(?:ed|sion)?|font|gray|green|grey|highlight(?:ed)?|icon|image|indigo|italic|layout|light|look(?:s|ing)?|magenta|modal|orange|overlay|panel|pink|popup|popover|position|purple|red|screenshot|sidebar|silver|style|styled|styling|teal|theme|underline|visible|visual|white|yellow)\b/i.test(text);
 }
 
 function requiresSessionChrome(question) {
@@ -58,7 +58,14 @@ function structuredCollectionRequiresCompleteList(question) {
   const text = String(question || '');
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\b(?:count|how many|number of)\b/i.test(text)) {
-    return /\bgroups?\b/i.test(text);
+    const remainder = text.toLowerCase()
+      .replace(/\bhow many\b|\b(?:what|which) is (?:the )?number of\b|\bnumber of\b|\bcount\b/g, ' ')
+      .replace(/\b(?:sessions?|terminals?)\b/g, ' ')
+      .replace(/\bneeds? attention\b|\b(?:busy|working|running|idle|stopped|active|archived|total)\b/g, ' ')
+      .replace(/\bdo (?:i|we) have\b|\b(?:are|is|there|currently|current|now|the|of)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    return Boolean(remainder);
   }
   if (!/\b(?:sessions|terminals)\b/i.test(text)
     && !/\b(?:which|list|all|each|every|names|titles)\b/i.test(text)) return false;
