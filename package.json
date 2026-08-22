@@ -1,6 +1,6 @@
 {
   "name": "sideterm",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "A Windows-inspired Ubuntu terminal with collapsible sessions in a left sidebar.",
   "type": "module",
   "main": "electron/main.cjs",
