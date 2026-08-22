@@ -152,6 +152,7 @@ test('authoritative process exit overrides stale busy renderer metadata', () => 
 test('truncated collections lower confidence only when the full member list is required', () => {
   assert.equal(structuredCollectionRequiresCompleteList('How many sessions are active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('How many terminals are active?'), false);
+  assert.equal(structuredCollectionRequiresCompleteList('How many sessions are in the Backend group?'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which session is active?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('What is the active terminal?'), false);
   assert.equal(structuredCollectionRequiresCompleteList('Summarize this session.'), false);
