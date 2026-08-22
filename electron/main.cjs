@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, ipcMain, net, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, Menu, net, Notification, safeStorage, shell, Tray } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -55,6 +55,7 @@ const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.
 const { SessionIndex } = require('./sessions/index.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
+const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -73,6 +74,8 @@ if (process.env.SIDETERM_USER_DATA_DIR) app.setPath('userData', path.resolve(pro
 const isDev = !app.isPackaged;
 const sessions = new Map();
 let mainWindow;
+let backgroundTray = null;
+let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
@@ -100,10 +103,7 @@ if (!ownsSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
 }
 
@@ -126,6 +126,7 @@ const DEFAULT_SETTINGS = {
   apiUrl: '',
   model: '',
   agentEnabled: false,
+  supervisorBackgroundEnabled: true,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: 'Confirm terminal input before sending it. Give factual, concise updates and mention verified pull request titles when available.',
   wakeWord: 'Hey Agent',
@@ -202,6 +203,9 @@ function readSettingsRecord() {
       apiUrl: hasCompatibleProvider ? parsed.apiUrl : '',
       model: hasCompatibleProvider && typeof parsed.model === 'string' ? parsed.model : '',
       agentEnabled: providerConfigured && Boolean(parsed.agentEnabled),
+      supervisorBackgroundEnabled: typeof parsed.supervisorBackgroundEnabled === 'boolean'
+        ? parsed.supervisorBackgroundEnabled
+        : DEFAULT_SETTINGS.supervisorBackgroundEnabled,
       personality: typeof parsed.personality === 'string' ? parsed.personality.slice(0, 2000) : DEFAULT_SETTINGS.personality,
       agentInstructions: typeof parsed.agentInstructions === 'string' ? parsed.agentInstructions.slice(0, 8000) : DEFAULT_SETTINGS.agentInstructions,
       wakeWord: typeof parsed.wakeWord === 'string' ? parsed.wakeWord.slice(0, 80) : DEFAULT_SETTINGS.wakeWord,
@@ -245,6 +249,9 @@ function saveSettings(update = {}) {
   const model = typeof update.model === 'string' ? update.model.trim() : current.model;
   const llmEnabled = typeof update.llmEnabled === 'boolean' ? update.llmEnabled : current.llmEnabled;
   const agentEnabled = typeof update.agentEnabled === 'boolean' ? update.agentEnabled : current.agentEnabled;
+  const supervisorBackgroundEnabled = typeof update.supervisorBackgroundEnabled === 'boolean'
+    ? update.supervisorBackgroundEnabled
+    : current.supervisorBackgroundEnabled;
   const aiInitialContextEnabled = typeof update.aiInitialContextEnabled === 'boolean'
     ? update.aiInitialContextEnabled
     : current.aiInitialContextEnabled;
@@ -281,6 +288,7 @@ function saveSettings(update = {}) {
     apiUrl,
     model,
     agentEnabled,
+    supervisorBackgroundEnabled,
     personality,
     agentInstructions,
     wakeWord,
@@ -1423,6 +1431,7 @@ async function runProactiveCatchUp() {
       });
       sentences.flush();
       if (voice && result.speech && !streamed) void speakMobileVoiceUpdate(result.speech, presentationOptions);
+      if (!voice && result.response) notifyHiddenSupervisorUpdate(result.response);
       if (result.needsEnrichment) {
         void chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
           synthetic: true,
@@ -1433,6 +1442,7 @@ async function runProactiveCatchUp() {
           interruptible: true
         }).then((enriched) => {
           if (voice && enriched.speech) return speakMobileVoiceUpdate(enriched.speech, presentationOptions);
+          if (!voice && enriched.response) notifyHiddenSupervisorUpdate(enriched.response);
           return null;
         }).catch(() => {
           if (releaseSupervisorEventClaim(event.id)) queueMicrotask(scheduleProactiveCatchUp);
@@ -1451,6 +1461,7 @@ async function runProactiveCatchUp() {
     writeAgentState(state);
     broadcastAgentState();
     if (voice) void speakMobileVoiceUpdate(presentation, presentationOptions);
+    else notifyHiddenSupervisorUpdate(presentation);
     const latest = readAgentState();
     if (eventBusFor(latest).next(latest.activeInteractionId)) queueMicrotask(scheduleProactiveCatchUp);
     return 'ran';
@@ -2764,6 +2775,7 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => publicSettings());
   ipcMain.handle('settings:save', (_event, update) => {
     const saved = saveSettings(update);
+    syncBackgroundTray(saved);
     broadcastMobile({ type: 'voice:status', status: speechStatus() });
     broadcastAgentState();
     return saved;
@@ -2842,6 +2854,59 @@ function registerIpc() {
   ipcMain.handle('voice:resume-media', () => resumeDesktopMedia());
 }
 
+function trayIconPath() {
+  return path.join(__dirname, '..', 'build', 'icon.png');
+}
+
+function notifyHiddenSupervisorUpdate(text) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible() || !Notification.isSupported()) return false;
+  const notification = new Notification({
+    title: 'SideTerm Supervisor',
+    body: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    icon: trayIconPath()
+  });
+  notification.on('click', showMainWindow);
+  notification.show();
+  return true;
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (app.isReady()) createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function destroyBackgroundTray() {
+  if (!backgroundTray) return;
+  backgroundTray.destroy();
+  backgroundTray = null;
+}
+
+function requestApplicationQuit() {
+  quitRequested = true;
+  app.quit();
+}
+
+function syncBackgroundTray(settings = readSettingsRecord()) {
+  if (!settings.supervisorBackgroundEnabled) {
+    destroyBackgroundTray();
+    return;
+  }
+  if (backgroundTray) return;
+  backgroundTray = new Tray(trayIconPath());
+  backgroundTray.setToolTip(`SideTerm v${app.getVersion()} · supervisor running`);
+  backgroundTray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open SideTerm', click: showMainWindow },
+    { type: 'separator' },
+    { label: 'Quit SideTerm', click: requestApplicationQuit }
+  ]));
+  backgroundTray.on('click', showMainWindow);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220,
@@ -2856,7 +2921,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   });
 
@@ -2873,6 +2939,18 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
+  mainWindow.on('close', (event) => {
+    if (!shouldHideWindowOnClose({
+      backgroundEnabled: readSettingsRecord().supervisorBackgroundEnabled,
+      quitRequested
+    })) return;
+    event.preventDefault();
+    send('app:will-hide');
+    supervisorVoiceMode = false;
+    mainWindow.hide();
+    syncBackgroundTray();
+  });
+
   mainWindow.on('closed', () => {
     detachAllSessions();
     mainWindow = null;
@@ -2882,19 +2960,30 @@ function createWindow() {
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  syncBackgroundTray();
   githubMonitorTimer = setInterval(() => void pollMonitoredPullRequests(), 60_000);
   void pollMonitoredPullRequests();
   if (readSettingsRecord().mobileEnabled) void startMobileServer({ persist: false }).catch(() => {});
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
+  const settings = readSettingsRecord();
+  if (shouldQuitAfterLastWindow({
+    platform: process.platform,
+    backgroundEnabled: settings.supervisorBackgroundEnabled,
+    quitRequested
+  })) app.quit();
+});
+
+app.on('before-quit', () => { quitRequested = true; });
+app.on('will-quit', () => {
   if (githubMonitorTimer) clearInterval(githubMonitorTimer);
   githubMonitorTimer = null;
+  destroyBackgroundTray();
   detachAllSessions();
-  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', stopSpeechWorker);
