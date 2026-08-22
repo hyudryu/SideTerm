@@ -62,6 +62,7 @@ const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, session
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
+const { createEventLoopLagMonitor, createLogger } = require('./logging.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -76,6 +77,15 @@ process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 
 if (process.env.SIDETERM_USER_DATA_DIR) app.setPath('userData', path.resolve(process.env.SIDETERM_USER_DATA_DIR));
+
+// Diagnostics: persistent log at userData/logs/sideterm-main.log plus an
+// event-loop lag monitor so main-process freezes are visible after the fact.
+const appLog = createLogger({ filePath: path.join(app.getPath('userData'), 'logs', 'sideterm-main.log') });
+const eventLoopLagMonitor = createEventLoopLagMonitor({
+  onLag: (lagMs) => appLog.warn(`main process event loop blocked for ${Math.round(lagMs)}ms`)
+});
+process.on('uncaughtException', (error) => appLog.error('uncaughtException', error));
+process.on('unhandledRejection', (reason) => appLog.error('unhandledRejection', reason));
 
 const isDev = !app.isPackaged;
 const sessions = new Map();
@@ -146,6 +156,7 @@ const DEFAULT_SETTINGS = {
   model: '',
   agentEnabled: false,
   supervisorBackgroundEnabled: true,
+  voiceModeEnabled: false,
   visionEnabled: false,
   visionUseSupervisorModel: true,
   visionApiUrl: '',
@@ -231,6 +242,7 @@ function readSettingsRecord() {
       supervisorBackgroundEnabled: typeof parsed.supervisorBackgroundEnabled === 'boolean'
         ? parsed.supervisorBackgroundEnabled
         : DEFAULT_SETTINGS.supervisorBackgroundEnabled,
+      voiceModeEnabled: parsed.voiceModeEnabled === true,
       visionEnabled: parsed.visionEnabled === true,
       visionUseSupervisorModel: typeof parsed.visionUseSupervisorModel === 'boolean' ? parsed.visionUseSupervisorModel : true,
       visionApiUrl: typeof parsed.visionApiUrl === 'string' ? parsed.visionApiUrl.slice(0, 1000) : '',
@@ -368,6 +380,7 @@ function saveSettings(update = {}) {
     model,
     agentEnabled,
     supervisorBackgroundEnabled,
+    voiceModeEnabled: typeof update.voiceModeEnabled === 'boolean' ? update.voiceModeEnabled : current.voiceModeEnabled,
     visionEnabled,
     visionUseSupervisorModel,
     visionApiUrl,
@@ -1749,7 +1762,8 @@ function chatWithSupervisor(text, options = {}) {
   const priority = Number.isInteger(options.priority)
     ? Math.max(0, Math.min(3, options.priority))
     : (options.automatic || options.proactive) ? 2 : 0;
-  return supervisorActor.enqueue(
+  const startedAt = Date.now();
+  const task = supervisorActor.enqueue(
     () => performSupervisorChat(text, options),
     {
       priority,
@@ -1758,6 +1772,12 @@ function chatWithSupervisor(text, options = {}) {
       cancel: () => options.automatic ? supervisorRuntime?.cancelAutomatic?.() : supervisorRuntime?.cancel?.()
     }
   );
+  const meta = { voice: Boolean(options.voice), proactive: Boolean(options.proactive || options.automatic) };
+  task.then(
+    () => appLog.info('supervisor chat finished', { ...meta, ms: Date.now() - startedAt }),
+    (error) => appLog.warn('supervisor chat failed', { ...meta, ms: Date.now() - startedAt, error: String(error?.message || error) })
+  );
+  return task;
 }
 
 const PROACTIVE_CATCH_UP_PROMPT = [
@@ -2332,6 +2352,7 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
   const outputPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
+  const startedAt = Date.now();
   try {
     await getSpeechWorker().request('synthesize', {
       model: DEFAULT_SETTINGS.ttsModel,
@@ -2339,7 +2360,11 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
       text: safeText,
       output: outputPath
     });
+    appLog.info('speech synthesized', { ms: Date.now() - startedAt, chars: safeText.length });
     return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64'), playbackRate };
+  } catch (error) {
+    appLog.warn('speech synthesis failed', { ms: Date.now() - startedAt, error: String(error?.message || error) });
+    throw error;
   } finally {
     try { fs.unlinkSync(outputPath); } catch {}
   }
@@ -3443,6 +3468,7 @@ function registerIpc() {
     pending.resolve(payload.delivered === true);
   });
   ipcMain.on('agent:voice-mode', (_event, enabled) => {
+    appLog.info('desktop voice mode toggled', { enabled: Boolean(enabled) });
     const wasEnabled = supervisorVoiceMode;
     if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
     desktopVoiceActivationTaskId = '';
@@ -3587,7 +3613,22 @@ function createWindow() {
     if (!allowed) event.preventDefault();
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
-  mainWindow.webContents.on('render-process-gone', resetDesktopVoiceActivation);
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    appLog.error('renderer process gone', details);
+    resetDesktopVoiceActivation();
+  });
+  mainWindow.webContents.on('unresponsive', () => appLog.error('renderer became unresponsive'));
+  mainWindow.webContents.on('responsive', () => appLog.info('renderer responsive again'));
+  mainWindow.webContents.on('did-fail-load', (_event, code, description) => appLog.error('window failed to load', { code, description }));
+  // Electron >= 36 passes a single details object; older versions pass
+  // (event, level, message, line, sourceId). Normalize both.
+  mainWindow.webContents.on('console-message', (...args) => {
+    const details = args[0] && typeof args[0] === 'object' && 'level' in args[0]
+      ? { level: args[0].level, message: args[0].message, sourceId: args[0].sourceId, line: args[0].lineNumber }
+      : { level: args[1], message: args[2], sourceId: args[4], line: args[3] };
+    const noisy = details.level === 'error' || details.level === 'warning' || details.level >= 2;
+    if (noisy) appLog.warn('renderer console', details);
+  });
 
   if (isDev) {
     mainWindow.loadURL(process.env.SIDETERM_DEV_URL || 'http://127.0.0.1:5173');
@@ -3615,6 +3656,8 @@ function createWindow() {
 }
 
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
+  appLog.info(`SideTerm v${app.getVersion()} ready`);
+  eventLoopLagMonitor.start();
   recoverAbandonedAgentStateEvents();
   registerIpc();
   createWindow();
@@ -3639,6 +3682,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => { quitRequested = true; });
 app.on('will-quit', () => {
+  appLog.info('SideTerm quitting');
+  eventLoopLagMonitor.stop();
   if (githubMonitorTimer) clearInterval(githubMonitorTimer);
   githubMonitorTimer = null;
   destroyBackgroundTray();
