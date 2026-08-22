@@ -1627,7 +1627,7 @@ async function handleAgentAction({ requestId, type, payload }) {
       restoreTerminalVisualCapture();
       const session = sessions.get(payload.sessionId);
       if (!session?.item) throw new Error('The requested session chrome is no longer available.');
-      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false });
+      const restoreOverlays = hideNonterminalCaptureOverlays();
       const restoreInteraction = lockTerminalCaptureInteraction();
       const previousScrollTop = sessionList.scrollTop;
       terminalCaptureRestore = () => {
@@ -1636,9 +1636,12 @@ async function handleAgentAction({ requestId, type, payload }) {
         restoreOverlays();
       };
       try {
-        session.item.scrollIntoView({ block: 'nearest' });
+        const captureElement = payload.chromeRegion === 'header' && session.id === activeId
+          ? document.querySelector('.command-bar')
+          : session.item;
+        if (captureElement === session.item) session.item.scrollIntoView({ block: 'nearest' });
         await waitForTerminalCaptureRepaint();
-        const rect = session.item.getBoundingClientRect();
+        const rect = captureElement.getBoundingClientRect();
         if (rect.width < 1 || rect.height < 1) throw new Error('The requested session chrome is not visible.');
         api.resolveAgentAction(requestId, {
           bounds: {

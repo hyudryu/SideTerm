@@ -25,7 +25,8 @@ test('targeted session chrome questions capture only the requested sidebar item'
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(main, /requiresSessionChrome\(question\) \? 'prepare-session-chrome-capture' : 'prepare-terminal-capture'/);
-  assert.match(renderer, /type === 'prepare-session-chrome-capture'[\s\S]*session\.item\.getBoundingClientRect\(\)/);
+  assert.match(main, /chromeRegion: sessionChromeCaptureRegion\(question\)/);
+  assert.match(renderer, /type === 'prepare-session-chrome-capture'[\s\S]*payload\.chromeRegion === 'header' && session\.id === activeId[\s\S]*document\.querySelector\('\.command-bar'\)[\s\S]*captureElement\.getBoundingClientRect\(\)/);
   assert.match(renderer, /session\.item\.scrollIntoView\(\{ block: 'nearest' \}\)/);
   assert.doesNotMatch(main, /requiresSessionChrome\(question\)[\s\S]{0,200}'prepare-window-capture'/);
 });
