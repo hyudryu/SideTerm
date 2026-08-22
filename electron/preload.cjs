@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   getTailscaleHttpsStatus: () => ipcRenderer.invoke('mobile:tailscale-https-status'),
   enableTailscaleHttps: () => ipcRenderer.invoke('mobile:enable-tailscale-https'),
   updateMobileWorkspace: (workspace) => ipcRenderer.send('mobile:update-workspace', workspace),
+  updateMobileActiveSession: (activeId) => ipcRenderer.send('mobile:update-active-session', activeId),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   acknowledgeSessionAttention: (sessionId, cycleId) => ipcRenderer.invoke('agent:acknowledge-session', { sessionId, cycleId }),
   chatWithAgent: (text, options = {}) => ipcRenderer.invoke('agent:chat', { text, ...options }),
@@ -40,6 +41,9 @@ contextBridge.exposeInMainWorld('sideTerm', {
   confirmAgentAction: (id, approved) => ipcRenderer.invoke('agent:confirm', { id, approved }),
   reportSessionFinished: (payload) => ipcRenderer.send('agent:session-finished', payload),
   setAgentVoiceMode: (enabled) => ipcRenderer.send('agent:voice-mode', Boolean(enabled)),
+  reportAgentVoicePresentation: (presentationId, delivered) => ipcRenderer.send('agent:voice-presented', {
+    presentationId: String(presentationId || ''), delivered: Boolean(delivered)
+  }),
   onAgentState: (callback) => subscribe('agent:state', callback),
   onAgentVoicePing: (callback) => subscribe('agent:voice-ping', callback),
   onAgentAction: (callback) => subscribe('agent:action', callback),
@@ -59,5 +63,6 @@ contextBridge.exposeInMainWorld('sideTerm', {
   }),
   pauseDesktopMedia: () => ipcRenderer.invoke('voice:pause-media'),
   resumeDesktopMedia: () => ipcRenderer.invoke('voice:resume-media'),
-  onSpeechStatus: (callback) => subscribe('voice:status', callback)
+  onSpeechStatus: (callback) => subscribe('voice:status', callback),
+  onWindowWillHide: (callback) => subscribe('app:will-hide', callback)
 });

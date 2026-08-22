@@ -1,6 +1,6 @@
 {
   "name": "sideterm",
-  "version": "0.2.11",
+  "version": "0.3.0",
   "description": "A Windows-inspired Ubuntu terminal with collapsible sessions in a left sidebar.",
   "type": "module",
   "main": "electron/main.cjs",
@@ -24,11 +24,13 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@aws-sdk/client-transcribe-streaming": "^3.1115.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opentelemetry/api": "^1.9.1",
     "@strands-agents/sdk": "^1.13.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "ffmpeg-static": "^5.3.0",
     "node-pty": "^1.1.0",
     "openai": "^6.49.0",
     "qrcode": "^1.5.4",
@@ -47,6 +49,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/node-pty/**",
+      "node_modules/ffmpeg-static/**",
       "electron/voice/sidecar.py"
     ],
     "files": [
@@ -59,6 +62,10 @@
       {
         "from": "vendor/tmux",
         "to": "tmux"
+      },
+      {
+        "from": "plugins/dsh-sideterm-bridge",
+        "to": "plugins/dsh-sideterm-bridge"
       }
     ],
     "directories": {
