@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
-const { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, latestNotificationsBySession, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('../electron/agent/catch-up.cjs');
 
 test('catch-up processes newest unread notifications first without mutating input', () => {
   const notifications = [
@@ -28,6 +30,25 @@ test('catch-up keeps only the newest unread correspondence for each terminal', (
   assert.deepEqual(notifications.map((item) => item.read), [true, false, false]);
 });
 
+test('catch-up preserves semantically distinct typed events from one session', () => {
+  const notifications = [
+    { id: 'failure', sessionId: 'one', kind: 'FAILED', createdAt: 10, read: false },
+    { id: 'review', sessionId: 'one', kind: 'REVIEW_RECEIVED', createdAt: 20, read: false },
+    { id: 'new-failure', sessionId: 'one', kind: 'FAILED', createdAt: 30, read: false }
+  ];
+  markSupersededNotificationsRead(notifications);
+  assert.deepEqual(pendingNotifications(notifications).map((item) => item.id), ['new-failure', 'review']);
+  assert.deepEqual(notifications.map((item) => item.read), [true, false, false]);
+});
+
+test('session state uses the newest retained event across distinct kinds', () => {
+  const notifications = [
+    { id: 'older-completion', sessionId: 'one', kind: 'COMPLETED', createdAt: 10, read: false },
+    { id: 'newer-failure', sessionId: 'one', kind: 'FAILED', createdAt: 20, read: false }
+  ];
+  assert.equal(latestNotificationsBySession(notifications).get('one').id, 'newer-failure');
+});
+
 test('catch-up prompt limits the response to one generic update while more remain', () => {
   const prompt = catchUpPrompt({ id: 'one' }, 3);
   assert.match(prompt, /exactly this one pending update/);
@@ -43,9 +64,35 @@ test('automatic no-update responses are recognized without leaking into chat', (
   assert.equal(isNoUpdateResponse('No update is available.'), false);
 });
 
+test('automatic presenter sentinels are never spoken as updates', () => {
+  assert.equal(isAutomaticPresenterSentinel('NO_UPDATE.'), true);
+  assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
+  assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
+  assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
+});
+
+test('proactive enrichment also suppresses presenter sentinels', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /const presenterSentinel = automatic \|\| proactive \? automaticPresenterSentinel\(result\.text\) : ''/);
+});
+
 test('final catch-up may ask what to do next', () => {
   assert.match(catchUpPrompt({ id: 'last' }, 0), /final pending update/);
   assert.equal(catchUpPrompt(null), '');
+});
+
+test('proactive enrichment yields to higher-priority user work', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /if \(result\.needsEnrichment\) \{[\s\S]*?notificationIds: \[event\.id\],[\s\S]*?interruptible: true/);
+  assert.match(main, /\.catch\(\(\) => \{\s*if \(releaseSupervisorEventClaim\(event\.id\)\) queueMicrotask\(scheduleProactiveCatchUp\)/);
+});
+
+test('dashboard and proactive catch-up share the same persisted event claim', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function claimNextSupervisorEvent\(\)[\s\S]*claimNext\(state\.activeInteractionId\)[\s\S]*writeAgentState\(state\)/);
+  assert.match(main, /async function runProactiveCatchUp\(\)[\s\S]*const \{ state, event \} = claimNextSupervisorEvent\(\)/);
+  assert.match(main, /async function catchUpWithSupervisor[\s\S]*const \{ state, event: notification \} = claimNextSupervisorEvent\(\)/);
+  assert.match(main, /releaseSupervisorEventClaim\(notification\.id\)/);
 });
 
 test('persisted unread updates are scheduled once after workspace restoration', () => {

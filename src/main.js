@@ -74,7 +74,9 @@ let settings = {
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
-  sttModel: 'turbo',
+  sttProvider: 'parakeet',
+  sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: 1,
@@ -95,6 +97,7 @@ let voiceTranscriptionInFlight = false;
 let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
+let voiceReplyInteractionId = '';
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -239,16 +242,17 @@ document.querySelector('#app').innerHTML = `
               </label>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
+              <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
               <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Voice mode</strong><span>Local · opt in only</span></div>
               <label class="field-row"><span>Wake word</span><input id="voice-wake-word" type="text" maxlength="80" placeholder="Hey Agent"></label>
-              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-model"><option value="turbo">Whisper large-v3 turbo</option><option value="distil-large-v3">Distil-Whisper large-v3</option><option value="small.en">Whisper small.en</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <div class="model-install-row"><label><span>Speech to text · LOCAL</span><select id="stt-model"><option value="nvidia/parakeet-tdt-0.6b-v2">NVIDIA Parakeet TDT 0.6B V2</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
               <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
-              <p class="settings-note">Recommended: Whisper turbo for accurate English coding terms on this GPU, or Distil-Whisper large-v3 for a lighter English model. Pocket TTS is a small 100M-parameter English voice model that runs on CPU.</p>
+              <p class="settings-note">LOCAL — Parakeet keeps microphone audio on this device and never falls back to cloud transcription. Pocket TTS is a small English voice model that runs on CPU.</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
@@ -411,8 +415,9 @@ function populateSettingsPanel() {
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
+  document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
   document.querySelector('#voice-wake-word').value = settings.wakeWord || '';
-  document.querySelector('#stt-model').value = settings.sttModel || 'turbo';
+  document.querySelector('#stt-model').value = settings.sttModel || 'nvidia/parakeet-tdt-0.6b-v2';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
@@ -457,8 +462,10 @@ function settingsPayload() {
     agentEnabled: document.querySelector('#agent-enabled').checked,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
+    githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
     wakeWord: document.querySelector('#voice-wake-word').value,
     sttModel: document.querySelector('#stt-model').value,
+    sttProvider: 'parakeet',
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
@@ -1008,6 +1015,7 @@ function persistWorkspaceNow() {
       summary: session.summary,
       agent: session.agent,
       attentionCycleId: session.attentionCycleId,
+      lastActivityAt: session.lastResponseAt || session.createdAt,
       notified: session.notified,
       busy: sessions.get(session.id)?.busy
     }))
@@ -1176,7 +1184,7 @@ function handleProactiveMessages() {
     if (spokenProactiveMessageIds.has(message.id)) continue;
     spokenProactiveMessageIds.add(message.id);
     const brief = message.voiceSummary || message.text;
-    if (desktopVoiceMode) void queueAgentSpeech(brief);
+    if (desktopVoiceMode && !message.desktopSpeechPresented) void queueAgentSpeech(brief);
     else if (!supervisorDashboardActive) showToast(`Supervisor: ${brief.slice(0, 180)}`);
   }
 }
@@ -1312,12 +1320,20 @@ function renderAgentState(nextState) {
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post comment to ${confirmation.pullRequestUrl}?`
+      : confirmation.kind === 'merge-pull-request'
+          ? `Merge ${confirmation.title}?`
+        : confirmation.kind === 'tui-selection'
+          ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detailText = document.createElement('code');
     detailText.textContent = confirmation.kind === 'archive'
       ? confirmation.summary
       : confirmation.kind === 'github-comment'
         ? confirmation.body
+      : confirmation.kind === 'merge-pull-request'
+          ? confirmation.pullRequestUrl
+        : confirmation.kind === 'tui-selection'
+          ? confirmation.optionLabel
         : confirmation.input;
     copy.append(heading, detailText);
     if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
@@ -1373,7 +1389,9 @@ async function runAgentCatchUpQueue() {
         if (result.hasMore) continue;
         break;
       }
-      const speechCompleted = await queueAgentSpeech(result.speech || result.response);
+      const speechCompleted = await queueAgentSpeech(result.speech || result.response, {
+        interactionId: result.interactionId || ''
+      });
       if (!speechCompleted) break;
       if (!result.hasMore && !agentState.notifications.some((item) => !item.read)) break;
     }
@@ -1395,15 +1413,17 @@ function closeAgentPanel() {
   });
 }
 
-async function submitAgentChat(text, { spokenRequest = false } = {}) {
+async function submitAgentChat(text, { spokenRequest = false, interactionId = '' } = {}) {
   const input = document.querySelector('#agent-chat-input');
   const prompt = String(text ?? input.value).trim();
   if (!prompt) return;
   input.value = '';
   try {
-    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest });
+    const result = await api.chatWithAgent(prompt, { voice: desktopVoiceMode, spokenRequest, interactionId });
     renderAgentState(result.state);
-    await queueAgentSpeech(result.speech || result.response);
+    await queueAgentSpeech(result.speech || result.response, {
+      interactionId: result.interactionId || ''
+    });
   } catch (error) {
     showToast(`Supervisor: ${error.message}`);
     renderAgentState(await api.getAgentState().catch(() => agentState));
@@ -1550,11 +1570,14 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text, { openReplyWindow = true } = {}) {
+async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}) {
   if (!desktopVoiceMode) return true;
   try {
     const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
-    if (completed && openReplyWindow) voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) {
+      voiceReplyInteractionId = String(interactionId || '');
+      voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    }
     return completed;
   } catch (error) {
     showToast(`Voice: ${error.message}`);
@@ -1577,18 +1600,31 @@ async function processVoiceUtterance(blob, durationMs) {
   const label = document.querySelector('#agent-status-detail');
   label.textContent = 'Transcribing locally…';
   try {
+    const replyWindowActive = Date.now() <= voiceReplyUntil;
+    if (!replyWindowActive) voiceReplyInteractionId = '';
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
-      Date.now() <= voiceReplyUntil
+      replyWindowActive
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
       return;
     }
+    if (transcript.clarification) {
+      label.textContent = 'Waiting for clarification';
+      voiceReplyInteractionId = transcript.clarification.interactionId || '';
+      await queueAgentSpeech(transcript.clarification.prompt, {
+        openReplyWindow: true,
+        interactionId: transcript.clarification.interactionId || ''
+      });
+      return;
+    }
     voiceReplyUntil = 0;
+    const interactionId = replyWindowActive ? voiceReplyInteractionId : '';
+    voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
-    await submitAgentChat(transcript.text, { spokenRequest: true });
+    await submitAgentChat(transcript.text, { spokenRequest: true, interactionId });
   } catch (error) {
     showToast(`Voice: ${error.message}`);
   } finally {
@@ -1688,6 +1724,7 @@ function stopDesktopVoiceMode() {
   desktopVoiceMode = false;
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
+  voiceReplyInteractionId = '';
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -2827,8 +2864,11 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text, acknowledgement } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), { openReplyWindow: !acknowledgement });
+api.onAgentVoicePing(({ text, acknowledgement, interactionId } = {}) => {
+  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), {
+    openReplyWindow: !acknowledgement,
+    interactionId: String(interactionId || '')
+  });
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);

@@ -49,6 +49,7 @@ let mobileTranscriptionInFlight = false;
 let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
+let mobileVoiceInteractionId = '';
 let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
@@ -58,7 +59,10 @@ let pendingMobileCreateTimer = null;
 function queueMobileAudio(message) {
   mobileAudioQueue = mobileAudioQueue
     .catch(() => false)
-    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, { openReplyWindow: Boolean(message.opensReplyWindow) }) : false);
+    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, {
+      openReplyWindow: Boolean(message.opensReplyWindow),
+      interactionId: String(message.interactionId || '')
+    }) : false);
   return mobileAudioQueue.then((speechCompleted) => {
     if (!message.continueCatchUp) return speechCompleted;
     if (!speechCompleted) releaseCatchUpQueue();
@@ -98,6 +102,7 @@ async function handleCatchUpResult(message) {
       type: 'voice:synthesize',
       text: message.speech || message.response,
       continueCatchUp: true,
+      interactionId: message.interactionId || '',
       catchUpHasMore: Boolean(message.hasMore)
     });
     if (!sent) releaseCatchUpQueue();
@@ -275,12 +280,20 @@ function renderAgentState(state) {
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post comment to ${confirmation.pullRequestUrl}?`
+        : confirmation.kind === 'merge-pull-request'
+          ? `Merge ${confirmation.title}?`
+        : confirmation.kind === 'tui-selection'
+          ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detail = document.createElement('code');
     detail.textContent = confirmation.kind === 'archive'
       ? confirmation.summary
       : confirmation.kind === 'github-comment'
         ? confirmation.body
+        : confirmation.kind === 'merge-pull-request'
+          ? confirmation.pullRequestUrl
+        : confirmation.kind === 'tui-selection'
+          ? confirmation.optionLabel
         : confirmation.input;
     copy.append(heading, detail);
     if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
@@ -410,6 +423,11 @@ function connect() {
     if (message.type === 'voice:transcript') {
       mobileTranscriptionInFlight = false;
       if (!message.transcript.ignored) mobileReplyUntil = 0;
+      if (message.transcript.clarification?.interactionId) {
+        mobileVoiceInteractionId = message.transcript.clarification.interactionId;
+      } else if (!message.transcript.ignored) {
+        mobileVoiceInteractionId = '';
+      }
       document.querySelector('#mobile-wave-detail').textContent = message.transcript.ignored
         ? message.transcript.reason
         : message.transcript.text;
@@ -445,7 +463,7 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-async function playMobileAudio(audio, { openReplyWindow = false } = {}) {
+async function playMobileAudio(audio, { openReplyWindow = false, interactionId = '' } = {}) {
   if (!audio?.data) return false;
   try {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
@@ -458,7 +476,10 @@ async function playMobileAudio(audio, { openReplyWindow = false } = {}) {
       player.addEventListener('ended', () => resolve(true), { once: true });
       player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
     });
-    if (completed && openReplyWindow) mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    if (completed && openReplyWindow) {
+      mobileVoiceInteractionId = String(interactionId || '');
+      mobileReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
+    }
     return completed;
   } catch (error) {
     document.querySelector('#mobile-wave-detail').textContent = error.message;
@@ -483,11 +504,14 @@ async function submitVoiceBlob(blob, duration) {
   if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
   document.querySelector('#mobile-wave-detail').textContent = 'Transcribing locally…';
   const bytes = new Uint8Array(await blob.arrayBuffer());
+  const replyWindowActive = Date.now() <= mobileReplyUntil;
+  if (!replyWindowActive) mobileVoiceInteractionId = '';
   mobileTranscriptionInFlight = send({
     type: 'voice:transcribe',
     data: bytesToBase64(bytes),
     mimeType: blob.type,
-    allowWithoutWakeWord: Date.now() <= mobileReplyUntil,
+    allowWithoutWakeWord: replyWindowActive,
+    interactionId: replyWindowActive ? mobileVoiceInteractionId : '',
     sendToAgent: true,
     speakResponse: true
   });
@@ -572,6 +596,7 @@ function stopMobileVoice() {
   mobileVoiceMode = false;
   mobileTranscriptionInFlight = false;
   mobileReplyUntil = 0;
+  mobileVoiceInteractionId = '';
   send({ type: 'voice:mode', enabled: false });
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;

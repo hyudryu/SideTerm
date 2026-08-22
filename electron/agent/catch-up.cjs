@@ -2,20 +2,32 @@ function pendingNotifications(notifications = []) {
   const latestBySession = new Map();
   for (const item of notifications) {
     if (!item || item.read || !item.sessionId) continue;
-    const previous = latestBySession.get(item.sessionId);
+    const key = `${item.sessionId}:${String(item.kind || 'INFO').toUpperCase()}`;
+    const previous = latestBySession.get(key);
     if (!previous || Number(item.createdAt || 0) >= Number(previous.createdAt || 0)) {
-      latestBySession.set(item.sessionId, item);
+      latestBySession.set(key, item);
     }
   }
   return notifications
     .filter((item) => item && !item.read)
-    .filter((item) => !item.sessionId || latestBySession.get(item.sessionId) === item)
+    .filter((item) => !item.sessionId
+      || latestBySession.get(`${item.sessionId}:${String(item.kind || 'INFO').toUpperCase()}`) === item)
     .map((item, index) => ({ item, index }))
     .sort((left, right) => {
       const timeDifference = Number(right.item.createdAt || 0) - Number(left.item.createdAt || 0);
       return timeDifference || left.index - right.index;
     })
     .map(({ item }) => item);
+}
+
+function latestNotificationsBySession(notifications = []) {
+  const latest = new Map();
+  for (const notification of pendingNotifications(notifications)) {
+    if (notification.sessionId && !latest.has(notification.sessionId)) {
+      latest.set(notification.sessionId, notification);
+    }
+  }
+  return latest;
 }
 
 function markSupersededNotificationsRead(notifications = []) {
@@ -53,8 +65,17 @@ function isNoUpdateResponse(value) {
   return String(value || '').trim().replace(/[.!]+$/, '').toUpperCase() === 'NO_UPDATE';
 }
 
+function automaticPresenterSentinel(value) {
+  const normalized = String(value || '').trim().replace(/[.!]+$/, '').toUpperCase();
+  return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT' ? normalized : '';
+}
+
+function isAutomaticPresenterSentinel(value) {
+  return Boolean(automaticPresenterSentinel(value));
+}
+
 function shouldScheduleWorkspaceCatchUp({ addedCount = 0, unreadCount = 0, initialized = false } = {}) {
   return addedCount > 0 || (!initialized && unreadCount > 0);
 }
 
-module.exports = { catchUpPrompt, isNoUpdateResponse, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };
+module.exports = { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, isNoUpdateResponse, latestNotificationsBySession, markSupersededNotificationsRead, nextCatchUp, pendingNotifications, shouldScheduleWorkspaceCatchUp };

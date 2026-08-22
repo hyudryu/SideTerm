@@ -1,6 +1,6 @@
-const DEFAULT_PROACTIVE_DELAY_MS = 45_000;
+const DEFAULT_PROACTIVE_DELAY_MS = 0;
 const DEFAULT_PROACTIVE_RETRY_MS = 20_000;
-const DEFAULT_PROACTIVE_MIN_INTERVAL_MS = 120_000;
+const DEFAULT_PROACTIVE_MIN_INTERVAL_MS = 0;
 const DEFAULT_PROACTIVE_MAX_ATTEMPTS = 3;
 
 // Batches newly finished work into background supervisor check-ins. The run
@@ -27,24 +27,29 @@ class ProactiveCatchUpScheduler {
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.timer = null;
+    this.scheduledAt = 0;
     this.pending = false;
     this.attempts = 0;
     this.lastRanAt = 0;
   }
 
-  notify() {
+  notify({ delayMs = this.delayMs } = {}) {
     this.pending = true;
     this.attempts = 0;
-    if (this.timer) return;
-    this.schedule(this.delayMs);
+    const requestedAt = this.now() + Math.max(0, Number(delayMs) || 0);
+    if (this.timer && requestedAt >= this.scheduledAt) return;
+    if (this.timer) this.clearTimer(this.timer);
+    this.schedule(Math.max(0, requestedAt - this.now()));
   }
 
   schedule(delayMs) {
+    this.scheduledAt = this.now() + delayMs;
     this.timer = this.setTimer(() => this.fire(), delayMs);
   }
 
   async fire() {
     this.timer = null;
+    this.scheduledAt = 0;
     if (!this.pending) return;
     const sinceLastRun = this.lastRanAt ? this.now() - this.lastRanAt : Infinity;
     if (sinceLastRun < this.minIntervalMs) {
@@ -72,6 +77,7 @@ class ProactiveCatchUpScheduler {
   cancel() {
     if (this.timer) this.clearTimer(this.timer);
     this.timer = null;
+    this.scheduledAt = 0;
     this.pending = false;
     this.attempts = 0;
   }
