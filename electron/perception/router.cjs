@@ -20,13 +20,17 @@ function requiresVisualEvidence(question) {
   return /\b(?:bold|color|colour|contrast|dark|dialog|font|highlight(?:ed)?|icon|image|italic|layout|light|look(?:s|ing)?|modal|overlay|popup|popover|position|screenshot|selected|selection|style|styled|styling|theme|underline|visible|visual|red|green|blue)\b/i.test(String(question || ''));
 }
 
-function structuredStateSufficient(question) {
+function structuredStateSufficient(question, payload = {}) {
   const text = String(question || '').trim();
   if (!text || requiresVisualEvidence(text)) return false;
   if (/\bactive interaction\b/i.test(text)) return true;
   if (/(?:\b(?:supervisor|agent)\b[^?.]*\bstatus\b|\bstatus\b[^?.]*\b(?:supervisor|agent)\b)/i.test(text)) return true;
   if (/\b(?:supervisor|agent)\b/i.test(text)
-    && /\b(?:busy|working|thinking|idle|error|failed)\b/i.test(text)) return true;
+    && /\b(?:busy|working|thinking|idle|error|failed)\b/i.test(text)
+    && !/\b(?:terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
+  if (payload.session
+    && /\b(?:status|busy|working|running|idle|stopped|active|failed)\b/i.test(text)
+    && !/\b(?:command|terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\bcommand\b/i.test(text)) return false;
   if (/\b(?:sessions|terminals)\b/i.test(text)

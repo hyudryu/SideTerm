@@ -3130,12 +3130,17 @@ const visionEndpointOrigin = (value) => {
 document.querySelector('#vision-api-url').addEventListener('change', (event) => {
   const endpointChanged = visionEndpointOrigin(event.target.value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
   const keyInput = document.querySelector('#vision-api-key');
-  keyInput.value = '';
   if (endpointChanged) {
+    keyInput.value = '';
     clearVisionApiKeyRequested = true;
     keyInput.placeholder = 'Enter a key for this endpoint';
     document.querySelector('#vision-key-state').textContent = 'Key cleared for endpoint change';
     document.querySelector('#clear-vision-api-key').hidden = true;
+  } else if (keyInput.value) {
+    visionKeyExplicitClearRequested = false;
+    clearVisionApiKeyRequested = false;
+    document.querySelector('#vision-key-state').textContent = 'Replacement key ready';
+    document.querySelector('#clear-vision-api-key').hidden = false;
   } else {
     clearVisionApiKeyRequested = visionKeyExplicitClearRequested;
     keyInput.placeholder = clearVisionApiKeyRequested
@@ -3148,6 +3153,7 @@ document.querySelector('#vision-api-url').addEventListener('change', (event) => 
   }
 });
 document.querySelector('#vision-api-key').addEventListener('input', (event) => {
+  if (event.target.value) visionKeyExplicitClearRequested = false;
   clearVisionApiKeyRequested = event.target.value
     ? false
     : visionKeyExplicitClearRequested

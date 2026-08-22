@@ -83,6 +83,12 @@ test('capture routing keeps incomplete collection questions away from terminal t
   assert.match(main, /requiresVisualEvidence\(question\) \|\| structuredCollectionRequiresCompleteList\(question\) \? 0\.6 : 0\.9/);
 });
 
+test('terminal text routing preserves the newest output tail', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /summary: text\.slice\(-4000\)/);
+  assert.match(main, /slice\(-200\)\.map\(\(line\) => line\.slice\(-1000\)\)/);
+});
+
 test('capture lifetime locks session activation and terminal input', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
