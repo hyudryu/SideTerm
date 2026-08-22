@@ -1148,7 +1148,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         && structuredCollectionRequiresCompleteList(question);
       return {
         summary: fitted.summary,
-        confidence: structuredStateSufficient(question)
+        confidence: structuredStateSufficient(question, fitted.payload)
           && structuredSessionSummaryAvailable(question, fitted.payload)
           && !listIsIncomplete ? 0.9 : 0.7
       };
@@ -1159,8 +1159,8 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         ? captureSessionScreen(liveTerminal).slice(-20_000)
         : String((await requestRendererAction('read-terminal-text', { sessionId }))?.text || '').slice(-20_000);
       return {
-        summary: text,
-        visibleText: text.split('\n').filter(Boolean).slice(-200),
+        summary: text.slice(-4000),
+        visibleText: text.split('\n').filter(Boolean).slice(-200).map((line) => line.slice(-1000)),
         confidence: text
           ? requiresVisualEvidence(question) || structuredCollectionRequiresCompleteList(question) ? 0.6 : 0.9
           : 0
