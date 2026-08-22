@@ -63,6 +63,10 @@ let dropTarget = null;
 let clearApiKeyRequested = false;
 let clearSttCredentialRequested = false;
 let sttCredentialRemovalIntent = false;
+let clearVisionApiKeyRequested = false;
+let visionKeyExplicitClearRequested = false;
+let visionKeyPersistedEndpoint = '';
+let visionReplacementKeyOrigin = '';
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -74,6 +78,11 @@ let settings = {
   model: '',
   agentEnabled: false,
   supervisorBackgroundEnabled: true,
+  visionEnabled: false,
+  visionUseSupervisorModel: true,
+  visionApiUrl: '',
+  visionModel: '',
+  hasVisionApiKey: false,
   personality: 'Warm, direct, calm, and concise.',
   agentInstructions: '',
   wakeWord: 'Hey Agent',
@@ -93,6 +102,8 @@ let linkPopoverTimer = null;
 let agentState = { enabled: false, status: 'idle', messages: [], notifications: [], archivedSessions: [], confirmations: [] };
 let agentCatchUpInFlight = false;
 let supervisorDashboardActive = false;
+let terminalCaptureRestore = null;
+const terminalCaptureResizeTokens = new Map();
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
@@ -250,6 +261,18 @@ document.querySelector('#app').innerHTML = `
                 <span><strong>Keep running in background</strong><small>Closing the window keeps monitoring active in the tray. SideTerm does not start at login.</small></span>
                 <input id="supervisor-background-enabled" type="checkbox"><i></i>
               </label>
+              <label class="toggle-row">
+                <span><strong>Enable visual inspection</strong><small>Allows the Perception Router to send a screenshot only when structured state and terminal text are insufficient.</small></span>
+                <input id="vision-enabled" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row" id="vision-supervisor-row">
+                <span><strong>Use supervisor model for vision</strong><small>Turn this off when the supervisor model is text-only.</small></span>
+                <input id="vision-use-supervisor-model" type="checkbox"><i></i>
+              </label>
+              <label class="field-row" id="vision-endpoint-row"><span>Separate vision endpoint</span><input id="vision-api-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+              <label class="field-row" id="vision-model-row"><span>Separate vision model</span><input id="vision-model" type="text" autocomplete="off" spellcheck="false"></label>
+              <label class="field-row" id="vision-key-row"><span>Separate vision API key</span><input id="vision-api-key" type="password" autocomplete="off" placeholder="Vision provider key"></label>
+              <div class="credential-actions" id="vision-key-actions"><span id="vision-key-state">No separate vision key configured</span><button id="clear-vision-api-key" type="button">Clear key</button></div>
               <label class="text-area-row"><span>Personality</span><textarea id="agent-personality" rows="3" maxlength="2000" placeholder="Warm, direct, calm, and concise."></textarea></label>
               <label class="text-area-row"><span>Agent instructions</span><textarea id="agent-instructions" rows="5" maxlength="8000" placeholder="Always confirm before finalizing terminal input…"></textarea></label>
               <label class="field-row"><span>Codex GitHub logins</span><input id="github-codex-actors" type="text" spellcheck="false" placeholder="chatgpt-codex-connector, codex, openai-codex"></label>
@@ -417,6 +440,9 @@ function populateSettingsPanel() {
   clearApiKeyRequested = false;
   clearSttCredentialRequested = false;
   sttCredentialRemovalIntent = false;
+  clearVisionApiKeyRequested = false;
+  visionKeyExplicitClearRequested = false;
+  visionReplacementKeyOrigin = '';
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -430,6 +456,15 @@ function populateSettingsPanel() {
   document.querySelector('#ai-model').value = settings.model;
   document.querySelector('#agent-enabled').checked = settings.agentEnabled;
   document.querySelector('#supervisor-background-enabled').checked = settings.supervisorBackgroundEnabled !== false;
+  document.querySelector('#vision-enabled').checked = Boolean(settings.visionEnabled);
+  document.querySelector('#vision-use-supervisor-model').checked = settings.visionUseSupervisorModel !== false;
+  document.querySelector('#vision-api-url').value = settings.visionApiUrl || '';
+  visionKeyPersistedEndpoint = settings.visionApiUrl || '';
+  document.querySelector('#vision-model').value = settings.visionModel || '';
+  document.querySelector('#vision-api-key').value = '';
+  document.querySelector('#vision-api-key').placeholder = settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+  document.querySelector('#vision-key-state').textContent = settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+  document.querySelector('#clear-vision-api-key').hidden = !settings.hasVisionApiKey;
   document.querySelector('#agent-personality').value = settings.personality || '';
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
   document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
@@ -454,6 +489,7 @@ function populateSettingsPanel() {
   syncProviderFeatureAvailability();
   void refreshSpeechStatus();
   syncSttProviderFields();
+  syncVisionFields();
 }
 
 async function openSettingsPanel() {
@@ -482,6 +518,15 @@ function syncSttProviderFields() {
   document.querySelector('#install-stt').hidden = cloud;
 }
 
+function syncVisionFields() {
+  const enabled = document.querySelector('#vision-enabled').checked;
+  const separate = enabled && !document.querySelector('#vision-use-supervisor-model').checked;
+  document.querySelector('#vision-supervisor-row').hidden = !enabled;
+  for (const id of ['vision-endpoint-row', 'vision-model-row', 'vision-key-row', 'vision-key-actions']) {
+    document.querySelector(`#${id}`).hidden = !separate;
+  }
+}
+
 function settingsPayload() {
   const hotkeys = {};
   for (const input of document.querySelectorAll('[data-hotkey-action]')) hotkeys[input.dataset.hotkeyAction] = input.value;
@@ -496,6 +541,12 @@ function settingsPayload() {
     model: document.querySelector('#ai-model').value,
     agentEnabled: document.querySelector('#agent-enabled').checked,
     supervisorBackgroundEnabled: document.querySelector('#supervisor-background-enabled').checked,
+    visionEnabled: document.querySelector('#vision-enabled').checked,
+    visionUseSupervisorModel: document.querySelector('#vision-use-supervisor-model').checked,
+    visionApiUrl: document.querySelector('#vision-api-url').value,
+    visionModel: document.querySelector('#vision-model').value,
+    visionApiKey: document.querySelector('#vision-api-key').value,
+    clearVisionApiKey: clearVisionApiKeyRequested,
     personality: document.querySelector('#agent-personality').value,
     agentInstructions: document.querySelector('#agent-instructions').value,
     githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
@@ -1045,6 +1096,7 @@ function persistWorkspaceNow() {
   });
   api.updateMobileWorkspace({
     groups: mobileGroups,
+    activeId,
     sessions: savedSessions.map((session) => ({
       id: session.id,
       groupId: session.groupId,
@@ -1470,8 +1522,197 @@ async function submitAgentChat(text, { spokenRequest = false, interactionId = ''
   }
 }
 
+function restoreTerminalVisualCapture() {
+  const restore = terminalCaptureRestore;
+  terminalCaptureRestore = null;
+  restore?.();
+}
+
+function lockTerminalCaptureInteraction() {
+  shellElement.classList.add('capture-locked');
+  return () => shellElement.classList.remove('capture-locked');
+}
+
+function restoreCapturedTerminalLayout(sessionId, token, originalDimensions, onRestored) {
+  let settled = false;
+  const restore = () => {
+    if (settled || terminalCaptureResizeTokens.get(sessionId) !== token) return;
+    settled = true;
+    try {
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && sessionId !== activeId
+        && originalDimensions.cols > 0 && originalDimensions.rows > 0) {
+        capturedSession.terminal.resize(originalDimensions.cols, originalDimensions.rows);
+      }
+      fitActive();
+    } finally {
+      if (terminalCaptureResizeTokens.get(sessionId) === token) terminalCaptureResizeTokens.delete(sessionId);
+      const capturedSession = sessions.get(sessionId);
+      if (capturedSession && !capturedSession.exited) {
+        api.resize(sessionId, capturedSession.terminal.cols, capturedSession.terminal.rows);
+      }
+      onRestored?.();
+    }
+  };
+  const timer = window.setTimeout(restore, 80);
+  requestAnimationFrame(() => {
+    window.clearTimeout(timer);
+    restore();
+  });
+}
+
+function hideNonterminalCaptureOverlays({ hideDashboard = true, preserveOverlays = false } = {}) {
+  const dashboardWasHidden = supervisorDashboard.hidden;
+  const supervisorWasActive = shellElement.classList.contains('supervisor-active');
+  const overlayStates = [...document.querySelectorAll('.settings-backdrop, .link-popover, .toast-region')]
+    .map((element) => ({ element, hidden: element.hidden }));
+  const credentialStates = [...document.querySelectorAll('input[type="password"]')]
+    .map((element) => ({ element, value: element.value }));
+  const mobileUrlStates = [...document.querySelectorAll('#mobile-urls code')]
+    .map((element) => ({ element, text: element.textContent }));
+  const mobileQrStates = [...document.querySelectorAll('#mobile-urls canvas')]
+    .map((element) => ({
+      element,
+      visibility: element.style.visibility,
+      ariaHidden: element.getAttribute('aria-hidden')
+    }));
+  if (hideDashboard) {
+    supervisorDashboard.hidden = true;
+    shellElement.classList.remove('supervisor-active');
+  }
+  for (const credential of credentialStates) {
+    if (credential.value) credential.element.value = '••••••••';
+  }
+  for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = '[redacted mobile access URL]';
+  for (const mobileQr of mobileQrStates) {
+    mobileQr.element.style.visibility = 'hidden';
+    mobileQr.element.setAttribute('aria-hidden', 'true');
+  }
+  if (!preserveOverlays) {
+    for (const overlay of overlayStates) overlay.element.hidden = true;
+  }
+  return () => {
+    for (const credential of credentialStates) credential.element.value = credential.value;
+    for (const mobileUrl of mobileUrlStates) mobileUrl.element.textContent = mobileUrl.text;
+    for (const mobileQr of mobileQrStates) {
+      mobileQr.element.style.visibility = mobileQr.visibility;
+      if (mobileQr.ariaHidden === null) mobileQr.element.removeAttribute('aria-hidden');
+      else mobileQr.element.setAttribute('aria-hidden', mobileQr.ariaHidden);
+    }
+    for (const overlay of overlayStates) overlay.element.hidden = overlay.hidden;
+    if (hideDashboard) {
+      supervisorDashboard.hidden = dashboardWasHidden;
+      shellElement.classList.toggle('supervisor-active', supervisorWasActive);
+    }
+  };
+}
+
+function waitForTerminalCaptureRepaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(done, 80);
+    if (document.visibilityState === 'visible') requestAnimationFrame(() => requestAnimationFrame(done));
+  });
+}
+
 async function handleAgentAction({ requestId, type, payload }) {
   try {
+    if (type === 'prepare-session-chrome-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session?.item) throw new Error('The requested session chrome is no longer available.');
+      const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      const previousScrollTop = sessionList.scrollTop;
+      terminalCaptureRestore = () => {
+        sessionList.scrollTop = previousScrollTop;
+        restoreInteraction();
+        restoreOverlays();
+      };
+      try {
+        const captureElement = payload.chromeRegion === 'header' && session.id === activeId
+          ? document.querySelector('.command-bar')
+          : session.item;
+        if (captureElement === session.item) session.item.scrollIntoView({ block: 'nearest' });
+        await waitForTerminalCaptureRepaint();
+        const rect = captureElement.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The requested session chrome is not visible.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
+    if (type === 'prepare-terminal-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The session is no longer available.');
+      const restoreOverlays = hideNonterminalCaptureOverlays();
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      const resizeToken = Symbol(session.id);
+      const originalDimensions = { cols: session.terminal.cols, rows: session.terminal.rows };
+      terminalCaptureResizeTokens.set(session.id, resizeToken);
+      terminalCaptureRestore = () => {
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
+        sessions.get(activeId)?.pane.classList.add('active');
+        restoreOverlays();
+        restoreCapturedTerminalLayout(session.id, resizeToken, originalDimensions, restoreInteraction);
+      };
+      try {
+        for (const pane of document.querySelectorAll('.terminal-pane.active')) pane.classList.remove('active');
+        session.pane.classList.add('active');
+        session.fit.fit();
+        await waitForTerminalCaptureRepaint();
+        const rect = session.pane.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The terminal has no visible capture area.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
+    if (type === 'prepare-window-capture') {
+      restoreTerminalVisualCapture();
+      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false, preserveOverlays: true });
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      terminalCaptureRestore = () => {
+        restoreInteraction();
+        restoreOverlays();
+        requestAnimationFrame(fitActive);
+      };
+      await waitForTerminalCaptureRepaint();
+      api.resolveAgentAction(requestId, { prepared: true });
+      return;
+    }
+    if (type === 'restore-terminal-capture') {
+      restoreTerminalVisualCapture();
+      api.resolveAgentAction(requestId, { restored: true });
+      return;
+    }
+    if (type === 'read-terminal-text') {
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error('The retained terminal is no longer available.');
+      api.resolveAgentAction(requestId, { text: terminalHistory(session.terminal).slice(-20_000) });
+      return;
+    }
     if (type === 'create-session') {
       let group = payload.createGroup
         ? null
@@ -2072,6 +2313,7 @@ function renderSessionItem(session) {
 }
 
 function activateSession(id) {
+  if (terminalCaptureRestore) return;
   const next = sessions.get(id);
   if (!next) return;
   if (supervisorDashboardActive) closeAgentPanel();
@@ -2099,6 +2341,7 @@ function activateSession(id) {
     : `${next.shell} · ${next.cwd}`;
   statusDot.classList.toggle('stopped', next.exited);
   updateVisualState();
+  api.updateMobileActiveSession(activeId);
   schedulePersist();
   requestAnimationFrame(() => {
     fitSession(next);
@@ -2109,6 +2352,7 @@ function activateSession(id) {
 
 function fitSession(session) {
   if (!session || !session.pane.classList.contains('active')) return;
+  if (shellElement.classList.contains('supervisor-active') || terminalStack.getClientRects().length === 0) return;
   try {
     session.fit.fit();
   } catch {
@@ -2437,12 +2681,15 @@ async function addSession(cwd, options = {}) {
   }
 
   terminal.onData((data) => {
-    if (!session.exited) {
-      trackTerminalInput(session, data);
-      api.write(id, data);
-    }
+    if (session.exited) return;
+    const userInput = stripTerminalControlInput(data);
+    if (terminalCaptureRestore && userInput) return;
+    if (userInput) trackTerminalInput(session, data);
+    api.write(id, data);
   });
-  terminal.onResize(({ cols, rows }) => api.resize(id, cols, rows));
+  terminal.onResize(({ cols, rows }) => {
+    if (!terminalCaptureResizeTokens.has(id)) api.resize(id, cols, rows);
+  });
   terminal.onTitleChange((title) => {
     if (session.manualTitle) return;
     const cleaned = title.trim();
@@ -2457,6 +2704,7 @@ async function addSession(cwd, options = {}) {
   });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
+    if (terminalCaptureRestore) return false;
     const action = resolveTerminalShortcut(event, terminal.hasSelection(), settings.hotkeys);
     if (!action) return true;
     if (!consumeTerminalShortcutEvent(event, action)) return true;
@@ -2878,6 +3126,59 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
+document.querySelector('#vision-enabled').addEventListener('change', syncVisionFields);
+document.querySelector('#vision-use-supervisor-model').addEventListener('change', syncVisionFields);
+const visionEndpointOrigin = (value) => {
+  try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
+};
+document.querySelector('#vision-api-url').addEventListener('change', (event) => {
+  const draftOrigin = visionEndpointOrigin(event.target.value);
+  const endpointChanged = draftOrigin !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+  const keyInput = document.querySelector('#vision-api-key');
+  if (keyInput.value && visionReplacementKeyOrigin !== draftOrigin) {
+    keyInput.value = '';
+    visionReplacementKeyOrigin = '';
+  }
+  if (endpointChanged) {
+    clearVisionApiKeyRequested = !keyInput.value;
+    keyInput.placeholder = 'Enter a key for this endpoint';
+    document.querySelector('#vision-key-state').textContent = keyInput.value ? 'Replacement key ready' : 'Key cleared for endpoint change';
+    document.querySelector('#clear-vision-api-key').hidden = !keyInput.value;
+  } else if (keyInput.value) {
+    visionKeyExplicitClearRequested = false;
+    clearVisionApiKeyRequested = false;
+    document.querySelector('#vision-key-state').textContent = 'Replacement key ready';
+    document.querySelector('#clear-vision-api-key').hidden = false;
+  } else {
+    clearVisionApiKeyRequested = visionKeyExplicitClearRequested;
+    keyInput.placeholder = clearVisionApiKeyRequested
+      ? 'Key will be removed on save'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'Vision provider key';
+    document.querySelector('#vision-key-state').textContent = clearVisionApiKeyRequested
+      ? 'Key will be removed'
+      : settings.hasVisionApiKey ? 'Encrypted key configured' : 'No separate vision key configured';
+    document.querySelector('#clear-vision-api-key').hidden = clearVisionApiKeyRequested || !settings.hasVisionApiKey;
+  }
+});
+document.querySelector('#vision-api-key').addEventListener('input', (event) => {
+  visionReplacementKeyOrigin = event.target.value
+    ? visionEndpointOrigin(document.querySelector('#vision-api-url').value)
+    : '';
+  if (event.target.value) visionKeyExplicitClearRequested = false;
+  clearVisionApiKeyRequested = event.target.value
+    ? false
+    : visionKeyExplicitClearRequested
+      || visionEndpointOrigin(document.querySelector('#vision-api-url').value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+});
+document.querySelector('#clear-vision-api-key').addEventListener('click', () => {
+  visionKeyExplicitClearRequested = true;
+  clearVisionApiKeyRequested = true;
+  document.querySelector('#vision-api-key').value = '';
+  visionReplacementKeyOrigin = '';
+  document.querySelector('#vision-api-key').placeholder = 'Key will be removed on save';
+  document.querySelector('#vision-key-state').textContent = 'Key will be removed';
+  document.querySelector('#clear-vision-api-key').hidden = true;
+});
 document.querySelector('#stt-provider').addEventListener('change', () => {
   sttCredentialRemovalIntent = true;
   clearSttCredentialRequested = true;
@@ -2947,6 +3248,10 @@ api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);
 
 window.addEventListener('keydown', (event) => {
+  if (terminalCaptureRestore) {
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && sessionList.querySelector('.group-sort[aria-expanded="true"]')) {
     event.preventDefault();
     closeGroupSortMenus();
