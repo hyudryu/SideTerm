@@ -20,7 +20,13 @@ function requiresVisualEvidence(question) {
   const text = String(question || '');
   if (/\b(?:selected|selection)\b/i.test(text)
     && /\b(?:button|control|field|item|menu|option|row|tab|text|ui)\b/i.test(text)) return true;
-  return /\b(?:bold|color|colour|contrast|dark|dialog|font|highlight(?:ed)?|icon|image|italic|layout|light|look(?:s|ing)?|modal|overlay|popup|popover|position|screenshot|style|styled|styling|theme|underline|visible|visual|red|green|blue)\b/i.test(text);
+  return /\b(?:beige|black|blue|bold|brown|color|colour|contrast|cyan|dark|dialog|font|gray|green|grey|highlight(?:ed)?|icon|image|indigo|italic|layout|light|look(?:s|ing)?|magenta|modal|orange|overlay|pink|popup|popover|position|purple|red|screenshot|silver|style|styled|styling|teal|theme|underline|visible|visual|white|yellow)\b/i.test(text);
+}
+
+function requiresSessionChrome(question) {
+  const text = String(question || '');
+  return requiresVisualEvidence(text)
+    && /\b(?:activity|badge|command bar|group|header|indicator|name|sidebar|status|tab|title)\b/i.test(text);
 }
 
 function structuredStateSufficient(question, payload = {}) {
@@ -38,6 +44,9 @@ function structuredStateSufficient(question, payload = {}) {
     && /\b(?:names?|titles?)\b/i.test(text)
     && /\b(?:it|its|this|that|selected|current|session|terminal)\b/i.test(text)
     && !/\b(?:command|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
+  if (payload.session
+    && /\bgroups?\b/i.test(text)
+    && /\b(?:it|its|this|that|selected|current|session|terminal)\b/i.test(text)) return true;
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\bcommand\b/i.test(text)) return false;
   if (/\b(?:sessions|terminals)\b/i.test(text)
@@ -107,6 +116,7 @@ module.exports = {
   PerceptionRouter,
   normalizePerception,
   requiresVisualEvidence,
+  requiresSessionChrome,
   structuredCollectionRequiresCompleteList,
   structuredSessionSummaryAvailable,
   structuredStateSufficient
