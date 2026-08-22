@@ -67,6 +67,12 @@ test('visual questions fall through terminal text to styled capture', () => {
 });
 
 test('structured status questions do not require screenshot upload', () => {
+  assert.equal(structuredStateSufficient('What is the active interaction asking me to approve?', {
+    activeInteraction: { id: 'approval-1', kind: 'approval', prompt: 'Merge PR 15?' }
+  }), true);
+  assert.equal(structuredStateSufficient('What is the active interaction asking me to approve?', {
+    activeInteractionId: 'approval-1'
+  }), false);
   assert.equal(structuredStateSufficient('What is the supervisor status?'), true);
   assert.equal(structuredStateSufficient('Is the supervisor busy?'), true);
   assert.equal(structuredStateSufficient('Is the agent still working?'), true);

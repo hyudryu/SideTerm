@@ -26,7 +26,7 @@ function requiresVisualEvidence(question) {
 function structuredStateSufficient(question, payload = {}) {
   const text = String(question || '').trim();
   if (!text || requiresVisualEvidence(text)) return false;
-  if (/\bactive interaction\b/i.test(text)) return true;
+  if (/\bactive interaction\b/i.test(text)) return Boolean(payload.activeInteraction);
   if (/(?:\b(?:supervisor|agent)\b[^?.]*\bstatus\b|\bstatus\b[^?.]*\b(?:supervisor|agent)\b)/i.test(text)) return true;
   if (/\b(?:supervisor|agent)\b/i.test(text)
     && /\b(?:busy|working|thinking|idle|error|failed)\b/i.test(text)
