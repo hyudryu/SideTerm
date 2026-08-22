@@ -18,7 +18,13 @@ test('visual inspection captures the styled live terminal and preserves fallback
 test('retained stopped sessions remain eligible for structured and visual inspection', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.doesNotMatch(main, /sessionId && !session\) throw new Error\('That session is stopped/);
-  assert.match(main, /const screenshot = async \(\) => \{[\s\S]*if \(sessionId\) \{[\s\S]*prepare-terminal-capture/);
+  assert.match(main, /const screenshot = async \(\) => \{[\s\S]*if \(sessionId && !requiresSessionChrome\(question\)\) \{[\s\S]*prepare-terminal-capture/);
+});
+
+test('targeted session chrome questions use a sanitized whole-window capture', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /if \(sessionId && !requiresSessionChrome\(question\)\) \{/);
+  assert.match(main, /requiresSessionChrome\(question\)[\s\S]*requestRendererAction\('prepare-window-capture'/);
 });
 
 test('terminal capture hides credential-bearing and nonterminal overlays', () => {
