@@ -67,6 +67,10 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What is the supervisor status?'), true);
   assert.equal(structuredStateSufficient('Is the supervisor busy?'), true);
   assert.equal(structuredStateSufficient('Is the agent still working?'), true);
+  assert.equal(structuredStateSufficient('What error is the agent seeing in the terminal?'), false);
+  assert.equal(structuredStateSufficient('What is its status?', { session: { status: 'idle' } }), true);
+  assert.equal(structuredStateSufficient('Is it still running?', { session: { status: 'running' } }), true);
+  assert.equal(structuredStateSufficient('Is it still running?'), false);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
   assert.equal(structuredStateSufficient('How many terminals are running?'), true);
   assert.equal(structuredStateSufficient('Which terminals are idle?'), true);
