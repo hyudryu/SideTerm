@@ -67,6 +67,7 @@ let clearVisionApiKeyRequested = false;
 let clearHarnessBridgeTokenRequested = false;
 let visionKeyExplicitClearRequested = false;
 let visionKeyPersistedEndpoint = '';
+let visionReplacementKeyOrigin = '';
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -453,6 +454,7 @@ function populateSettingsPanel() {
   clearVisionApiKeyRequested = false;
   clearHarnessBridgeTokenRequested = false;
   visionKeyExplicitClearRequested = false;
+  visionReplacementKeyOrigin = '';
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -3129,14 +3131,18 @@ const visionEndpointOrigin = (value) => {
   try { return new URL(value).origin.toLowerCase(); } catch { return ''; }
 };
 document.querySelector('#vision-api-url').addEventListener('change', (event) => {
-  const endpointChanged = visionEndpointOrigin(event.target.value) !== visionEndpointOrigin(visionKeyPersistedEndpoint);
+  const draftOrigin = visionEndpointOrigin(event.target.value);
+  const endpointChanged = draftOrigin !== visionEndpointOrigin(visionKeyPersistedEndpoint);
   const keyInput = document.querySelector('#vision-api-key');
-  if (endpointChanged) {
+  if (keyInput.value && visionReplacementKeyOrigin !== draftOrigin) {
     keyInput.value = '';
-    clearVisionApiKeyRequested = true;
+    visionReplacementKeyOrigin = '';
+  }
+  if (endpointChanged) {
+    clearVisionApiKeyRequested = !keyInput.value;
     keyInput.placeholder = 'Enter a key for this endpoint';
-    document.querySelector('#vision-key-state').textContent = 'Key cleared for endpoint change';
-    document.querySelector('#clear-vision-api-key').hidden = true;
+    document.querySelector('#vision-key-state').textContent = keyInput.value ? 'Replacement key ready' : 'Key cleared for endpoint change';
+    document.querySelector('#clear-vision-api-key').hidden = !keyInput.value;
   } else if (keyInput.value) {
     visionKeyExplicitClearRequested = false;
     clearVisionApiKeyRequested = false;
@@ -3154,6 +3160,9 @@ document.querySelector('#vision-api-url').addEventListener('change', (event) => 
   }
 });
 document.querySelector('#vision-api-key').addEventListener('input', (event) => {
+  visionReplacementKeyOrigin = event.target.value
+    ? visionEndpointOrigin(document.querySelector('#vision-api-url').value)
+    : '';
   if (event.target.value) visionKeyExplicitClearRequested = false;
   clearVisionApiKeyRequested = event.target.value
     ? false
@@ -3164,6 +3173,7 @@ document.querySelector('#clear-vision-api-key').addEventListener('click', () => 
   visionKeyExplicitClearRequested = true;
   clearVisionApiKeyRequested = true;
   document.querySelector('#vision-api-key').value = '';
+  visionReplacementKeyOrigin = '';
   document.querySelector('#vision-api-key').placeholder = 'Key will be removed on save';
   document.querySelector('#vision-key-state').textContent = 'Key will be removed';
   document.querySelector('#clear-vision-api-key').hidden = true;
