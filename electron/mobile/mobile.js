@@ -50,21 +50,26 @@ let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
 let mobileSttLocation = 'local';
+let mobileSttProviderName = 'NVIDIA Parakeet';
+let mobileVoiceActivationId = '';
 let mobileVoiceInteractionId = '';
 let mobileAudioQueue = Promise.resolve(true);
+let mobileAudioGeneration = 0;
 let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
 let pendingMobileCreateTimer = null;
 
 function queueMobileAudio(message) {
+  const generation = mobileAudioGeneration;
   mobileAudioQueue = mobileAudioQueue
     .catch(() => false)
-    .then(() => mobileVoiceMode ? playMobileAudio(message.audio, {
+    .then(() => mobileVoiceMode && generation === mobileAudioGeneration ? playMobileAudio(message.audio, {
       openReplyWindow: Boolean(message.opensReplyWindow),
       interactionId: String(message.interactionId || '')
     }) : false);
   return mobileAudioQueue.then((speechCompleted) => {
+    if (generation !== mobileAudioGeneration) return false;
     if (!message.continueCatchUp) return speechCompleted;
     if (!speechCompleted) releaseCatchUpQueue();
     else requestNextCatchUp(message.catchUpHasMore);
@@ -360,7 +365,7 @@ function connect() {
     catchupRequested = false;
     mobileTranscriptionInFlight = false;
     resetPendingMobileCreate('Connection restored. Please try again.');
-    if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true });
+    if (mobileVoiceMode) send({ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId });
   });
   socket.addEventListener('message', (event) => {
     let message;
@@ -396,6 +401,8 @@ function connect() {
       document.querySelector('#mobile-tts-speed').value = String(message.settings?.ttsSpeed || 1);
       document.querySelector('#mobile-tts-speed-value').textContent = `${Number(message.settings?.ttsSpeed || 1).toFixed(2)}×`;
       document.querySelector('#mobile-settings-status').textContent = message.saved ? 'Saved' : '';
+      mobileSttProviderName = message.settings?.sttProviderName || 'NVIDIA Parakeet';
+      mobileSttLocation = message.settings?.sttLocation === 'cloud' ? 'cloud' : 'local';
     }
     if (message.type === 'mobile:settings:error') {
       document.querySelector('#mobile-settings-status').textContent = message.message;
@@ -433,13 +440,22 @@ function connect() {
         ? message.transcript.reason
         : message.transcript.text;
     }
-    if (message.type === 'voice:status') mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
+    if (message.type === 'voice:status') {
+      mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
+      mobileSttProviderName = message.status?.sttProviderName || 'NVIDIA Parakeet';
+    }
     if (message.type === 'agent:catch-up-result') void handleCatchUpResult(message);
     if (message.type === 'agent:catch-up-busy') catchupRequested = false;
     if (message.type === 'voice:audio') {
       if (message.continueCatchUp && !mobileVoiceMode) {
         releaseCatchUpQueue();
-      } else void queueMobileAudio(message);
+      } else void queueMobileAudio(message).then((delivered) => {
+        if (message.presentationId) send({
+          type: 'voice:presented',
+          presentationId: message.presentationId,
+          delivered
+        });
+      });
     }
     if (message.type === 'voice:error') {
       mobileTranscriptionInFlight = false;
@@ -448,6 +464,9 @@ function connect() {
     }
   });
   socket.addEventListener('close', () => {
+    mobileAudioGeneration += 1;
+    interruptMobileVoicePlayback();
+    mobileAudioQueue = Promise.resolve(false);
     connectionDot.classList.remove('online');
     connectionDetail.textContent = 'Disconnected · retrying';
     mobileTranscriptionInFlight = false;
@@ -504,9 +523,9 @@ function interruptMobileVoicePlayback() {
 
 async function submitVoiceBlob(blob, duration) {
   if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
-  document.querySelector('#mobile-wave-detail').textContent = mobileSttLocation === 'cloud'
-    ? 'Transcribing with the selected cloud provider…'
-    : 'Transcribing locally…';
+  document.querySelector('#mobile-wave-detail').textContent = mobileSttLocation === 'local'
+    ? 'Transcribing locally with Parakeet…'
+    : `Transcribing with ${mobileSttProviderName}…`;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const replyWindowActive = Date.now() <= mobileReplyUntil;
   if (!replyWindowActive) mobileVoiceInteractionId = '';
@@ -551,7 +570,8 @@ async function startMobileVoice() {
   });
   voiceRecorder.start(220);
   mobileVoiceMode = true;
-  send({ type: 'voice:mode', enabled: true });
+  mobileVoiceActivationId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  send({ type: 'voice:mode', enabled: true, activationId: mobileVoiceActivationId });
   agentDashboard.classList.add('voice-mode');
   document.querySelector('#mobile-waveform').hidden = false;
   mobileVoiceToggle.textContent = 'Voice on';
@@ -596,12 +616,15 @@ async function startMobileVoice() {
 }
 
 function stopMobileVoice() {
+  mobileAudioGeneration += 1;
   interruptMobileVoicePlayback();
+  mobileAudioQueue = Promise.resolve(false);
   mobileVoiceMode = false;
   mobileTranscriptionInFlight = false;
   mobileReplyUntil = 0;
   mobileVoiceInteractionId = '';
-  send({ type: 'voice:mode', enabled: false });
+  send({ type: 'voice:mode', enabled: false, activationId: mobileVoiceActivationId });
+  mobileVoiceActivationId = '';
   if (voiceFrame) cancelAnimationFrame(voiceFrame);
   voiceFrame = null;
   if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();

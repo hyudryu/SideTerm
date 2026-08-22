@@ -64,6 +64,13 @@ function compareEvents(left, right) {
   return left.priority - right.priority || left.createdAt - right.createdAt || left.id.localeCompare(right.id);
 }
 
+function recoverAbandonedEvents(events = []) {
+  for (const event of events) {
+    if (event.state === 'presented' && !event.read) event.state = 'queued';
+  }
+  return events;
+}
+
 class PriorityEventBus {
   constructor(events = [], options = {}) {
     this.events = events;
@@ -149,5 +156,6 @@ module.exports = {
   compareEvents,
   eventKind,
   eventPriority,
-  normalizeSupervisorEvent
+  normalizeSupervisorEvent,
+  recoverAbandonedEvents
 };

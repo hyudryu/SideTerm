@@ -41,6 +41,9 @@ contextBridge.exposeInMainWorld('sideTerm', {
   confirmAgentAction: (id, approved) => ipcRenderer.invoke('agent:confirm', { id, approved }),
   reportSessionFinished: (payload) => ipcRenderer.send('agent:session-finished', payload),
   setAgentVoiceMode: (enabled) => ipcRenderer.send('agent:voice-mode', Boolean(enabled)),
+  reportAgentVoicePresentation: (presentationId, delivered) => ipcRenderer.send('agent:voice-presented', {
+    presentationId: String(presentationId || ''), delivered: Boolean(delivered)
+  }),
   onAgentState: (callback) => subscribe('agent:state', callback),
   onAgentVoicePing: (callback) => subscribe('agent:voice-ping', callback),
   onAgentAction: (callback) => subscribe('agent:action', callback),

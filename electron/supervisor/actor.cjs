@@ -9,13 +9,15 @@ class SupervisorActor {
   enqueue(run, options = {}) {
     if (typeof run !== 'function') return Promise.reject(new TypeError('SupervisorActor requires a task function.'));
     const priority = Math.max(0, Math.min(3, Math.floor(Number(options.priority) || 0)));
+    const sequence = ++this.sequence;
     return new Promise((resolve, reject) => {
       const item = {
-        id: String(options.id || `actor-${++this.sequence}`),
+        id: String(options.id || `actor-${sequence}`),
         priority,
-        sequence: this.sequence,
+        sequence,
         interruptible: Boolean(options.interruptible),
         cancel: typeof options.cancel === 'function' ? options.cancel : null,
+        cancelled: false,
         run,
         resolve,
         reject
@@ -26,6 +28,23 @@ class SupervisorActor {
       this.onStateChange(this.snapshot());
       void this.drain();
     });
+  }
+
+  cancel(id) {
+    const taskId = String(id || '');
+    if (!taskId) return false;
+    const queuedIndex = this.queue.findIndex((item) => item.id === taskId);
+    if (queuedIndex >= 0) {
+      const [item] = this.queue.splice(queuedIndex, 1);
+      item.cancelled = true;
+      item.reject(Object.assign(new Error('Supervisor task was cancelled.'), { name: 'AbortError' }));
+      this.onStateChange(this.snapshot());
+      return true;
+    }
+    if (this.active?.id !== taskId) return false;
+    this.active.cancelled = true;
+    this.active.cancel?.();
+    return true;
   }
 
   snapshot() {
@@ -45,7 +64,9 @@ class SupervisorActor {
     this.active = next;
     this.onStateChange(this.snapshot());
     try {
-      next.resolve(await next.run());
+      const result = await next.run();
+      if (next.cancelled) next.reject(Object.assign(new Error('Supervisor task was cancelled.'), { name: 'AbortError' }));
+      else next.resolve(result);
     } catch (error) {
       next.reject(error);
     } finally {

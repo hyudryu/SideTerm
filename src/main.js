@@ -1915,9 +1915,10 @@ async function processVoiceUtterance(blob, durationMs) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
-  label.textContent = settings.sttProvider && settings.sttProvider !== 'parakeet'
-    ? 'Transcribing with the selected cloud provider…'
-    : 'Transcribing locally…';
+  const descriptor = (settings.sttProviders || []).find((provider) => provider.id === settings.sttProvider);
+  label.textContent = settings.sttProvider === 'parakeet'
+    ? 'Transcribing locally with Parakeet…'
+    : `Transcribing with ${descriptor?.name || settings.sttProvider}…`;
   try {
     const replyWindowActive = Date.now() <= voiceReplyUntil;
     if (!replyWindowActive) voiceReplyInteractionId = '';
@@ -1958,7 +1959,7 @@ async function processVoiceUtterance(blob, durationMs) {
 
 async function startDesktopVoiceMode() {
   const status = await refreshSpeechStatus();
-  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Install both local speech models in Settings first.');
+  if (!status.sttInstalled || !status.ttsInstalled) throw new Error('Configure speech-to-text and install Pocket TTS in Settings first.');
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Microphone recording is unavailable in this desktop session.');
   voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   voiceAudioContext = new AudioContext();
@@ -3279,11 +3280,14 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(({ text, acknowledgement, interactionId } = {}) => {
-  if (desktopVoiceMode) void queueAgentSpeech(String(text || ''), {
-    openReplyWindow: !acknowledgement,
-    interactionId: String(interactionId || '')
-  });
+api.onAgentVoicePing(async ({ text, acknowledgement, interactionId, presentationId } = {}) => {
+  const delivered = desktopVoiceMode
+    ? await queueAgentSpeech(String(text || ''), {
+      openReplyWindow: !acknowledgement,
+      interactionId: String(interactionId || '')
+    })
+    : false;
+  if (presentationId) api.reportAgentVoicePresentation(presentationId, delivered);
 });
 api.onAgentAction((action) => void handleAgentAction(action));
 api.onSpeechStatus(renderSpeechStatus);

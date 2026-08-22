@@ -84,15 +84,23 @@ test('final catch-up may ask what to do next', () => {
 test('proactive enrichment yields to higher-priority user work', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /if \(result\.needsEnrichment\) \{[\s\S]*?notificationIds: \[event\.id\],[\s\S]*?interruptible: true/);
-  assert.match(main, /\.catch\(\(\) => \{\s*if \(releaseSupervisorEventClaim\(event\.id\)\) queueMicrotask\(scheduleProactiveCatchUp\)/);
+  assert.match(main, /catch \(error\) \{[\s\S]*transition\(event\.id, 'queued'\)[\s\S]*if \(activation\.taskId\) queueMicrotask\(scheduleProactiveCatchUp\)/);
 });
 
 test('dashboard and proactive catch-up share the same persisted event claim', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /function claimNextSupervisorEvent\(\)[\s\S]*claimNext\(state\.activeInteractionId\)[\s\S]*writeAgentState\(state\)/);
-  assert.match(main, /async function runProactiveCatchUp\(\)[\s\S]*const \{ state, event \} = claimNextSupervisorEvent\(\)/);
+  assert.match(main, /async function runProactiveCatchUp\([^)]*\)[\s\S]*const \{ state, event \} = claimNextSupervisorEvent\(\)/);
   assert.match(main, /async function catchUpWithSupervisor[\s\S]*const \{ state, event: notification \} = claimNextSupervisorEvent\(\)/);
   assert.match(main, /releaseSupervisorEventClaim\(notification\.id\)/);
+});
+
+test('abandoned presentation claims recover once at application startup', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const readAgentState = main.match(/function readAgentState\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(readAgentState, /recoverAbandonedEvents/);
+  assert.match(main, /function recoverAbandonedAgentStateEvents\(\)[\s\S]*recoverAbandonedEvents\(state\.notifications\)[\s\S]*writeAgentState\(state\)/);
+  assert.match(main, /app\.whenReady\(\)\.then\(\(\) => \{\s*recoverAbandonedAgentStateEvents\(\);/);
 });
 
 test('persisted unread updates are scheduled once after workspace restoration', () => {

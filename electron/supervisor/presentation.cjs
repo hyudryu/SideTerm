@@ -14,6 +14,11 @@ function deterministicPresentation(event = {}) {
   }
 }
 
+function presentationDelivered(results) {
+  return Array.isArray(results)
+    && results.some((result) => result?.status === 'fulfilled' && result.value === true);
+}
+
 class PresentationCoordinator {
   constructor(options = {}) {
     this.surfaces = new Map();
@@ -36,6 +41,7 @@ class PresentationCoordinator {
       if (targets && !targets.has(id)) continue;
       const queuedAt = Date.now();
       surface.pending = surface.pending.catch(() => false).then(async () => {
+        if (typeof options.isCurrent === 'function' && !options.isCurrent(id)) return false;
         this.onMetric({ type: 'presentation-start', surfaceId: id, queuedAt, startedAt: Date.now(), eventId: options.eventId || '' });
         return surface.present(content, options);
       });
@@ -45,4 +51,4 @@ class PresentationCoordinator {
   }
 }
 
-module.exports = { PresentationCoordinator, deterministicPresentation };
+module.exports = { PresentationCoordinator, deterministicPresentation, presentationDelivered };
