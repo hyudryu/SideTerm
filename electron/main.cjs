@@ -1227,6 +1227,9 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   const session = sessionId ? sessions.get(sessionId) : null;
   const activeTerminal = !sessionId && mobileWorkspace.activeId ? sessions.get(mobileWorkspace.activeId) : null;
   const metadata = sessionId ? mobileWorkspace.sessions.find((item) => item.id === sessionId) : null;
+  const activeMetadata = !sessionId && mobileWorkspace.activeId
+    ? mobileWorkspace.sessions.find((item) => item.id === mobileWorkspace.activeId)
+    : null;
   if (sessionId && !session && !metadata) throw new Error('Session not found. Call list_sessions to get an exact session ID.');
   let capturedImage = null;
   const screenshot = async () => {
@@ -1263,26 +1266,58 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   });
   const router = new PerceptionRouter({
     structuredState: async () => {
-      const workspaceSessions = mergeLiveSessionRecords(
-        mobileWorkspace.sessions,
-        sessions.keys(),
-        sessionIndex.list()
-      );
+      const state = readAgentState();
+      const archivedQuery = /\barchiv(?:e|ed)\b/i.test(question)
+        && /\b(?:sessions?|terminals?)\b/i.test(question);
+      const groupNames = new Map(mobileWorkspace.groups.map((group) => [group.id, group.title]));
+      const workspaceSessions = archivedQuery
+        ? state.archivedSessions.map((item) => ({
+          id: item.id,
+          title: item.title,
+          summary: item.summary,
+          group: item.group || 'Ungrouped',
+          groupId: '',
+          archived: true
+        }))
+        : mergeLiveSessionRecords(
+          mobileWorkspace.sessions,
+          sessions.keys(),
+          sessionIndex.list()
+        );
       const sessionCounts = workspaceSessions.reduce((counts, item) => {
+        if (archivedQuery) {
+          counts.total += 1;
+          counts.archived += 1;
+          return counts;
+        }
         const live = sessions.has(item.id);
         const busy = live && Boolean(item.busy);
         counts.total += 1;
         counts[!live ? 'stopped' : busy ? 'running' : 'idle'] += 1;
         if (item.notified) counts.needsAttention += 1;
         return counts;
-      }, { total: 0, running: 0, idle: 0, stopped: 0, needsAttention: 0 });
-      const activeWorkspaceSession = workspaceSessions.find((item) => item.id === mobileWorkspace.activeId);
+      }, { total: 0, running: 0, idle: 0, stopped: 0, archived: 0, needsAttention: 0 });
+      const activeWorkspaceSession = archivedQuery
+        ? null
+        : workspaceSessions.find((item) => item.id === mobileWorkspace.activeId);
       const collectionCandidates = activeWorkspaceSession
         ? [activeWorkspaceSession, ...workspaceSessions.filter((item) => item.id !== activeWorkspaceSession.id)]
         : workspaceSessions;
       const listedSessions = sessionId ? [] : collectionCandidates.slice(0, 200).map((item) => {
+        if (archivedQuery) {
+          return {
+            id: item.id,
+            title: item.title,
+            summary: String(item.summary || '').slice(0, 160),
+            status: 'archived',
+            archived: true,
+            groupId: item.groupId || '',
+            group: item.group || 'Ungrouped'
+          };
+        }
         const live = sessions.has(item.id);
         const busy = live && Boolean(item.busy);
+        const groupId = item.groupId || mobileWorkspace.groups.find((group) => group.sessionIds.includes(item.id))?.id || '';
         return {
           id: item.id,
           title: item.title,
@@ -1290,9 +1325,13 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
           busy,
           status: !live ? 'stopped' : busy ? 'running' : 'idle',
           active: item.id === mobileWorkspace.activeId,
-          needsAttention: Boolean(item.notified)
+          needsAttention: Boolean(item.notified),
+          groupId,
+          group: groupNames.get(groupId) || 'Ungrouped'
         };
       });
+      const activeInteraction = state.interactions.find((item) => item.id === state.activeInteractionId
+        && ['presented', 'awaiting_answer'].includes(item.state));
       const fitted = fitSessionCollection({
         session: structuredSessionRecord({
           sessionId,
@@ -1303,9 +1342,20 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
         sessionCollection: {
           ...sessionCounts
         },
+        sessionCollectionKind: archivedQuery ? 'archived' : 'workspace',
         activeSessionId: mobileWorkspace.activeId,
         supervisorStatus: agentStatus,
-        activeInteractionId: readAgentState().activeInteractionId
+        activeInteractionId: state.activeInteractionId,
+        activeInteraction: activeInteraction ? {
+          id: activeInteraction.id,
+          sessionId: activeInteraction.sessionId,
+          kind: activeInteraction.kind,
+          prompt: activeInteraction.prompt.slice(0, 500),
+          options: activeInteraction.options.slice(0, 10).map((item) => ({
+            id: item.id,
+            label: item.label.slice(0, 100)
+          }))
+        } : null
       }, listedSessions, { includeSessions: !sessionId });
       const listIsIncomplete = fitted.payload.sessionCollection.truncated
         && structuredCollectionRequiresCompleteList(question);
@@ -1316,11 +1366,13 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
           && !listIsIncomplete ? 0.9 : 0.7
       };
     },
-    terminalText: session || activeTerminal || (sessionId && metadata) ? async () => {
+    terminalText: session || activeTerminal || metadata || activeMetadata ? async () => {
       const liveTerminal = session || activeTerminal;
       const text = liveTerminal
         ? captureSessionScreen(liveTerminal).slice(-20_000)
-        : String((await requestRendererAction('read-terminal-text', { sessionId }))?.text || '').slice(-20_000);
+        : String((await requestRendererAction('read-terminal-text', {
+          sessionId: sessionId || activeMetadata.id
+        }))?.text || '').slice(-20_000);
       return {
         summary: text.slice(-4000),
         visibleText: text.split('\n').filter(Boolean).slice(-200).map((line) => line.slice(-1000)),
