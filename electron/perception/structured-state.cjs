@@ -61,6 +61,7 @@ function structuredSessionRecord({ sessionId = '', metadata = null, live = false
       summary: String(metadata.summary || indexed?.currentTask || ''),
       busy,
       status: !live ? 'stopped' : busy ? 'running' : 'idle',
+      ...(indexed?.semanticState ? { semanticState: String(indexed.semanticState) } : {}),
       needsAttention: Boolean(metadata.notified),
       groupId: String(metadata.groupId || ''),
       group: String(groupName || metadata.group || 'Ungrouped')
@@ -74,6 +75,7 @@ function structuredSessionRecord({ sessionId = '', metadata = null, live = false
     summary: String(indexed?.currentTask || ''),
     busy: status === 'running',
     status,
+    ...(indexed?.semanticState ? { semanticState: String(indexed.semanticState) } : {}),
     needsAttention: ['completed', 'input_required', 'blocked', 'failed'].includes(indexed?.semanticState)
   };
 }

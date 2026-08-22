@@ -58,7 +58,7 @@ const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
 const { migrateLegacyPullRequestWatches, WatchManager, normalizeWatch, watchLifecycleIsDue } = require('./watches/manager.cjs');
 const { shouldHideWindowOnClose, shouldQuitAfterLastWindow } = require('./background/lifecycle.cjs');
-const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('./perception/router.cjs');
+const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, sessionChromeCaptureRegion, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('./perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
@@ -1224,7 +1224,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
       try {
         const prepared = await requestRendererAction(
           requiresSessionChrome(question) ? 'prepare-session-chrome-capture' : 'prepare-terminal-capture',
-          { sessionId }
+          { sessionId, chromeRegion: sessionChromeCaptureRegion(question) }
         );
         const bounds = prepared?.bounds || {};
         if (!['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key])) || bounds.width < 1 || bounds.height < 1) {
@@ -1263,6 +1263,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
           id: item.id,
           title: item.title,
           summary: item.summary,
+          outcome: item.outcome,
           group: item.group || 'Ungrouped',
           groupId: '',
           archived: true
@@ -1297,6 +1298,7 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
             id: item.id,
             title: item.title,
             summary: String(item.summary || '').slice(0, 160),
+            outcome: String(item.outcome || '').slice(0, 24),
             status: 'archived',
             archived: true,
             groupId: item.groupId || '',
