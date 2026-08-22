@@ -60,6 +60,9 @@ test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresVisualEvidence('Is the terminal using a dark theme?'), true);
   assert.equal(requiresVisualEvidence('Is the background job still running?'), false);
   assert.equal(requiresVisualEvidence('Is the settings dialog open?'), true);
+  assert.equal(requiresVisualEvidence('Which option is selected?'), true);
+  assert.equal(requiresVisualEvidence("What is the selected session's title?"), false);
+  assert.equal(requiresVisualEvidence('Is the selected terminal running?'), false);
   assert.equal(requiresVisualEvidence('What command finished?'), false);
 });
 
