@@ -58,6 +58,11 @@ test('whole-window capture preserves the dashboard while masking sensitive overl
   assert.match(renderer, /if \(hideDashboard\) \{[\s\S]*supervisorDashboard\.hidden = true/);
 });
 
+test('terminal fitting skips the hidden supervisor dashboard layout', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(renderer, /function fitSession\(session\) \{[\s\S]*shellElement\.classList\.contains\('supervisor-active'\)[\s\S]*terminalStack\.getClientRects\(\)\.length === 0[\s\S]*session\.fit\.fit\(\)/);
+});
+
 test('collection status inspection includes the bounded live session list', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /const listedSessions = sessionId \? \[\] : collectionCandidates\.slice\(0, 200\)\.map/);
@@ -66,7 +71,7 @@ test('collection status inspection includes the bounded live session list', () =
   assert.match(main, /needsAttention: Boolean\(item\.notified\)/);
   assert.match(main, /active: item\.id === mobileWorkspace\.activeId/);
   assert.match(main, /activeSessionId: mobileWorkspace\.activeId/);
-  assert.match(main, /const activeWorkspaceSession = workspaceSessions\.find\(\(item\) => item\.id === mobileWorkspace\.activeId\)/);
+  assert.match(main, /const activeWorkspaceSession = archivedQuery[\s\S]*workspaceSessions\.find\(\(item\) => item\.id === mobileWorkspace\.activeId\)/);
   assert.match(main, /\[activeWorkspaceSession, \.\.\.workspaceSessions\.filter/);
   assert.match(main, /fitSessionCollection\(\{[\s\S]*sessionCollection: \{[\s\S]*\.\.\.sessionCounts/);
   assert.match(main, /session: structuredSessionRecord\(\{[\s\S]*metadata,[\s\S]*live: Boolean\(session\)/);
@@ -119,8 +124,18 @@ test('active identity publishes immediately and stopped terminals retain local t
   assert.match(preload, /updateMobileActiveSession: \(activeId\) => ipcRenderer\.send\('mobile:update-active-session', activeId\)/);
   assert.match(main, /ipcMain\.on\('mobile:update-active-session'[\s\S]*mobileWorkspace = \{ \.\.\.mobileWorkspace, activeId \}/);
   assert.match(renderer, /type === 'read-terminal-text'[\s\S]*terminalHistory\(session\.terminal\)\.slice\(-20_000\)/);
-  assert.match(main, /session \|\| activeTerminal \|\| \(sessionId && metadata\) \? async \(\) =>/);
-  assert.match(main, /requestRendererAction\('read-terminal-text', \{ sessionId \}\)/);
+  assert.match(main, /terminalText: session \|\| activeTerminal \|\| metadata \|\| activeMetadata \? async \(\) =>/);
+  assert.match(main, /requestRendererAction\('read-terminal-text', \{[\s\S]*sessionId: sessionId \|\| activeMetadata\.id/);
+});
+
+test('structured state includes archives, interactions, and session groups', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /archivedQuery[\s\S]*state\.archivedSessions\.map/);
+  assert.match(main, /sessionCollectionKind: archivedQuery \? 'archived' : 'workspace'/);
+  assert.match(main, /activeInteraction: activeInteraction \? \{/);
+  assert.match(main, /groupId,[\s\S]*group: groupNames\.get\(groupId\) \|\| 'Ungrouped'/);
+  assert.match(main, /terminalText: session \|\| activeTerminal \|\| metadata \|\| activeMetadata/);
+  assert.match(main, /sessionId: sessionId \|\| activeMetadata\.id/);
 });
 
 test('persisted vision upload consent fails closed unless it is boolean true', () => {

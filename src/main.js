@@ -2320,6 +2320,7 @@ function activateSession(id) {
 
 function fitSession(session) {
   if (!session || !session.pane.classList.contains('active')) return;
+  if (shellElement.classList.contains('supervisor-active') || terminalStack.getClientRects().length === 0) return;
   try {
     session.fit.fit();
   } catch {
