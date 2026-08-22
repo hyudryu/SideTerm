@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('../electron/perception/router.cjs');
+const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, sessionChromeCaptureRegion, structuredCollectionRequiresCompleteList, structuredSessionSummaryAvailable, structuredStateSufficient } = require('../electron/perception/router.cjs');
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('../electron/perception/structured-state.cjs');
 
 test('perception prefers structured state and never calls cloud vision unnecessarily', async () => {
@@ -71,6 +71,8 @@ test('visual questions fall through terminal text to styled capture', () => {
   assert.equal(requiresSessionChrome("Is this session's status dot red?"), true);
   assert.equal(requiresSessionChrome('Is its title highlighted?'), true);
   assert.equal(requiresSessionChrome('Is the terminal using a dark theme?'), false);
+  assert.equal(sessionChromeCaptureRegion('Is the active status dot red?'), 'header');
+  assert.equal(sessionChromeCaptureRegion('Is its sidebar title highlighted?'), 'sidebar');
 });
 
 test('structured status questions do not require screenshot upload', () => {
@@ -90,6 +92,16 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What is its name?', { session: { title: 'API work' } }), true);
   assert.equal(structuredStateSufficient('Which group is this session in?', {
     session: { title: 'API work', groupId: 'backend', group: 'Backend' }
+  }), true);
+  assert.equal(structuredStateSufficient('Which group is the active session in?', {
+    activeSessionId: 'api',
+    sessions: [{ id: 'api', group: 'Backend' }]
+  }), true);
+  assert.equal(structuredStateSufficient('Has this session failed?', {
+    session: { title: 'API work' }
+  }), false);
+  assert.equal(structuredStateSufficient('Has this session failed?', {
+    session: { title: 'API work', semanticState: 'completed' }
   }), true);
   assert.equal(structuredStateSufficient('What is the command name?', { session: { title: 'API work' } }), false);
   assert.equal(structuredStateSufficient('Is it still running?'), false);
@@ -168,6 +180,16 @@ test('requested session records retain group identity', () => {
   });
   assert.equal(record.groupId, 'backend');
   assert.equal(record.group, 'Backend');
+});
+
+test('requested session records retain semantic outcomes', () => {
+  const record = structuredSessionRecord({
+    sessionId: 'api',
+    metadata: { id: 'api', title: 'API' },
+    live: true,
+    indexed: { semanticState: 'failed' }
+  });
+  assert.equal(record.semanticState, 'failed');
 });
 
 test('truncated collections lower confidence only when the full member list is required', () => {

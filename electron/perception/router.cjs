@@ -29,6 +29,12 @@ function requiresSessionChrome(question) {
     && /\b(?:activity|badge|command bar|group|header|indicator|name|sidebar|status|tab|title)\b/i.test(text);
 }
 
+function sessionChromeCaptureRegion(question) {
+  return /\b(?:command bar|header|status (?:dot|indicator)|subtitle)\b/i.test(String(question || ''))
+    ? 'header'
+    : 'sidebar';
+}
+
 function structuredStateSufficient(question, payload = {}) {
   const text = String(question || '').trim();
   if (!text || requiresVisualEvidence(text)) return false;
@@ -39,7 +45,9 @@ function structuredStateSufficient(question, payload = {}) {
     && !/\b(?:terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
   if (payload.session
     && /\b(?:status|busy|working|running|idle|stopped|active|failed)\b/i.test(text)
-    && !/\b(?:command|terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) return true;
+    && !/\b(?:command|terminal|output|logs?|messages?|details?|cause|seeing|show(?:ing|s|n)?)\b/i.test(text)) {
+    return !/\bfailed\b/i.test(text) || Boolean(payload.session.semanticState);
+  }
   if (payload.session
     && /\b(?:names?|titles?)\b/i.test(text)
     && /\b(?:it|its|this|that|selected|current|session|terminal)\b/i.test(text)
@@ -47,6 +55,10 @@ function structuredStateSufficient(question, payload = {}) {
   if (payload.session
     && /\bgroups?\b/i.test(text)
     && /\b(?:it|its|this|that|selected|current|session|terminal)\b/i.test(text)) return true;
+  if (/\bgroups?\b/i.test(text)
+    && /\bactive (?:session|terminal)\b/i.test(text)
+    && Array.isArray(payload.sessions)
+    && payload.sessions.some((item) => item?.id === payload.activeSessionId && item.group)) return true;
   if (!/\b(?:sessions?|terminals?)\b/i.test(text)) return false;
   if (/\bcommand\b/i.test(text)) return false;
   if (/\b(?:sessions|terminals)\b/i.test(text)
@@ -124,6 +136,7 @@ module.exports = {
   normalizePerception,
   requiresVisualEvidence,
   requiresSessionChrome,
+  sessionChromeCaptureRegion,
   structuredCollectionRequiresCompleteList,
   structuredSessionSummaryAvailable,
   structuredStateSufficient
