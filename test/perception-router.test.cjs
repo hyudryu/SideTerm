@@ -70,6 +70,9 @@ test('structured status questions do not require screenshot upload', () => {
   assert.equal(structuredStateSufficient('What error is the agent seeing in the terminal?'), false);
   assert.equal(structuredStateSufficient('What is its status?', { session: { status: 'idle' } }), true);
   assert.equal(structuredStateSufficient('Is it still running?', { session: { status: 'running' } }), true);
+  assert.equal(structuredStateSufficient('What is its title?', { session: { title: 'API work' } }), true);
+  assert.equal(structuredStateSufficient('What is its name?', { session: { title: 'API work' } }), true);
+  assert.equal(structuredStateSufficient('What is the command name?', { session: { title: 'API work' } }), false);
   assert.equal(structuredStateSufficient('Is it still running?'), false);
   assert.equal(structuredStateSufficient('Which sessions are busy?'), true);
   assert.equal(structuredStateSufficient('How many terminals are running?'), true);
@@ -149,6 +152,8 @@ test('truncated collections lower confidence only when the full member list is r
   assert.equal(structuredCollectionRequiresCompleteList('List all terminal names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('List all session names'), true);
   assert.equal(structuredCollectionRequiresCompleteList('Which sessions are busy?'), true);
+  assert.equal(structuredCollectionRequiresCompleteList('What sessions are stopped?'), true);
+  assert.equal(structuredCollectionRequiresCompleteList('What terminals are running?'), true);
 });
 
 test('structured summaries are authoritative only when the requested summary exists', () => {
