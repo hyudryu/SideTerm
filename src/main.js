@@ -1653,6 +1653,35 @@ function waitForTerminalCaptureRepaint() {
 
 async function handleAgentAction({ requestId, type, payload }) {
   try {
+    if (type === 'prepare-session-chrome-capture') {
+      restoreTerminalVisualCapture();
+      const session = sessions.get(payload.sessionId);
+      if (!session?.item) throw new Error('The requested session chrome is no longer available.');
+      const restoreOverlays = hideNonterminalCaptureOverlays({ hideDashboard: false });
+      const restoreInteraction = lockTerminalCaptureInteraction();
+      const previousScrollTop = sessionList.scrollTop;
+      terminalCaptureRestore = () => {
+        sessionList.scrollTop = previousScrollTop;
+        restoreInteraction();
+        restoreOverlays();
+      };
+      try {
+        session.item.scrollIntoView({ block: 'nearest' });
+        await waitForTerminalCaptureRepaint();
+        const rect = session.item.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) throw new Error('The requested session chrome is not visible.');
+        api.resolveAgentAction(requestId, {
+          bounds: {
+            x: Math.floor(rect.x), y: Math.floor(rect.y),
+            width: Math.ceil(rect.width), height: Math.ceil(rect.height)
+          }
+        });
+      } catch (error) {
+        restoreTerminalVisualCapture();
+        throw error;
+      }
+      return;
+    }
     if (type === 'prepare-terminal-capture') {
       restoreTerminalVisualCapture();
       const session = sessions.get(payload.sessionId);

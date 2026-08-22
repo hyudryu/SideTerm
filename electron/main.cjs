@@ -1234,10 +1234,13 @@ async function inspectSupervisorView({ sessionId = '', question = '' } = {}) {
   let capturedImage = null;
   const screenshot = async () => {
     if (capturedImage) return capturedImage;
-    if (sessionId && !requiresSessionChrome(question)) {
+    if (sessionId) {
       if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The SideTerm window is not available to capture.');
       try {
-        const prepared = await requestRendererAction('prepare-terminal-capture', { sessionId });
+        const prepared = await requestRendererAction(
+          requiresSessionChrome(question) ? 'prepare-session-chrome-capture' : 'prepare-terminal-capture',
+          { sessionId }
+        );
         const bounds = prepared?.bounds || {};
         if (!['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key])) || bounds.width < 1 || bounds.height < 1) {
           throw new Error('The terminal returned invalid capture bounds.');
