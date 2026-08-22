@@ -41,8 +41,9 @@ const {
 } = require('./agent/voice.cjs');
 const { DEFAULT_VOICE_SPEED, normalizeVoiceSpeed } = require('./voice/speed.cjs');
 const { PersistentSpeechWorker } = require('./voice/worker.cjs');
-const { convertToSpeechWav } = require('./voice/audio-converter.cjs');
+const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, convertToSpeechWav } = require('./voice/audio-converter.cjs');
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
+const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus } = require('./supervisor/event-bus.cjs');
@@ -130,6 +131,8 @@ const DEFAULT_SETTINGS = {
   wakeWord: 'Hey Agent',
   sttProvider: 'parakeet',
   sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  sttEndpoint: '',
+  sttRegion: '',
   githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
@@ -202,8 +205,10 @@ function readSettingsRecord() {
       personality: typeof parsed.personality === 'string' ? parsed.personality.slice(0, 2000) : DEFAULT_SETTINGS.personality,
       agentInstructions: typeof parsed.agentInstructions === 'string' ? parsed.agentInstructions.slice(0, 8000) : DEFAULT_SETTINGS.agentInstructions,
       wakeWord: typeof parsed.wakeWord === 'string' ? parsed.wakeWord.slice(0, 80) : DEFAULT_SETTINGS.wakeWord,
-      sttProvider: parsed.sttProvider === 'parakeet' ? 'parakeet' : DEFAULT_SETTINGS.sttProvider,
+      sttProvider: Object.hasOwn(STT_PROVIDERS, parsed.sttProvider) ? parsed.sttProvider : DEFAULT_SETTINGS.sttProvider,
       sttModel: parsed.sttModel === DEFAULT_SETTINGS.sttModel ? parsed.sttModel : DEFAULT_SETTINGS.sttModel,
+      sttEndpoint: typeof parsed.sttEndpoint === 'string' ? parsed.sttEndpoint.slice(0, 1000) : '',
+      sttRegion: typeof parsed.sttRegion === 'string' ? parsed.sttRegion.slice(0, 100) : '',
       githubCodexActorLogins: Array.isArray(parsed.githubCodexActorLogins)
         ? parsed.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
         : DEFAULT_SETTINGS.githubCodexActorLogins,
@@ -221,8 +226,11 @@ function readSettingsRecord() {
 }
 
 function publicSettings(record = readSettingsRecord()) {
-  const { encryptedApiKey: _encryptedApiKey, mobileToken: _mobileToken, ...settings } = record;
-  return { ...settings, appVersion: app.getVersion(), hasApiKey: Boolean(record.encryptedApiKey) };
+  const { encryptedApiKey: _encryptedApiKey, encryptedSttCredential: _encryptedSttCredential, mobileToken: _mobileToken, ...settings } = record;
+  return {
+    ...settings, appVersion: app.getVersion(), hasApiKey: Boolean(record.encryptedApiKey),
+    hasSttCredential: Boolean(record.encryptedSttCredential), sttProviders: Object.values(STT_PROVIDERS)
+  };
 }
 
 function writeSettingsRecord(record) {
@@ -260,6 +268,10 @@ function saveSettings(update = {}) {
   if (personality.length > 2000) throw new Error('Personality must be 2,000 characters or fewer.');
   if (agentInstructions.length > 8000) throw new Error('Agent instructions must be 8,000 characters or fewer.');
   if (wakeWord.length > 80) throw new Error('Wake word must be 80 characters or fewer.');
+  const sttProvider = Object.hasOwn(STT_PROVIDERS, update.sttProvider) ? update.sttProvider : current.sttProvider;
+  const sttProviderChanged = sttProvider !== current.sttProvider;
+  const requestedSttEndpoint = providerScopedSetting(current.sttEndpoint, update.sttEndpoint, sttProviderChanged, 1000);
+  const requestedSttRegion = providerScopedSetting(current.sttRegion, update.sttRegion, sttProviderChanged, 100);
   const next = {
     ...current,
     llmEnabled,
@@ -272,8 +284,10 @@ function saveSettings(update = {}) {
     personality,
     agentInstructions,
     wakeWord,
-    sttProvider: update.sttProvider === 'parakeet' ? 'parakeet' : current.sttProvider,
+    sttProvider,
     sttModel: update.sttModel === DEFAULT_SETTINGS.sttModel ? update.sttModel : current.sttModel,
+    sttEndpoint: requestedSttEndpoint,
+    sttRegion: requestedSttRegion,
     githubCodexActorLogins: Array.isArray(update.githubCodexActorLogins)
       ? update.githubCodexActorLogins.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20)
       : current.githubCodexActorLogins,
@@ -284,6 +298,11 @@ function saveSettings(update = {}) {
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
 
+  const sttEndpointError = sttEndpointConfigurationError(next.sttEndpoint);
+  if (sttEndpointError) throw new Error(sttEndpointError);
+
+  if (next.sttProvider !== current.sttProvider) delete next.encryptedSttCredential;
+
   if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
     next.encryptedApiKey = safeStorage.encryptString(update.apiKey.trim()).toString('base64');
@@ -291,8 +310,17 @@ function saveSettings(update = {}) {
   if (update.clearApiKey) {
     delete next.encryptedApiKey;
   }
+  if (typeof update.sttCredential === 'string' && update.sttCredential.trim()) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is not available on this desktop session.');
+    next.encryptedSttCredential = safeStorage.encryptString(update.sttCredential.trim()).toString('base64');
+  }
+  if (update.clearSttCredential) delete next.encryptedSttCredential;
 
+  const releaseLocalStt = sttProviderChanged
+    && providerDescriptor(current.sttProvider).location === 'local'
+    && providerDescriptor(next.sttProvider).location === 'cloud';
   writeSettingsRecord(next);
+  if (releaseLocalStt) void releaseLocalSpeechRecognition().catch(() => {});
   return publicSettings(next);
 }
 
@@ -300,6 +328,15 @@ function readApiKey(record) {
   if (!record.encryptedApiKey || !safeStorage.isEncryptionAvailable()) return null;
   try {
     return safeStorage.decryptString(Buffer.from(record.encryptedApiKey, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
+function readSttCredential(record) {
+  if (!record.encryptedSttCredential || !safeStorage.isEncryptionAvailable()) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(record.encryptedSttCredential, 'base64'));
   } catch {
     return null;
   }
@@ -1630,6 +1667,12 @@ function stopSpeechWorker() {
   speechTranscriptionInFlight = false;
 }
 
+async function releaseLocalSpeechRecognition() {
+  if (!speechWorker) return false;
+  await speechWorker.request('release-stt');
+  return true;
+}
+
 async function warmTextToSpeech() {
   if (!speechStatus().ttsInstalled) return;
   const settings = readSettingsRecord();
@@ -1641,16 +1684,30 @@ function voiceMarker(kind) {
 }
 
 function speechStatus() {
+  const settings = readSettingsRecord();
+  const descriptor = providerDescriptor(settings.sttProvider);
   let sttInstalled = false;
-  try {
-    const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
-    sttInstalled = marker.provider === 'parakeet' && marker.model === readSettingsRecord().sttModel;
-  } catch {}
+  let sttConfigurationError = '';
+  if (descriptor.location === 'cloud') {
+    sttConfigurationError = providerConfigurationError(settings.sttProvider, {
+      credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion
+    });
+    sttInstalled = !sttConfigurationError;
+  }
+  else {
+    try {
+      const marker = JSON.parse(fs.readFileSync(voiceMarker('stt'), 'utf8'));
+      sttInstalled = marker.provider === 'parakeet' && marker.model === settings.sttModel;
+    } catch {}
+  }
   return {
     sttInstalled,
     ttsInstalled: fs.existsSync(voiceMarker('tts')),
-    sttModel: readSettingsRecord().sttModel,
-    sttProvider: readSettingsRecord().sttProvider,
+    sttModel: settings.sttModel,
+    sttProvider: settings.sttProvider,
+    sttLocation: descriptor.location,
+    sttProviderName: descriptor.name,
+    sttConfigurationError,
     ttsModel: DEFAULT_SETTINGS.ttsModel
   };
 }
@@ -1697,6 +1754,9 @@ async function ensureVoiceEnvironment() {
 async function installSpeechComponent(kind) {
   if (!['stt', 'tts'].includes(kind)) throw new Error('Unknown speech component.');
   stopSpeechWorker();
+  if (kind === 'stt' && providerDescriptor(readSettingsRecord().sttProvider).location === 'cloud') {
+    throw new Error('Cloud speech providers use the encrypted credential in Settings and do not install a local model.');
+  }
   const python = await ensureVoiceEnvironment();
   const packages = kind === 'stt'
     ? ['nemo_toolkit[asr]', 'huggingface-hub']
@@ -1734,13 +1794,98 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
   }
 }
 
+function activeSpeechVocabulary() {
+  return [
+    'SideTerm', 'DeepSeek', 'Strands', 'Codex', 'Parakeet', 'Pocket TTS', 'Qwen', 'vLLM',
+    ...mobileWorkspace.sessions.flatMap((session) => [session.title, session.agent, path.basename(session.cwd || '')])
+  ].filter(Boolean);
+}
+
+function finalizeTranscript(transcript, settings, allowWithoutWakeWord) {
+  let text = String(transcript.text || '').trim();
+  if (!text || transcript.noSpeechProbability > 0.72 || text.replace(/[^a-z0-9]/gi, '').length < 3) {
+    return { ignored: true, reason: 'No deliberate speech detected.' };
+  }
+  const wakeResult = applyWakeWord(text, settings.wakeWord, { allowWithoutWakeWord });
+  if (wakeResult.ignored) return wakeResult;
+  text = wakeResult.text;
+  const clarification = transcriptClarification(text, activeSpeechVocabulary(), {
+    confidence: transcript.confidence,
+    allowMissingConfidenceFuzzy: transcript.provider === 'parakeet'
+  });
+  if (clarification) {
+    const state = readAgentState();
+    addAgentMessage(state, 'assistant', clarification.prompt, {
+      proactive: true,
+      voiceSummary: clarification.prompt,
+      desktopSpeechPresented: supervisorVoiceMode
+    });
+    const interaction = interactionManagerFor(state).create({
+      kind: 'supervisor_question',
+      prompt: clarification.prompt,
+      options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
+      priority: 0,
+      state: 'awaiting_answer'
+    });
+    writeAgentState(state);
+    broadcastAgentState();
+    return {
+      ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider,
+      clarification: { ...clarification, interactionId: interaction.id }
+    };
+  }
+  return { ignored: false, text, language: transcript.language, duration: transcript.duration, provider: transcript.provider };
+}
+
 async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWithoutWakeWord = false } = {}) {
-  if (!speechStatus().sttInstalled) throw new Error('Install the speech-to-text model in Settings first.');
+  const currentSpeechStatus = speechStatus();
+  if (!currentSpeechStatus.sttInstalled) {
+    throw new Error(currentSpeechStatus.sttLocation === 'cloud'
+      ? currentSpeechStatus.sttConfigurationError || `Configure ${currentSpeechStatus.sttProviderName} in Settings first.`
+      : 'Install the speech-to-text model in Settings first.');
+  }
   if (speechTranscriptionInFlight) {
     return { ignored: true, reason: 'Still transcribing the previous utterance.' };
   }
   const bytes = Buffer.from(audioBytes);
   if (bytes.length < 1000 || bytes.length > 25 * 1024 * 1024) return { ignored: true, reason: 'Audio was empty or too large.' };
+  const settings = readSettingsRecord();
+  const descriptor = providerDescriptor(settings.sttProvider);
+  if (descriptor.location === 'cloud') {
+    const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
+    const inputPath = path.join(outputDirectory, `${crypto.randomUUID()}.${audioFileExtension(mimeType)}`);
+    const wavPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
+    const pcmPath = path.join(outputDirectory, `${crypto.randomUUID()}.pcm`);
+    speechTranscriptionInFlight = true;
+    try {
+      let providerAudio = bytes;
+      let providerMimeType = mimeType;
+      const canonicalFormat = canonicalCloudAudioFormat(settings.sttProvider);
+      if (canonicalFormat) {
+        fs.mkdirSync(outputDirectory, { recursive: true });
+        fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
+        if (canonicalFormat === 'pcm') {
+          await convertToSpeechPcm(inputPath, pcmPath);
+          providerAudio = fs.readFileSync(pcmPath);
+          providerMimeType = 'audio/pcm';
+        } else {
+          await convertToSpeechWav(inputPath, wavPath);
+          providerAudio = fs.readFileSync(wavPath);
+          providerMimeType = 'audio/wav';
+        }
+      }
+      const transcript = await transcribeCloud(settings.sttProvider, providerAudio, {
+        credential: readSttCredential(settings), endpoint: settings.sttEndpoint, region: settings.sttRegion,
+        mimeType: providerMimeType, language: 'en-US', vocabulary: activeSpeechVocabulary()
+      });
+      return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
+    } finally {
+      speechTranscriptionInFlight = false;
+      try { fs.unlinkSync(inputPath); } catch {}
+      try { fs.unlinkSync(wavPath); } catch {}
+      try { fs.unlinkSync(pcmPath); } catch {}
+    }
+  }
   const extension = /wav/i.test(mimeType) ? 'wav' : /ogg/i.test(mimeType) ? 'ogg' : 'webm';
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
@@ -1749,7 +1894,6 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
   fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
   speechTranscriptionInFlight = true;
   try {
-    const settings = readSettingsRecord();
     await convertToSpeechWav(inputPath, wavPath);
     const transcript = await getSpeechWorker().request('transcribe', {
       model: settings.sttModel,
@@ -1757,40 +1901,7 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
       language: 'en',
       initialPrompt: `English conversation with a coding assistant. The wake phrase is "${settings.wakeWord || 'Hey Agent'}".`
     });
-    let text = String(transcript.text || '').trim();
-    if (!text || transcript.noSpeechProbability > 0.72 || text.replace(/[^a-z0-9]/gi, '').length < 3) {
-      return { ignored: true, reason: 'No deliberate speech detected.' };
-    }
-    const wakeResult = applyWakeWord(text, settings.wakeWord, { allowWithoutWakeWord });
-    if (wakeResult.ignored) return wakeResult;
-    text = wakeResult.text;
-    const vocabulary = [
-      'SideTerm', 'DeepSeek', 'Strands', 'Codex', 'Parakeet', 'Pocket TTS', 'Qwen', 'vLLM',
-      ...mobileWorkspace.sessions.flatMap((session) => [session.title, session.agent, path.basename(session.cwd || '')])
-    ].filter(Boolean);
-    const clarification = transcriptClarification(text, vocabulary, { confidence: transcript.confidence });
-    if (clarification) {
-      const state = readAgentState();
-      addAgentMessage(state, 'assistant', clarification.prompt, {
-        proactive: true,
-        voiceSummary: clarification.prompt,
-        desktopSpeechPresented: supervisorVoiceMode
-      });
-      const interaction = interactionManagerFor(state).create({
-        kind: 'supervisor_question',
-        prompt: clarification.prompt,
-        options: clarification.suggestedText ? [{ id: 'suggested', label: clarification.suggestedText }] : [],
-        priority: 0,
-        state: 'awaiting_answer'
-      });
-      writeAgentState(state);
-      broadcastAgentState();
-      return {
-        ignored: false, text, language: transcript.language, duration: transcript.duration,
-        clarification: { ...clarification, interactionId: interaction.id }
-      };
-    }
-    return { ignored: false, text, language: transcript.language, duration: transcript.duration };
+    return finalizeTranscript(transcript, settings, allowWithoutWakeWord);
   } finally {
     speechTranscriptionInFlight = false;
     try { fs.unlinkSync(inputPath); } catch {}
@@ -2266,6 +2377,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
     sendMobile(client, { type: 'agent:state', state: publicAgentState() });
     sendMobile(client, mobileVoiceSettings());
+    sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
       mobilePresentationSurfaces.get(client)?.dispose();
       mobilePresentationSurfaces.delete(client);
@@ -2652,6 +2764,7 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => publicSettings());
   ipcMain.handle('settings:save', (_event, update) => {
     const saved = saveSettings(update);
+    broadcastMobile({ type: 'voice:status', status: speechStatus() });
     broadcastAgentState();
     return saved;
   });

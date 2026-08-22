@@ -49,6 +49,7 @@ let mobileTranscriptionInFlight = false;
 let activeMobileVoicePlayer = null;
 let mobileBargeInStartedAt = 0;
 let mobileReplyUntil = 0;
+let mobileSttLocation = 'local';
 let mobileVoiceInteractionId = '';
 let mobileAudioQueue = Promise.resolve(true);
 let mobileCreateKind = 'session';
@@ -432,6 +433,7 @@ function connect() {
         ? message.transcript.reason
         : message.transcript.text;
     }
+    if (message.type === 'voice:status') mobileSttLocation = message.status?.sttLocation === 'cloud' ? 'cloud' : 'local';
     if (message.type === 'agent:catch-up-result') void handleCatchUpResult(message);
     if (message.type === 'agent:catch-up-busy') catchupRequested = false;
     if (message.type === 'voice:audio') {
@@ -502,7 +504,9 @@ function interruptMobileVoicePlayback() {
 
 async function submitVoiceBlob(blob, duration) {
   if (!mobileVoiceMode || mobileTranscriptionInFlight || duration < 650 || blob.size < 1000) return;
-  document.querySelector('#mobile-wave-detail').textContent = 'Transcribing locally…';
+  document.querySelector('#mobile-wave-detail').textContent = mobileSttLocation === 'cloud'
+    ? 'Transcribing with the selected cloud provider…'
+    : 'Transcribing locally…';
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const replyWindowActive = Date.now() <= mobileReplyUntil;
   if (!replyWindowActive) mobileVoiceInteractionId = '';
@@ -576,15 +580,15 @@ async function startMobileVoice() {
       silenceAt = 0;
     } else if (speaking) {
       silenceAt ||= now;
-      if (now - silenceAt > 850 || now - startedAt > 14_000) {
-        const blob = new Blob(header ? [header, ...utterance] : utterance, { type: voiceRecorder.mimeType || 'audio/webm' });
-        const duration = now - startedAt;
-        speaking = false;
-        silenceAt = 0;
-        utterance = [];
-        preRoll = [];
-        void submitVoiceBlob(blob, duration);
-      }
+    }
+    if (speaking && (now - startedAt > 14_000 || (silenceAt && now - silenceAt > 850))) {
+      const blob = new Blob(header ? [header, ...utterance] : utterance, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const duration = now - startedAt;
+      speaking = false;
+      silenceAt = 0;
+      utterance = [];
+      preRoll = [];
+      void submitVoiceBlob(blob, duration);
     }
     voiceFrame = requestAnimationFrame(monitor);
   };

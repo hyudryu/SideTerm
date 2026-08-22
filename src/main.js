@@ -61,6 +61,8 @@ let persistInFlight = false;
 let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
+let clearSttCredentialRequested = false;
+let sttCredentialRemovalIntent = false;
 let settings = {
   appVersion: '',
   llmEnabled: false,
@@ -76,6 +78,9 @@ let settings = {
   wakeWord: 'Hey Agent',
   sttProvider: 'parakeet',
   sttModel: 'nvidia/parakeet-tdt-0.6b-v2',
+  sttEndpoint: '',
+  sttRegion: '',
+  hasSttCredential: false,
   githubCodexActorLogins: ['chatgpt-codex-connector', 'codex', 'openai-codex'],
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
@@ -246,9 +251,13 @@ document.querySelector('#app').innerHTML = `
               <p class="settings-note">The supervisor can inspect bounded session context, create and name sessions, and propose terminal input or archival. Terminal writes and archival always require your approval.</p>
             </section>
             <section class="settings-section">
-              <div class="settings-section-title"><strong>Voice mode</strong><span>Local · opt in only</span></div>
+              <div class="settings-section-title"><strong>Voice mode</strong><span>Local by default · cloud is explicit opt in</span></div>
               <label class="field-row"><span>Wake word</span><input id="voice-wake-word" type="text" maxlength="80" placeholder="Hey Agent"></label>
-              <div class="model-install-row"><label><span>Speech to text · LOCAL</span><select id="stt-model"><option value="nvidia/parakeet-tdt-0.6b-v2">NVIDIA Parakeet TDT 0.6B V2</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <div class="model-install-row"><label><span>Speech to text</span><select id="stt-provider"><option value="parakeet">LOCAL — NVIDIA Parakeet</option><option value="deepgram">CLOUD — Deepgram</option><option value="google">CLOUD — Google</option><option value="azure">CLOUD — Azure</option><option value="aws">CLOUD — AWS</option><option value="openai">CLOUD — OpenAI</option></select><select id="stt-model" hidden><option value="nvidia/parakeet-tdt-0.6b-v2">NVIDIA Parakeet TDT 0.6B V2</option></select></label><button id="install-stt" class="secondary-button" type="button">Install</button><span id="stt-status">Checking…</span></div>
+              <label class="field-row" id="stt-credential-row"><span>Cloud STT credential</span><input id="stt-credential" type="password" autocomplete="off" placeholder="Selected provider credential"></label>
+              <div class="credential-actions" id="stt-credential-actions"><span id="stt-credential-state">No cloud credential configured</span><button id="clear-stt-credential" type="button">Clear credential</button></div>
+              <label class="field-row" id="stt-endpoint-row"><span>Cloud endpoint <small>(optional)</small></span><input id="stt-endpoint" type="url" autocomplete="off" spellcheck="false"></label>
+              <label class="field-row" id="stt-region-row"><span>Cloud region <small>(Azure/AWS)</small></span><input id="stt-region" type="text" autocomplete="off" spellcheck="false"></label>
               <div class="model-install-row"><label><span>Text to speech</span><select id="tts-model"><option value="kyutai/pocket-tts">Kyutai Pocket TTS</option></select></label><button id="install-tts" class="secondary-button" type="button">Install</button><span id="tts-status">Checking…</span></div>
               <div class="voice-picker-row"><label><span>Pocket TTS voice</span><select id="tts-voice"><option>alba</option><option>marius</option><option>javert</option><option>jean</option><option>fantine</option><option>cosette</option><option>eponine</option><option>azelma</option></select></label><button id="preview-voice" class="secondary-button" type="button">Play preview</button></div>
               <label class="range-row"><span>Voice speed</span><input id="tts-speed" type="range" min="0.75" max="1.5" step="0.05"><output id="tts-speed-value">1.00×</output></label>
@@ -401,6 +410,8 @@ function renderHotkeyInputs() {
 
 function populateSettingsPanel() {
   clearApiKeyRequested = false;
+  clearSttCredentialRequested = false;
+  sttCredentialRemovalIntent = false;
   document.querySelector('#settings-version').textContent = settings.appVersion ? `SideTerm v${settings.appVersion}` : 'SideTerm';
   document.querySelector('#ai-enabled').checked = settings.llmEnabled;
   document.querySelector('#ai-initial-context-enabled').checked = settings.aiInitialContextEnabled;
@@ -417,7 +428,14 @@ function populateSettingsPanel() {
   document.querySelector('#agent-instructions').value = settings.agentInstructions || '';
   document.querySelector('#github-codex-actors').value = (settings.githubCodexActorLogins || []).join(', ');
   document.querySelector('#voice-wake-word').value = settings.wakeWord || '';
+  document.querySelector('#stt-provider').value = settings.sttProvider || 'parakeet';
   document.querySelector('#stt-model').value = settings.sttModel || 'nvidia/parakeet-tdt-0.6b-v2';
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = settings.hasSttCredential ? 'Encrypted credential configured' : 'Selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = settings.hasSttCredential ? 'Encrypted credential configured' : 'No cloud credential configured';
+  document.querySelector('#clear-stt-credential').hidden = !settings.hasSttCredential;
+  document.querySelector('#stt-endpoint').value = settings.sttEndpoint || '';
+  document.querySelector('#stt-region').value = settings.sttRegion || '';
   document.querySelector('#tts-model').value = settings.ttsModel || 'kyutai/pocket-tts';
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
@@ -429,6 +447,7 @@ function populateSettingsPanel() {
   renderHotkeyInputs();
   syncProviderFeatureAvailability();
   void refreshSpeechStatus();
+  syncSttProviderFields();
 }
 
 async function openSettingsPanel() {
@@ -445,6 +464,16 @@ function closeSettingsPanel() {
     settingsBackdrop.hidden = true;
     sessions.get(activeId)?.terminal.focus();
   }, 160);
+}
+
+function syncSttProviderFields() {
+  const provider = document.querySelector('#stt-provider').value;
+  const cloud = provider !== 'parakeet';
+  document.querySelector('#stt-credential-row').hidden = !cloud;
+  document.querySelector('#stt-credential-actions').hidden = !cloud;
+  document.querySelector('#stt-endpoint-row').hidden = !cloud;
+  document.querySelector('#stt-region-row').hidden = !['azure', 'aws'].includes(provider);
+  document.querySelector('#install-stt').hidden = cloud;
 }
 
 function settingsPayload() {
@@ -465,7 +494,11 @@ function settingsPayload() {
     githubCodexActorLogins: document.querySelector('#github-codex-actors').value.split(',').map((item) => item.trim()).filter(Boolean),
     wakeWord: document.querySelector('#voice-wake-word').value,
     sttModel: document.querySelector('#stt-model').value,
-    sttProvider: 'parakeet',
+    sttProvider: document.querySelector('#stt-provider').value,
+    sttCredential: document.querySelector('#stt-credential').value,
+    clearSttCredential: clearSttCredentialRequested,
+    sttEndpoint: document.querySelector('#stt-endpoint').value,
+    sttRegion: document.querySelector('#stt-region').value,
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
@@ -1488,9 +1521,15 @@ function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
   if (stt) {
-    stt.textContent = status.sttInstalled ? 'Installed' : 'Not installed';
-    stt.classList.remove('install-error');
-    stt.removeAttribute('title');
+    const configurationError = String(status.sttConfigurationError || '').trim();
+    stt.textContent = status.sttLocation === 'cloud'
+      ? status.sttInstalled
+        ? `Configured · CLOUD — ${status.sttProviderName}`
+        : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
+      : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
+    stt.classList.toggle('install-error', Boolean(configurationError));
+    if (configurationError) stt.title = configurationError;
+    else stt.removeAttribute('title');
   }
   if (tts) {
     tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
@@ -1598,7 +1637,9 @@ async function processVoiceUtterance(blob, durationMs) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
-  label.textContent = 'Transcribing locally…';
+  label.textContent = settings.sttProvider && settings.sttProvider !== 'parakeet'
+    ? 'Transcribing with the selected cloud provider…'
+    : 'Transcribing locally…';
   try {
     const replyWindowActive = Date.now() <= voiceReplyUntil;
     if (!replyWindowActive) voiceReplyInteractionId = '';
@@ -1698,16 +1739,16 @@ async function startDesktopVoiceMode() {
       silenceAt = 0;
     } else if (speaking) {
       silenceAt ||= now;
-      if (now - silenceAt > 850 || now - startedAt > 14_000) {
-        const duration = now - startedAt;
-        const material = header ? [header, ...utterance] : utterance;
-        const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
-        speaking = false;
-        silenceAt = 0;
-        utterance = [];
-        preRoll = [];
-        void processVoiceUtterance(blob, duration);
-      }
+    }
+    if (speaking && (now - startedAt > 14_000 || (silenceAt && now - silenceAt > 850))) {
+      const duration = now - startedAt;
+      const material = header ? [header, ...utterance] : utterance;
+      const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      speaking = false;
+      silenceAt = 0;
+      utterance = [];
+      preRoll = [];
+      void processVoiceUtterance(blob, duration);
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
@@ -2830,6 +2871,31 @@ document.querySelector('#test-ai').addEventListener('click', async (event) => {
 });
 document.querySelector('#install-stt').addEventListener('click', () => void installSpeech('stt'));
 document.querySelector('#install-tts').addEventListener('click', () => void installSpeech('tts'));
+document.querySelector('#stt-provider').addEventListener('change', () => {
+  sttCredentialRemovalIntent = true;
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Enter the selected provider credential';
+  document.querySelector('#stt-credential-state').textContent = 'Credential cleared for provider change';
+  document.querySelector('#clear-stt-credential').hidden = true;
+  document.querySelector('#stt-endpoint').value = '';
+  document.querySelector('#stt-region').value = '';
+  syncSttProviderFields();
+  document.querySelector('#stt-status').textContent = document.querySelector('#stt-provider').value === 'parakeet'
+    ? 'LOCAL — Parakeet'
+    : 'CLOUD — save settings to configure';
+});
+document.querySelector('#stt-credential').addEventListener('input', (event) => {
+  clearSttCredentialRequested = sttCredentialRemovalIntent && !event.target.value.trim();
+});
+document.querySelector('#clear-stt-credential').addEventListener('click', () => {
+  sttCredentialRemovalIntent = true;
+  clearSttCredentialRequested = true;
+  document.querySelector('#stt-credential').value = '';
+  document.querySelector('#stt-credential').placeholder = 'Credential will be removed on save';
+  document.querySelector('#stt-credential-state').textContent = 'Credential will be removed';
+  document.querySelector('#clear-stt-credential').hidden = true;
+});
 document.querySelector('#preview-voice').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
