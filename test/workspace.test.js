@@ -5,6 +5,7 @@ import {
   WORKSPACE_VERSION,
   createGroup,
   moveSession,
+  nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
   removeSessionFromGroups,
@@ -20,10 +21,26 @@ function fixture() {
   return [first, second];
 }
 
-test('groups reorder before and after snap targets', () => {
+test('groups reorder at gaps and adjust for the removed source', () => {
   const groups = [...fixture(), createGroup('third', 'Third')];
-  assert.deepEqual(reorderGroup(groups, 'first', 'third', 'after').map((group) => group.id), ['second', 'third', 'first']);
-  assert.deepEqual(reorderGroup(groups, 'third', 'first', 'before').map((group) => group.id), ['third', 'first', 'second']);
+  assert.deepEqual(reorderGroup(groups, 'first', 3).map((group) => group.id), ['second', 'third', 'first']);
+  assert.deepEqual(reorderGroup(groups, 'third', 0).map((group) => group.id), ['third', 'first', 'second']);
+  assert.deepEqual(reorderGroup(groups, 'second', 1).map((group) => group.id), ['first', 'second', 'third']);
+  assert.deepEqual(reorderGroup(groups, 'second', 2).map((group) => group.id), ['first', 'second', 'third']);
+});
+
+test('group drag positions resolve to shared gaps between adjacent groups', () => {
+  const rects = [
+    { top: 10, bottom: 100 },
+    { top: 108, bottom: 198 },
+    { top: 206, bottom: 296 }
+  ];
+  assert.equal(nearestGroupGap(rects, 10), 0);
+  assert.equal(nearestGroupGap(rects, 95), 1);
+  assert.equal(nearestGroupGap(rects, 104), 1);
+  assert.equal(nearestGroupGap(rects, 113), 1);
+  assert.equal(nearestGroupGap(rects, 193), 2);
+  assert.equal(nearestGroupGap(rects, 296), 3);
 });
 
 test('sessions reorder within a group and transfer across groups', () => {
@@ -75,7 +92,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', notified: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', notified: true, inputRequired: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, lastAiContextActivityAt: 1220, staleAiSummaryDone: true, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
@@ -92,9 +109,12 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.sessions[0].displayName, 'API work');
   assert.equal(saved.sessions[0].manualTitle, true);
   assert.equal(saved.sessions[0].attentionCycleId, 'cycle-a');
+  assert.equal(saved.sessions[0].inputRequired, true);
   assert.equal(saved.sessions[0].activityArmed, true);
   assert.equal(saved.sessions[0].aiInitialSummaryDone, true);
   assert.equal(saved.sessions[0].lastAiSummaryAt, 1234);
+  assert.equal(saved.sessions[0].lastAiContextActivityAt, 1220);
+  assert.equal(saved.sessions[0].staleAiSummaryDone, true);
   assert.equal(saved.sessions[0].createdAt, 10);
   assert.equal(saved.sessions[0].lastResponseAt, 20);
   assert.equal(saved.sessions[0].links.length, 1);

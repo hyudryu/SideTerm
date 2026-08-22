@@ -54,14 +54,29 @@ export function sortedSessionIds(group, sessionLookup) {
   });
 }
 
-export function reorderGroup(groups, sourceId, targetId, position) {
-  if (sourceId === targetId || !['before', 'after'].includes(position)) return groups;
-  const source = groups.find((group) => group.id === sourceId);
-  if (!source || !groups.some((group) => group.id === targetId)) return groups;
+export function nearestGroupGap(rects, clientY) {
+  if (!rects.length || !Number.isFinite(clientY)) return -1;
+  const gapPositions = [rects[0].top];
+  for (let index = 1; index < rects.length; index += 1) {
+    gapPositions.push((rects[index - 1].bottom + rects[index].top) / 2);
+  }
+  gapPositions.push(rects[rects.length - 1].bottom);
 
+  return gapPositions.reduce((nearestIndex, position, index) => (
+    Math.abs(clientY - position) < Math.abs(clientY - gapPositions[nearestIndex])
+      ? index
+      : nearestIndex
+  ), 0);
+}
+
+export function reorderGroup(groups, sourceId, gapIndex) {
+  const sourceIndex = groups.findIndex((group) => group.id === sourceId);
+  if (sourceIndex < 0 || !Number.isInteger(gapIndex) || gapIndex < 0 || gapIndex > groups.length) return groups;
+
+  const source = groups[sourceIndex];
   const reordered = groups.filter((group) => group.id !== sourceId);
-  const targetIndex = reordered.findIndex((group) => group.id === targetId);
-  reordered.splice(targetIndex + (position === 'after' ? 1 : 0), 0, source);
+  const adjustedIndex = gapIndex - (sourceIndex < gapIndex ? 1 : 0);
+  reordered.splice(adjustedIndex, 0, source);
   return reordered;
 }
 
@@ -111,6 +126,7 @@ export function parseSavedWorkspace(raw) {
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
         notified: Boolean(session.notified),
+        inputRequired: Boolean(session.inputRequired),
         attentionCycleId: typeof session.attentionCycleId === 'string' ? session.attentionCycleId.slice(0, 200) : '',
         activityArmed: Boolean(session.activityArmed),
         displayName: typeof session.displayName === 'string' ? session.displayName : '',
@@ -119,6 +135,8 @@ export function parseSavedWorkspace(raw) {
         hasUserActivity: Boolean(session.hasUserActivity),
         aiInitialSummaryDone: typeof session.aiInitialSummaryDone === 'boolean' ? session.aiInitialSummaryDone : null,
         lastAiSummaryAt: Number.isFinite(session.lastAiSummaryAt) && session.lastAiSummaryAt > 0 ? session.lastAiSummaryAt : 0,
+        lastAiContextActivityAt: Number.isFinite(session.lastAiContextActivityAt) && session.lastAiContextActivityAt > 0 ? session.lastAiContextActivityAt : 0,
+        staleAiSummaryDone: Boolean(session.staleAiSummaryDone),
         createdAt: Number.isFinite(session.createdAt) && session.createdAt > 0 ? session.createdAt : 0,
         lastResponseAt: Number.isFinite(session.lastResponseAt) && session.lastResponseAt > 0 ? session.lastResponseAt : 0,
         links: Array.isArray(session.links)

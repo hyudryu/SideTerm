@@ -99,8 +99,11 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 .mobile-session strong, .mobile-session small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-session strong { font-size: 13px; font-weight: 600; }
 .mobile-session small { color: #8e8e8e; font-size: 10px; }
-.mobile-session i { display: none; width: 8px; height: 8px; background: #e5484d; border-radius: 50%; }
+.mobile-session i { display: none; width: 8px; height: 8px; place-items: center; color: #fff; background: #e5484d; border-radius: 50%; font-size: 9px; font-style: normal; font-weight: 800; }
 .mobile-session.unread i, .mobile-session.notified i { display: block; }
+.mobile-session.input-required i { display: grid; width: 16px; height: 16px; animation: mobile-input-required-flash 1s ease-in-out infinite; }
+@keyframes mobile-input-required-flash { 0%, 42%, 100% { opacity: 1; transform: scale(1); } 50%, 92% { opacity: .28; transform: scale(.88); } }
+@media (prefers-reduced-motion: reduce) { .mobile-session.input-required i { animation: none; } }
 #drawer > footer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 10px calc(8px + var(--safe-bottom)); border-top: 1px solid rgba(255,255,255,.07); }
 #drawer > footer span { overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 #mobile-settings-button { height: 34px; padding: 0 9px; color: #ddd; background: #303030; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; font-size: 10px; }

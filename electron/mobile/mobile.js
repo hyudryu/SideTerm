@@ -325,7 +325,9 @@ function renderSessions() {
       button.classList.toggle('active', session.id === activeId);
       button.classList.toggle('unread', unread.has(session.id));
       button.classList.toggle('notified', session.notified);
+      button.classList.toggle('input-required', session.inputRequired);
       button.innerHTML = '<span><strong></strong><small></small></span><i></i>';
+      button.querySelector('i').textContent = session.inputRequired ? '!' : '';
       button.querySelector('strong').textContent = session.title;
       button.querySelector('small').textContent = session.subtitle || 'Terminal session';
       button.addEventListener('click', () => selectSession(session.id));

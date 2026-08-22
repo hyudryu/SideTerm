@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionDisplayLabels } from '../src/session-labels.js';
+import { compactLastResponseAge, sessionDisplayLabels } from '../src/session-labels.js';
 
 test('AI naming uses the generated name as the session title', () => {
   assert.deepEqual(sessionDisplayLabels({
@@ -28,4 +28,17 @@ test('legacy generic AI names promote the useful context instead of showing only
     primary: 'Wiring and testing upscale workflow',
     secondary: 'Codex'
   });
+});
+
+test('last response ages use compact seconds, minutes, hours, and days', () => {
+  const now = 10 * 24 * 60 * 60 * 1000;
+  assert.equal(compactLastResponseAge(0, now), '');
+  assert.equal(compactLastResponseAge(Number.POSITIVE_INFINITY, now), '');
+  assert.equal(compactLastResponseAge(now - 5_000, now), '5s');
+  assert.equal(compactLastResponseAge(now - 59_999, now), '59s');
+  assert.equal(compactLastResponseAge(now - 60_000, now), '1m');
+  assert.equal(compactLastResponseAge(now - 3_599_999, now), '59m');
+  assert.equal(compactLastResponseAge(now - 3_600_000, now), '1h');
+  assert.equal(compactLastResponseAge(now - 86_400_000, now), '1d');
+  assert.equal(compactLastResponseAge(now + 5_000, now), '0s');
 });

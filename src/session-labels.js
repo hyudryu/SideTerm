@@ -23,3 +23,14 @@ export function sessionDisplayLabels(session, aiEnabled) {
     secondary: usefulGeneratedName === summary ? agent : summary
   };
 }
+
+export function compactLastResponseAge(lastResponseAt, now = Date.now()) {
+  const timestamp = Number(lastResponseAt);
+  const currentTime = Number(now);
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 8.64e15 || !Number.isFinite(currentTime)) return '';
+  const elapsedSeconds = Math.max(0, Math.floor((currentTime - timestamp) / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
+  if (elapsedSeconds < 60 * 60) return `${Math.floor(elapsedSeconds / 60)}m`;
+  if (elapsedSeconds < 24 * 60 * 60) return `${Math.floor(elapsedSeconds / (60 * 60))}h`;
+  return `${Math.floor(elapsedSeconds / (24 * 60 * 60))}d`;
+}
