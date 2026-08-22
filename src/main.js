@@ -34,6 +34,9 @@ const MAX_HISTORY_CHARS = 120_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
+// Restored sessions get a longer window: tmux attach redraws and slow shell
+// startup output must not count as a fresh response after an app reboot.
+const RESTORE_REDRAW_SUPPRESS_MS = 5_000;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_BUSY_RETRY_DELAY_MS = 1_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
@@ -206,7 +209,7 @@ document.querySelector('#app').innerHTML = `
           <button id="agent-close" class="secondary-button" type="button">Back to terminal</button>
         </header>
         <div class="agent-panel-body">
-          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
+          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><label class="voice-switch" title="Voice mode"><input id="desktop-voice-toggle" type="checkbox"><span class="voice-switch-slider"></span></label></div>
           <section class="agent-metrics" aria-label="Supervisor metrics">
             <article><span>Pending sessions</span><strong id="agent-metric-pending">0</strong></article>
             <article><span>Running now</span><strong id="agent-metric-running">0</strong></article>
@@ -2065,8 +2068,7 @@ async function startDesktopVoiceMode() {
   voiceMonitorFrame = requestAnimationFrame(monitor);
   desktopVoiceMode = true;
   api.setAgentVoiceMode(true);
-  document.querySelector('#desktop-voice-toggle').textContent = 'Voice on';
-  document.querySelector('#desktop-voice-toggle').classList.add('voice-active');
+  document.querySelector('#desktop-voice-toggle').checked = true;
   document.querySelector('#agent-status-detail').textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
 }
 
@@ -2085,8 +2087,7 @@ function stopDesktopVoiceMode() {
   voiceStream = null;
   void voiceAudioContext?.close();
   voiceAudioContext = null;
-  document.querySelector('#desktop-voice-toggle').textContent = 'Voice off';
-  document.querySelector('#desktop-voice-toggle').classList.remove('voice-active');
+  document.querySelector('#desktop-voice-toggle').checked = false;
   document.querySelector('#agent-status-detail').textContent = 'Watching all SideTerm sessions';
 }
 
@@ -2730,7 +2731,7 @@ async function addSession(cwd, options = {}) {
     notifyWhenIdle: false,
     busy: false,
     busyTimer: null,
-    busySuppressedUntil: Date.now() + ACTIVATION_REDRAW_SUPPRESS_MS,
+    busySuppressedUntil: Date.now() + (restoringWorkspace ? RESTORE_REDRAW_SUPPRESS_MS : ACTIVATION_REDRAW_SUPPRESS_MS),
     displayName: options.displayName || '',
     summary: options.summary || '',
     agent: options.agent || '',
@@ -3357,14 +3358,17 @@ document.querySelector('#preview-voice').addEventListener('click', async (event)
     button.textContent = 'Play preview';
   }
 });
-document.querySelector('#desktop-voice-toggle').addEventListener('click', async () => {
-  if (desktopVoiceMode) {
+document.querySelector('#desktop-voice-toggle').addEventListener('change', async (event) => {
+  if (!event.target.checked) {
     stopDesktopVoiceMode();
+    settings = await api.saveSettings({ voiceModeEnabled: false }).catch(() => settings);
     return;
   }
   try {
     await startDesktopVoiceMode();
+    settings = await api.saveSettings({ voiceModeEnabled: true }).catch(() => settings);
   } catch (error) {
+    event.target.checked = false;
     showToast(`Voice: ${error.message}`);
   }
 });
@@ -3497,6 +3501,16 @@ async function initializeApp() {
     renderAgentState(await api.getAgentState());
   } catch {
     // The terminal remains usable if the optional supervisor is unavailable.
+  }
+  if (settings.voiceModeEnabled && !desktopVoiceMode) {
+    // Restore the saved voice-mode switch; a failure (missing mic, missing
+    // speech models) surfaces as a toast and leaves the switch off.
+    try {
+      await startDesktopVoiceMode();
+    } catch (error) {
+      document.querySelector('#desktop-voice-toggle').checked = false;
+      showToast(`Voice: ${error.message}`);
+    }
   }
 }
 
