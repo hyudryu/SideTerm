@@ -2878,7 +2878,8 @@ async function addSession(cwd, options = {}) {
     lastWorkingAt: 0,
     suppressAutoArmUntilIdle: false,
     lastReportedCycleId: '',
-    persistent: false
+    persistent: false,
+    serverScrollback: false
   };
   sessions.set(id, session);
   renderSessionItem(session);
@@ -2889,7 +2890,7 @@ async function addSession(cwd, options = {}) {
     if (amount === null) return true;
     event.preventDefault();
     event.stopPropagation();
-    if (session.persistent) api.scroll(session.id, amount);
+    if (session.serverScrollback) api.scroll(session.id, amount);
     else terminal.scrollLines(amount);
     return false;
   });
@@ -2952,6 +2953,7 @@ async function addSession(cwd, options = {}) {
     session.shell = details.shell;
     session.cwd = details.cwd;
     session.persistent = Boolean(details.persistent);
+    session.serverScrollback = Boolean(details.serverScrollback);
     updateSessionItem(session);
   } catch (error) {
     session.exited = true;
