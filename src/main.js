@@ -9,6 +9,7 @@ import { renderMarkdown } from './markdown.js';
 import { compactLastResponseAge, sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import { releaseStaleMouseDrag } from './pointer-release.js';
+import { isVoiceShortcutBypassActive } from './voice-shortcut.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -106,6 +107,7 @@ let settings = {
   ttsVoice: 'alba',
   ttsSpeed: 1,
   sidebarWidth: 282,
+  sidebarAutoWidth: false,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
 let linkPopoverTimer = null;
@@ -125,6 +127,7 @@ let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
 let voiceReplyInteractionId = '';
+let voiceShortcutBypassUntil = 0;
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -134,10 +137,10 @@ document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
     <aside class="sidebar" aria-label="Terminal sessions">
       <header class="brand-row">
-        <div class="brand-mark" aria-hidden="true">›_</div>
+        <div class="brand-mark" aria-hidden="true">&gt;ω&lt;</div>
         <div class="brand-copy">
           <strong>SideTerm</strong>
-          <span>Ubuntu terminal</span>
+          <span>A better terminal</span>
         </div>
         <button id="collapse-button" class="icon-button collapse-button" type="button" title="Collapse sidebar (Ctrl+Shift+B)" aria-label="Collapse sidebar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
@@ -310,7 +313,10 @@ document.querySelector('#app').innerHTML = `
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
-              <label class="range-row"><span>Sidebar width</span><input id="sidebar-width" type="range" min="210" max="480" step="1"><output id="sidebar-width-value"></output></label>
+              <label class="toggle-row">
+                <span><strong>Auto sidebar width</strong><small>Fit the sidebar to its content; it adjusts as session titles change.</small></span>
+                <input id="sidebar-auto-width" type="checkbox"><i></i>
+              </label>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Keyboard</strong><span>Click a field, then press a shortcut</span></div>
@@ -330,7 +336,7 @@ document.querySelector('#app').innerHTML = `
         </header>
         <div class="mobile-panel-body">
           <div class="mobile-status-row"><span id="mobile-status-dot"></span><strong id="mobile-status">Checking mobile access…</strong><button id="mobile-toggle" class="primary-button" type="button">Enable</button></div>
-          <p>SideTerm runs a private web app from this Ubuntu computer. The long address contains its access key—only share it with your own devices.</p>
+          <p>SideTerm runs a private web app from this computer. The long address contains its access key—only share it with your own devices.</p>
           <div id="mobile-urls" class="mobile-urls"></div>
           <div class="tailscale-https-row"><div><strong>Secure mobile voice</strong><span id="tailscale-https-status">Checking Tailscale HTTPS…</span></div><button id="enable-tailscale-https" class="secondary-button" type="button">Enable HTTPS</button></div>
           <section class="mobile-steps">
@@ -408,12 +414,14 @@ const HOTKEY_LABELS = {
   toggleSidebar: 'Collapse sidebar',
   nextSession: 'Next session',
   previousSession: 'Previous session',
-  openSettings: 'Open settings'
+  openSettings: 'Open settings',
+  voiceActivation: 'Voice activation (no wake word)'
 };
 
 function applySettings() {
   settings.hotkeys = { ...DEFAULT_HOTKEYS, ...(settings.hotkeys || {}) };
   settings.sidebarWidth = Math.max(210, Math.min(480, Number(settings.sidebarWidth) || 282));
+  shellElement.classList.toggle('sidebar-auto', Boolean(settings.sidebarAutoWidth));
   shellElement.style.setProperty('--sidebar-width', `${settings.sidebarWidth}px`);
   newSessionButton.title = `New session in active group (${settings.hotkeys.newSession})`;
   collapseButton.title = sidebarCollapsed
@@ -505,8 +513,7 @@ function populateSettingsPanel() {
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
   document.querySelector('#tts-speed-value').textContent = `${Number(settings.ttsSpeed || 1).toFixed(2)}×`;
-  document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
-  document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
+  document.querySelector('#sidebar-auto-width').checked = Boolean(settings.sidebarAutoWidth);
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
@@ -596,7 +603,7 @@ function settingsPayload() {
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
-    sidebarWidth: Number(document.querySelector('#sidebar-width').value),
+    sidebarAutoWidth: document.querySelector('#sidebar-auto-width').checked,
     hotkeys
   };
 }
@@ -761,7 +768,7 @@ async function saveSettingsFromPanel({ close = true } = {}) {
 }
 
 function beginSidebarResize(event) {
-  if (sidebarCollapsed) return;
+  if (sidebarCollapsed || settings.sidebarAutoWidth) return;
   event.preventDefault();
   sidebarResizer.setPointerCapture(event.pointerId);
   shellElement.classList.add('resizing-sidebar');
@@ -805,6 +812,7 @@ function detectedAgent(commandOrOutput) {
   if (/(^|\s|\/)codex(?:\s|$)/.test(text)) return 'Codex';
   if (/(^|\s|\/)claude(?:\s|$)/.test(text)) return 'Claude';
   if (/(^|\s|\/)gemini(?:\s|$)/.test(text)) return 'Gemini';
+  if (/(^|\s|\/)kimi(?:\s|$)/.test(text)) return 'Kimi';
   return '';
 }
 
@@ -1849,29 +1857,58 @@ function reportSessionCompletion(session) {
   });
 }
 
+function installProgressLabel(progress) {
+  if (progress?.phase === 'model') {
+    return progress.transferred ? `Downloading model… ${progress.transferred}` : 'Downloading model…';
+  }
+  return progress?.percent != null ? `Installing… ${progress.percent}%` : 'Installing…';
+}
+
 function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
   if (stt) {
     const configurationError = String(status.sttConfigurationError || '').trim();
-    stt.textContent = status.sttLocation === 'cloud'
-      ? status.sttInstalled
-        ? `Configured · CLOUD — ${status.sttProviderName}`
-        : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
-      : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
-    stt.classList.toggle('install-error', Boolean(configurationError));
-    if (configurationError) stt.title = configurationError;
+    const installError = String(status.sttInstallError || '').trim();
+    stt.textContent = status.sttInstalling
+      ? installProgressLabel(status.sttProgress)
+      : status.sttQueued
+        ? 'Queued…'
+        : status.sttLocation === 'cloud'
+          ? status.sttInstalled
+            ? `Configured · CLOUD — ${status.sttProviderName}`
+            : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
+          : installError
+            ? 'Install failed · LOCAL — Parakeet'
+            : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
+    const detail = configurationError || installError;
+    stt.classList.toggle('install-error', Boolean(detail) && !status.sttInstalling && !status.sttQueued);
+    if (detail) stt.title = detail;
     else stt.removeAttribute('title');
   }
   if (tts) {
-    tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
-    tts.classList.remove('install-error');
-    tts.removeAttribute('title');
+    const installError = String(status.ttsInstallError || '').trim();
+    tts.textContent = status.ttsInstalling
+      ? installProgressLabel(status.ttsProgress)
+      : status.ttsQueued
+        ? 'Queued…'
+        : installError
+          ? 'Install failed'
+          : status.ttsInstalled ? 'Installed' : 'Not installed';
+    tts.classList.toggle('install-error', Boolean(installError));
+    if (installError) tts.title = installError;
+    else tts.removeAttribute('title');
   }
   const installStt = document.querySelector('#install-stt');
   const installTts = document.querySelector('#install-tts');
-  if (installStt) installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
-  if (installTts) installTts.textContent = status.ttsInstalled ? 'Reinstall' : 'Install';
+  if (installStt) {
+    installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
+    installStt.disabled = Boolean(status.sttInstalling || status.sttQueued);
+  }
+  if (installTts) {
+    installTts.textContent = status.ttsInstalled ? 'Reinstall' : 'Install';
+    installTts.disabled = Boolean(status.ttsInstalling || status.ttsQueued);
+  }
 }
 
 async function refreshSpeechStatus() {
@@ -1887,24 +1924,12 @@ async function refreshSpeechStatus() {
 }
 
 async function installSpeech(kind) {
-  const button = document.querySelector(kind === 'stt' ? '#install-stt' : '#install-tts');
-  const status = document.querySelector(kind === 'stt' ? '#stt-status' : '#tts-status');
-  button.disabled = true;
-  status.classList.remove('install-error');
-  status.removeAttribute('title');
-  status.textContent = 'Installing…';
   try {
     if (!await saveSettingsFromPanel({ close: false })) throw new Error('Could not save the speech settings.');
+    // The install runs in the background; progress and failures arrive via voice:status.
     renderSpeechStatus(await api.installSpeech(kind));
-    showToast(`${kind === 'stt' ? 'Speech to text' : 'Pocket TTS'} installed`);
   } catch (error) {
-    const message = String(error?.message || error || 'Unknown installer error.');
-    status.textContent = `Install failed: ${message}`;
-    status.classList.add('install-error');
-    status.title = message;
-    showToast(message);
-  } finally {
-    button.disabled = false;
+    showToast(String(error?.message || error || 'Unknown installer error.'));
   }
 }
 
@@ -1965,7 +1990,21 @@ function queueAgentSpeech(text, options = {}) {
   return agentSpeechQueue;
 }
 
-async function processVoiceUtterance(blob, durationMs) {
+async function activateVoiceByShortcut() {
+  if (!desktopVoiceMode) {
+    try {
+      await startDesktopVoiceMode();
+    } catch (error) {
+      showToast(`Voice: ${error.message}`);
+      return;
+    }
+  }
+  // The next utterance is an explicit command and skips the wake word.
+  voiceShortcutBypassUntil = Date.now() + 10_000;
+  document.querySelector('#agent-status-detail').textContent = 'Listening — speak your request';
+}
+
+async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false } = {}) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
@@ -1979,7 +2018,7 @@ async function processVoiceUtterance(blob, durationMs) {
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
-      replyWindowActive
+      replyWindowActive || shortcutBypass
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
@@ -2026,6 +2065,7 @@ async function startDesktopVoiceMode() {
   let header = null;
   let preRoll = [];
   let utterance = [];
+  let utteranceShortcutBypass = false;
   let speaking = false;
   let startedAt = 0;
   let silenceAt = 0;
@@ -2059,6 +2099,8 @@ async function startDesktopVoiceMode() {
           silenceAt = 0;
           utterance = [];
           preRoll = [];
+          utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+          voiceShortcutBypassUntil = 0;
         }
       } else {
         voiceBargeInStartedAt = 0;
@@ -2068,6 +2110,8 @@ async function startDesktopVoiceMode() {
         speaking = true;
         startedAt = now;
         utterance = [...preRoll];
+        utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+        voiceShortcutBypassUntil = 0;
       }
       silenceAt = 0;
     } else if (speaking) {
@@ -2077,11 +2121,13 @@ async function startDesktopVoiceMode() {
       const duration = now - startedAt;
       const material = header ? [header, ...utterance] : utterance;
       const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const shortcutBypass = utteranceShortcutBypass;
       speaking = false;
       silenceAt = 0;
       utterance = [];
+      utteranceShortcutBypass = false;
       preRoll = [];
-      void processVoiceUtterance(blob, duration);
+      void processVoiceUtterance(blob, duration, { shortcutBypass });
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
@@ -2098,6 +2144,7 @@ function stopDesktopVoiceMode() {
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
   voiceReplyInteractionId = '';
+  voiceShortcutBypassUntil = 0;
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -2584,7 +2631,7 @@ function setSessionInputRequired(session, inputRequired) {
 
 function refreshSessionInputRequired(session, visibleText = visibleTerminalText(session?.terminal)) {
   if (!session || session.exited) return;
-  const codingAgent = /^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim());
+  const codingAgent = /^(?:Codex|Hermes|Claude|Gemini|Kimi)$/i.test(String(session.agent || '').trim());
   setSessionInputRequired(session, codingAgent && isAgentInputRequiredText(visibleText));
 }
 
@@ -2872,7 +2919,7 @@ async function addSession(cwd, options = {}) {
     schedulePersist();
   });
   terminal.onBell(() => {
-    if (/^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim())) {
+    if (/^(?:Codex|Hermes|Claude|Gemini|Kimi)$/i.test(String(session.agent || '').trim())) {
       setSessionInputRequired(session, true);
     }
   });
@@ -2890,6 +2937,7 @@ async function addSession(cwd, options = {}) {
     if (action === 'next-session') cycleSession(1);
     if (action === 'previous-session') cycleSession(-1);
     if (action === 'open-settings') openSettingsPanel();
+    if (action === 'voice-activation') void activateVoiceByShortcut();
     return false;
   });
   pane.addEventListener('contextmenu', (event) => {
@@ -3251,12 +3299,6 @@ settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
   void saveSettingsFromPanel();
 });
-document.querySelector('#sidebar-width').addEventListener('input', (event) => {
-  const width = Number(event.target.value);
-  document.querySelector('#sidebar-width-value').textContent = `${width}px`;
-  shellElement.style.setProperty('--sidebar-width', `${width}px`);
-  window.setTimeout(fitActive, 0);
-});
 document.querySelector('#tts-speed').addEventListener('input', (event) => {
   document.querySelector('#tts-speed-value').textContent = `${Number(event.target.value).toFixed(2)}×`;
 });
@@ -3492,6 +3534,7 @@ window.addEventListener('keydown', (event) => {
   if (action === 'next-session') cycleSession(1);
   if (action === 'previous-session') cycleSession(-1);
   if (action === 'open-settings') openSettingsPanel();
+  if (action === 'voice-activation') void activateVoiceByShortcut();
 });
 
 window.addEventListener('beforeunload', persistWorkspaceNow);

@@ -6,6 +6,8 @@ test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
   assert.equal(isBareAgentLaunchCommand('/usr/local/bin/claude --dangerously-skip-permissions'), true);
   assert.equal(isBareAgentLaunchCommand('sudo hermes'), true);
+  assert.equal(isBareAgentLaunchCommand('kimi'), true);
+  assert.equal(isBareAgentLaunchCommand('kimi --help'), true);
   assert.equal(isBareAgentLaunchCommand('codex fix the auth failure'), false);
   assert.equal(isBareAgentLaunchCommand('fix the auth failure'), false);
 });
@@ -111,6 +113,10 @@ test('an idle coding-agent prompt does not keep the spinner active', () => {
   assert.equal(isAgentWorkingText(idle), false);
   assert.equal(isAgentWorkingText(idleHermes), false);
   assert.equal(shouldKeepSessionBusy(true, idle), false);
+});
+
+test('a Kimi boxed prompt is classified as idle', () => {
+  assert.equal(agentActivityState('Kimi Code\n│ >'), 'idle');
 });
 
 test('coding-agent questions and confirmations are recognized as requiring input', () => {

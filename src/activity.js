@@ -1,6 +1,6 @@
 export function isBareAgentLaunchCommand(command) {
   const value = String(command).trim();
-  return /^(?:(?:sudo|env)\s+)*(?:\S*\/)?(?:codex|claude|hermes|gemini)(?:\s+--?[^\s]+)*$/i.test(value);
+  return /^(?:(?:sudo|env)\s+)*(?:\S*\/)?(?:codex|claude|hermes|gemini|kimi)(?:\s+--?[^\s]+)*$/i.test(value);
 }
 
 export function isForegroundSession({ sessionId, activeId, dashboardActive, documentVisible, windowFocused }) {
@@ -93,6 +93,7 @@ export function agentActivityState(value) {
   const idleIndex = lastMatchIndex(text, [
     /^[^\n]*[│|]\s*✓\s*\d[^\n]*$/gmu,
     /^\s*[❯>]\s*$/gmu,
+    /^\s*[│┃╎╽]\s*[❯>]\s*$/gmu,
     /^(?:[^\n]*@[^:\n]+:[^\n]*[$#]|[$#])\s*$/gmu
   ]);
   const codexIdleIndex = lastMatchIndex(text, [
