@@ -17,7 +17,7 @@ test('desktop presentation waits for renderer playback acknowledgement', () => {
 test('renderer reload resets desktop activation and cancellation stays silent', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /webContents\.on\('did-start-loading', resetDesktopVoiceActivation\)/);
-  assert.match(main, /webContents\.on\('render-process-gone', resetDesktopVoiceActivation\)/);
+  assert.match(main, /webContents\.on\('render-process-gone', \(_event, details\) => \{[\s\S]*?resetDesktopVoiceActivation\(\);/);
   assert.match(main, /if \(error\?\.name === 'AbortError' && activation\.taskId\) throw error/);
   assert.match(main, /taskId,\s+priority: 2,\s+interruptible: true/);
 });

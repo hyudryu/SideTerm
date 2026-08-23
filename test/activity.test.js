@@ -6,6 +6,8 @@ test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
   assert.equal(isBareAgentLaunchCommand('/usr/local/bin/claude --dangerously-skip-permissions'), true);
   assert.equal(isBareAgentLaunchCommand('sudo hermes'), true);
+  assert.equal(isBareAgentLaunchCommand('kimi'), true);
+  assert.equal(isBareAgentLaunchCommand('kimi --help'), true);
   assert.equal(isBareAgentLaunchCommand('codex fix the auth failure'), false);
   assert.equal(isBareAgentLaunchCommand('fix the auth failure'), false);
 });
@@ -95,12 +97,26 @@ test('a brief unknown repaint keeps a recently confirmed working session busy', 
   }), false);
 });
 
+test('a transient idle repaint does not settle a recently working session', () => {
+  const idle = '› Write tests for @filename\n\ngpt-5.6-sol high · ~/Andorra-Labs-Alpha';
+  // Without an idle grace the historical behavior is unchanged.
+  assert.equal(shouldKeepSessionBusy(true, idle, { lastWorkingAt: 10_000, now: 12_000 }), false);
+  // Within the grace window the session stays busy; beyond it the task is done.
+  assert.equal(shouldKeepSessionBusy(true, idle, { lastWorkingAt: 10_000, now: 12_000, idleGraceMs: 10_000 }), true);
+  assert.equal(shouldKeepSessionBusy(true, idle, { lastWorkingAt: 10_000, now: 21_000, idleGraceMs: 10_000 }), false);
+  assert.equal(shouldKeepSessionBusy(true, idle, { lastWorkingAt: 0, now: 12_000, idleGraceMs: 10_000 }), false);
+});
+
 test('an idle coding-agent prompt does not keep the spinner active', () => {
   const idle = '› Write tests for @filename\n\ngpt-5.6-sol high · ~/Andorra-Labs-Alpha';
   const idleHermes = '⚕ deepseek-v4-flash │ 104K/1M │ ⏲ 9m 27s │ ✓ 59s\n❯';
   assert.equal(isAgentWorkingText(idle), false);
   assert.equal(isAgentWorkingText(idleHermes), false);
   assert.equal(shouldKeepSessionBusy(true, idle), false);
+});
+
+test('a Kimi boxed prompt is classified as idle', () => {
+  assert.equal(agentActivityState('Kimi Code\n│ >'), 'idle');
 });
 
 test('coding-agent questions and confirmations are recognized as requiring input', () => {

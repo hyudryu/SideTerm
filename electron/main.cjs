@@ -8,7 +8,9 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment } = require('./voice/runtime.cjs');
+const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } = require('./voice/runtime.cjs');
+const { createInstallQueue } = require('./voice/install-queue.cjs');
+const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
 const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
@@ -32,7 +34,7 @@ const {
 const { isIdleCodingAgentPrompt } = require('./agent/coding-agent-prompt.cjs');
 const { acknowledgeAttentionNotification, reconcileAttentionNotifications } = require('./agent/attention.cjs');
 const { ProactiveCatchUpScheduler } = require('./agent/proactive.cjs');
-const { composeSubmittedInput, sendSubmittedInput } = require('./agent/terminal-input.cjs');
+const { sendSubmittedInput, submitTerminalInput } = require('./agent/terminal-input.cjs');
 const {
   applyWakeWord,
   VoiceAcknowledgementPicker,
@@ -53,6 +55,7 @@ const { deterministicPresentation, PresentationCoordinator, presentationDelivere
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
+const { rememberSessionCwd } = require('./sessions/runtime-state.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
@@ -62,6 +65,7 @@ const { PerceptionRouter, requiresSessionChrome, requiresVisualEvidence, session
 const { fitSessionCollection, mergeLiveSessionRecords, structuredSessionRecord } = require('./perception/structured-state.cjs');
 const { shouldRetainVisionCredential, visionEndpointConfigurationError } = require('./perception/credentials.cjs');
 const { analyzeScreenshot } = require('./perception/vision-provider.cjs');
+const { createEventLoopLagMonitor, createLogger } = require('./logging.cjs');
 
 // Set the product identity before any Electron call (including the
 // single-instance lock) can initialize the user-data path.
@@ -76,6 +80,15 @@ process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 
 if (process.env.SIDETERM_USER_DATA_DIR) app.setPath('userData', path.resolve(process.env.SIDETERM_USER_DATA_DIR));
+
+// Diagnostics: persistent log at userData/logs/sideterm-main.log plus an
+// event-loop lag monitor so main-process freezes are visible after the fact.
+const appLog = createLogger({ filePath: path.join(app.getPath('userData'), 'logs', 'sideterm-main.log') });
+const eventLoopLagMonitor = createEventLoopLagMonitor({
+  onLag: (lagMs) => appLog.warn(`main process event loop blocked for ${Math.round(lagMs)}ms`)
+});
+process.on('uncaughtException', (error) => appLog.error('uncaughtException', error));
+process.on('unhandledRejection', (reason) => appLog.error('unhandledRejection', reason));
 
 const isDev = !app.isPackaged;
 const sessions = new Map();
@@ -146,6 +159,7 @@ const DEFAULT_SETTINGS = {
   model: '',
   agentEnabled: false,
   supervisorBackgroundEnabled: true,
+  voiceModeEnabled: false,
   visionEnabled: false,
   visionUseSupervisorModel: true,
   visionApiUrl: '',
@@ -166,6 +180,7 @@ const DEFAULT_SETTINGS = {
   mobileEnabled: false,
   mobilePort: 43110,
   sidebarWidth: 282,
+  sidebarAutoWidth: false,
   hotkeys: DEFAULT_HOTKEYS
 };
 
@@ -231,6 +246,7 @@ function readSettingsRecord() {
       supervisorBackgroundEnabled: typeof parsed.supervisorBackgroundEnabled === 'boolean'
         ? parsed.supervisorBackgroundEnabled
         : DEFAULT_SETTINGS.supervisorBackgroundEnabled,
+      voiceModeEnabled: parsed.voiceModeEnabled === true,
       visionEnabled: parsed.visionEnabled === true,
       visionUseSupervisorModel: typeof parsed.visionUseSupervisorModel === 'boolean' ? parsed.visionUseSupervisorModel : true,
       visionApiUrl: typeof parsed.visionApiUrl === 'string' ? parsed.visionApiUrl.slice(0, 1000) : '',
@@ -368,6 +384,7 @@ function saveSettings(update = {}) {
     model,
     agentEnabled,
     supervisorBackgroundEnabled,
+    voiceModeEnabled: typeof update.voiceModeEnabled === 'boolean' ? update.voiceModeEnabled : current.voiceModeEnabled,
     visionEnabled,
     visionUseSupervisorModel,
     visionApiUrl,
@@ -388,6 +405,7 @@ function saveSettings(update = {}) {
     ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(update.ttsVoice) ? update.ttsVoice : current.ttsVoice,
     ttsSpeed: normalizeVoiceSpeed(update.ttsSpeed, current.ttsSpeed),
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
+    sidebarAutoWidth: update.sidebarAutoWidth === undefined ? current.sidebarAutoWidth : Boolean(update.sidebarAutoWidth),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
   };
 
@@ -830,7 +848,8 @@ function sendCodexFixRequest(pull, commentCount) {
     agent: metadata?.agent,
     busy: metadata?.busy,
     currentCommand,
-    screen: captureSessionScreen(session)
+    screen: captureSessionScreen(session),
+    trustAgentMetadata: !session.tmux
   })) return false;
   const input = [
     `Codex left ${commentCount} new or updated review comment${commentCount === 1 ? '' : 's'} on ${pull.url}.`,
@@ -1208,9 +1227,10 @@ function executeVoiceTerminalInput(input) {
   const session = sessions.get(input.sessionId);
   if (!metadata && !session) throw new Error('That terminal session is not active.');
   if (!session) return { executed: false, message: 'That session has no live terminal attached right now.' };
-  const data = composeSubmittedInput(input);
-  send('terminal:remote-input', { id: input.sessionId, data });
-  session.processHandle.write(data);
+  submitTerminalInput({ ...input, write: (data) => {
+    send('terminal:remote-input', { id: input.sessionId, data });
+    session.processHandle.write(data);
+  } });
   const state = readAgentState();
   state.metrics.terminalInputsApproved += 1;
   state.metrics.terminalWordsEntered += countTerminalWords(input.input);
@@ -1749,7 +1769,8 @@ function chatWithSupervisor(text, options = {}) {
   const priority = Number.isInteger(options.priority)
     ? Math.max(0, Math.min(3, options.priority))
     : (options.automatic || options.proactive) ? 2 : 0;
-  return supervisorActor.enqueue(
+  const startedAt = Date.now();
+  const task = supervisorActor.enqueue(
     () => performSupervisorChat(text, options),
     {
       priority,
@@ -1758,6 +1779,12 @@ function chatWithSupervisor(text, options = {}) {
       cancel: () => options.automatic ? supervisorRuntime?.cancelAutomatic?.() : supervisorRuntime?.cancel?.()
     }
   );
+  const meta = { voice: Boolean(options.voice), proactive: Boolean(options.proactive || options.automatic) };
+  task.then(
+    () => appLog.info('supervisor chat finished', { ...meta, ms: Date.now() - startedAt }),
+    (error) => appLog.warn('supervisor chat failed', { ...meta, ms: Date.now() - startedAt, error: String(error?.message || error) })
+  );
+  return task;
 }
 
 const PROACTIVE_CATCH_UP_PROMPT = [
@@ -2146,9 +2173,11 @@ async function resolveAgentConfirmation(id, approved) {
     } else if (confirmation.kind === 'terminal-input') {
       const session = sessions.get(confirmation.sessionId);
       if (!session) throw new Error('The target terminal session is no longer active.');
-      const data = composeSubmittedInput(confirmation);
-      send('terminal:remote-input', { id: confirmation.sessionId, data });
-      session.processHandle.write(data);
+      submitTerminalInput({ ...confirmation, write: (data) => {
+        if (sessions.get(confirmation.sessionId) !== session) return;
+        send('terminal:remote-input', { id: confirmation.sessionId, data });
+        session.processHandle.write(data);
+      } });
       actionCommitted = true;
       terminalInputApproved = true;
       approvedWords = countTerminalWords(confirmation.input);
@@ -2195,7 +2224,7 @@ function voiceRuntimeDirectory() {
 }
 
 function voicePython() {
-  return path.join(voiceRuntimeDirectory(), 'venv', 'bin', 'python');
+  return venvPythonPath(path.join(voiceRuntimeDirectory(), 'venv'));
 }
 
 function voiceSidecarPath() {
@@ -2234,6 +2263,10 @@ function voiceMarker(kind) {
   return path.join(voiceRuntimeDirectory(), `${kind}-installed.json`);
 }
 
+const speechInstallState = { stt: '', tts: '' };
+const speechInstallErrors = { stt: '', tts: '' };
+const speechInstallProgress = { stt: null, tts: null };
+
 function speechStatus() {
   const settings = readSettingsRecord();
   const descriptor = providerDescriptor(settings.sttProvider);
@@ -2259,11 +2292,19 @@ function speechStatus() {
     sttLocation: descriptor.location,
     sttProviderName: descriptor.name,
     sttConfigurationError,
-    ttsModel: DEFAULT_SETTINGS.ttsModel
+    ttsModel: DEFAULT_SETTINGS.ttsModel,
+    sttInstalling: speechInstallState.stt === 'running',
+    sttQueued: speechInstallState.stt === 'queued',
+    sttInstallError: speechInstallErrors.stt,
+    sttProgress: speechInstallProgress.stt,
+    ttsInstalling: speechInstallState.tts === 'running',
+    ttsQueued: speechInstallState.tts === 'queued',
+    ttsInstallError: speechInstallErrors.tts,
+    ttsProgress: speechInstallProgress.tts
   };
 }
 
-function runChild(executable, args, { env = process.env, timeoutMs = 30 * 60 * 1000 } = {}) {
+function runChild(executable, args, { env = process.env, timeoutMs = 30 * 60 * 1000, onOutput = null } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -2272,8 +2313,14 @@ function runChild(executable, args, { env = process.env, timeoutMs = 30 * 60 * 1
       child.kill('SIGTERM');
       reject(new Error('The local speech operation timed out.'));
     }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout = `${stdout}${chunk}`.slice(-2_000_000); });
-    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-2_000_000); });
+    child.stdout.on('data', (chunk) => {
+      stdout = `${stdout}${chunk}`.slice(-2_000_000);
+      if (onOutput) onOutput(String(chunk));
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-2_000_000);
+      if (onOutput) onOutput(String(chunk));
+    });
     child.once('error', (error) => {
       clearTimeout(timer);
       reject(error);
@@ -2298,7 +2345,14 @@ async function ensureVoiceEnvironment() {
   return ensurePythonVoiceEnvironment({
     runtimeDirectory: voiceRuntimeDirectory(),
     runChild,
-    downloadFile: downloadRuntimeFile
+    downloadFile: downloadRuntimeFile,
+    onEnvironmentRecreated: async () => {
+      // The venv was rebuilt with a different interpreter, wiping installed
+      // packages; drop both install markers so the UI reflects reality.
+      stopSpeechWorker();
+      for (const kind of ['stt', 'tts']) fs.rmSync(voiceMarker(kind), { force: true });
+      broadcastSpeechStatus();
+    }
   });
 }
 
@@ -2308,20 +2362,94 @@ async function installSpeechComponent(kind) {
   if (kind === 'stt' && providerDescriptor(readSettingsRecord().sttProvider).location === 'cloud') {
     throw new Error('Cloud speech providers use the encrypted credential in Settings and do not install a local model.');
   }
+  let lastProgressBroadcast = 0;
+  const reportProgress = (update) => {
+    speechInstallProgress[kind] = { phase: 'packages', percent: null, transferred: '', ...speechInstallProgress[kind], ...update };
+    const now = Date.now();
+    if (now - lastProgressBroadcast < 500) return;
+    lastProgressBroadcast = now;
+    broadcastSpeechStatus();
+  };
+  reportProgress({});
   const python = await ensureVoiceEnvironment();
   const packages = kind === 'stt'
     ? ['nemo_toolkit[asr]', 'huggingface-hub']
     : ['pocket-tts', 'scipy', 'huggingface-hub'];
-  await runChild(python, ['-m', 'pip', 'install', '--disable-pip-version-check', ...packages]);
+  await runChild(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--progress-bar', 'raw', ...packages], {
+    onOutput: (chunk) => {
+      const percent = parsePipProgress(chunk);
+      if (percent !== null) reportProgress({ phase: 'packages', percent });
+    }
+  });
   const settings = readSettingsRecord();
   const command = kind === 'stt' ? 'download-stt' : 'download-tts';
   const model = kind === 'stt' ? settings.sttModel : settings.ttsModel;
-  await runChild(python, [voiceSidecarPath(), command, '--root', voiceRuntimeDirectory(), '--model', model]);
+  // Model downloads hide inside NeMo/Pocket TTS, so report the growing cache
+  // size instead of a percentage.
+  const modelsDirectory = path.join(voiceRuntimeDirectory(), 'models');
+  reportProgress({ phase: 'model', percent: null, transferred: '' });
+  const sizeTimer = setInterval(() => {
+    void directorySize(modelsDirectory).then((bytes) => reportProgress({ phase: 'model', transferred: formatBytes(bytes) }));
+  }, 2_000);
+  try {
+    await runChild(python, [voiceSidecarPath(), command, '--root', voiceRuntimeDirectory(), '--model', model]);
+  } finally {
+    clearInterval(sizeTimer);
+  }
+  speechInstallProgress[kind] = null;
   fs.writeFileSync(voiceMarker(kind), `${JSON.stringify({ model, provider: kind === 'stt' ? settings.sttProvider : 'pocket-tts', installedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
   const status = speechStatus();
   send('voice:status', status);
   broadcastMobile({ type: 'voice:status', status });
   return status;
+}
+
+function broadcastSpeechStatus() {
+  const status = speechStatus();
+  send('voice:status', status);
+  broadcastMobile({ type: 'voice:status', status });
+}
+
+async function directorySize(directory) {
+  let total = 0;
+  try {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      try {
+        total += (await fs.promises.stat(path.join(entry.parentPath, entry.name))).size;
+      } catch {}
+    }
+  } catch {}
+  return total;
+}
+
+const queueSpeechInstall = createInstallQueue(async (kind) => {
+  speechInstallState[kind] = 'running';
+  broadcastSpeechStatus();
+  try {
+    await installSpeechComponent(kind);
+  } catch (error) {
+    speechInstallErrors[kind] = String(error?.message || error || 'Speech installation failed.');
+    broadcastSpeechStatus();
+  } finally {
+    speechInstallState[kind] = '';
+    speechInstallProgress[kind] = null;
+    broadcastSpeechStatus();
+  }
+});
+
+// Installs run asynchronously in the background and sequentially; progress and
+// failures are pushed to desktop and mobile via voice:status updates.
+function requestSpeechInstall(kind) {
+  if (!['stt', 'tts'].includes(kind)) throw new Error('Unknown speech component.');
+  if (!speechInstallState[kind]) {
+    speechInstallState[kind] = 'queued';
+    speechInstallErrors[kind] = '';
+    queueSpeechInstall(kind);
+  }
+  broadcastSpeechStatus();
+  return speechStatus();
 }
 
 async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed) {
@@ -2332,6 +2460,7 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
   const outputDirectory = path.join(voiceRuntimeDirectory(), 'tmp');
   fs.mkdirSync(outputDirectory, { recursive: true });
   const outputPath = path.join(outputDirectory, `${crypto.randomUUID()}.wav`);
+  const startedAt = Date.now();
   try {
     await getSpeechWorker().request('synthesize', {
       model: DEFAULT_SETTINGS.ttsModel,
@@ -2339,7 +2468,11 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
       text: safeText,
       output: outputPath
     });
+    appLog.info('speech synthesized', { ms: Date.now() - startedAt, chars: safeText.length });
     return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64'), playbackRate };
+  } catch (error) {
+    appLog.warn('speech synthesis failed', { ms: Date.now() - startedAt, error: String(error?.message || error) });
+    throw error;
   } finally {
     try { fs.unlinkSync(outputPath); } catch {}
   }
@@ -2589,12 +2722,23 @@ async function summarizeSession({ context, agent, allowDisabled = false, request
 }
 
 function resolveShell() {
+  if (process.platform === 'win32') {
+    // On Windows the inherited SHELL (e.g. Git Bash from the launching
+    // terminal) is incidental; PowerShell is the native default.
+    const override = process.env.SIDETERM_SHELL;
+    if (override && fs.existsSync(override)) return override;
+    const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    return fs.existsSync(powershell) ? powershell : 'powershell.exe';
+  }
   const configured = process.env.SHELL;
   if (configured && fs.existsSync(configured)) return configured;
   return fs.existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';
 }
 
 function tmuxRuntime() {
+  // The bundled tmux backend ships Linux binaries only; other platforms fall
+  // back to spawning the shell directly without the tmux persistence layer.
+  if (process.platform !== 'linux') return null;
   const root = app.isPackaged
     ? path.join(process.resourcesPath, 'tmux', 'usr')
     : path.join(__dirname, '..', 'vendor', 'tmux', 'usr');
@@ -3231,6 +3375,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     processHandle,
     tmux,
     tmuxSession,
+    cwd: workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
     mobileRevision: 0,
     mobileOutputBuffer: '',
@@ -3364,21 +3509,22 @@ function registerIpc() {
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);
     if (!session) return null;
-    let cwd = os.homedir();
+    let discoveredCwd = '';
     if (session.tmux && session.tmuxSession) {
       try {
-        cwd = runTmux(session.tmux, ['display-message', '-p', '-t', session.tmuxSession, '#{pane_current_path}'], { capture: true }).trim() || cwd;
+        discoveredCwd = runTmux(session.tmux, ['display-message', '-p', '-t', session.tmuxSession, '#{pane_current_path}'], { capture: true }).trim();
       } catch {
-        // Fall back to the attached client's working directory.
+        // Fall back to process discovery or the last known working directory.
       }
     }
-    if (cwd === os.homedir()) {
+    if (!discoveredCwd) {
       try {
-        cwd = fs.readlinkSync(`/proc/${session.processHandle.pid}/cwd`);
+        discoveredCwd = fs.readlinkSync(`/proc/${session.processHandle.pid}/cwd`);
       } catch {
         // The process may be exiting or /proc may not expose its working directory.
       }
     }
+    const cwd = rememberSessionCwd(session, discoveredCwd, os.homedir());
     return { cwd, pid: session.processHandle.pid, persistent: Boolean(session.tmux) };
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());
@@ -3443,6 +3589,7 @@ function registerIpc() {
     pending.resolve(payload.delivered === true);
   });
   ipcMain.on('agent:voice-mode', (_event, enabled) => {
+    appLog.info('desktop voice mode toggled', { enabled: Boolean(enabled) });
     const wasEnabled = supervisorVoiceMode;
     if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
     desktopVoiceActivationTaskId = '';
@@ -3490,9 +3637,9 @@ function registerIpc() {
     else pending.resolve(result.value);
   });
   ipcMain.handle('voice:get-status', () => speechStatus());
-  ipcMain.handle('voice:install', async (_event, kind) => {
+  ipcMain.handle('voice:install', (_event, kind) => {
     try {
-      return { ok: true, status: await installSpeechComponent(String(kind)) };
+      return { ok: true, status: requestSpeechInstall(String(kind)) };
     } catch (error) {
       return { ok: false, error: String(error?.message || error || 'Speech installation failed.') };
     }
@@ -3508,8 +3655,15 @@ function registerIpc() {
   ipcMain.handle('voice:resume-media', () => resumeDesktopMedia());
 }
 
+function appIconPath() {
+  // Windows uses a multi-size .ico so the window, taskbar, and tray all pick
+  // up the SideTerm mark instead of the stock Electron icon.
+  const file = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  return path.join(__dirname, '..', 'build', file);
+}
+
 function trayIconPath() {
-  return path.join(__dirname, '..', 'build', 'icon.png');
+  return appIconPath();
 }
 
 function notifyHiddenSupervisorUpdate(text) {
@@ -3569,7 +3723,7 @@ function createWindow() {
     minHeight: 420,
     backgroundColor: '#0c0c0c',
     title: 'SideTerm',
-    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+    icon: appIconPath(),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -3587,7 +3741,22 @@ function createWindow() {
     if (!allowed) event.preventDefault();
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
-  mainWindow.webContents.on('render-process-gone', resetDesktopVoiceActivation);
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    appLog.error('renderer process gone', details);
+    resetDesktopVoiceActivation();
+  });
+  mainWindow.webContents.on('unresponsive', () => appLog.error('renderer became unresponsive'));
+  mainWindow.webContents.on('responsive', () => appLog.info('renderer responsive again'));
+  mainWindow.webContents.on('did-fail-load', (_event, code, description) => appLog.error('window failed to load', { code, description }));
+  // Electron >= 36 passes a single details object; older versions pass
+  // (event, level, message, line, sourceId). Normalize both.
+  mainWindow.webContents.on('console-message', (...args) => {
+    const details = args[0] && typeof args[0] === 'object' && 'level' in args[0]
+      ? { level: args[0].level, message: args[0].message, sourceId: args[0].sourceId, line: args[0].lineNumber }
+      : { level: args[1], message: args[2], sourceId: args[4], line: args[3] };
+    const noisy = details.level === 'error' || details.level === 'warning' || details.level >= 2;
+    if (noisy) appLog.warn('renderer console', details);
+  });
 
   if (isDev) {
     mainWindow.loadURL(process.env.SIDETERM_DEV_URL || 'http://127.0.0.1:5173');
@@ -3615,6 +3784,8 @@ function createWindow() {
 }
 
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
+  appLog.info(`SideTerm v${app.getVersion()} ready`);
+  eventLoopLagMonitor.start();
   recoverAbandonedAgentStateEvents();
   registerIpc();
   createWindow();
@@ -3639,6 +3810,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => { quitRequested = true; });
 app.on('will-quit', () => {
+  appLog.info('SideTerm quitting');
+  eventLoopLagMonitor.stop();
   if (githubMonitorTimer) clearInterval(githubMonitorTimer);
   githubMonitorTimer = null;
   destroyBackgroundTray();

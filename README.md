@@ -1,14 +1,14 @@
 # SideTerm
 
-SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged in a resizable, collapsible left sidebar instead of tabs across the top. Its layout and shortcuts borrow the practical parts of Windows Terminal while keeping normal Unix shell behavior intact.
+SideTerm is a native-feeling terminal for Ubuntu, Windows, and macOS with live shell sessions arranged in a resizable, collapsible left sidebar instead of tabs across the top. Its layout and shortcuts borrow the practical parts of Windows Terminal while keeping normal shell behavior intact.
 
 ## What it does
 
-- Runs real interactive shell sessions through a PTY (your configured `$SHELL`, with Bash as fallback).
+- Runs real interactive shell sessions through a PTY (your configured `$SHELL` on Linux/macOS with Bash as fallback; PowerShell on Windows, overridable via `SIDETERM_SHELL`).
 - Organizes sessions into persistent, collapsible, color-coded groups. Each group color is configurable from its header. New groups start with a session, and each group has its own add-session button; groups may become empty when sessions are moved out. Groups and sessions can be dragged, reordered, and moved with focused drop zones and snap indicators.
 - Renames a group by clicking its title, and confirms before deleting a group and terminating every session inside it.
-- Keeps running shells and coding agents alive when the SideTerm window closes, then reconnects to them when it reopens. SideTerm bundles an isolated tmux backend, so this does not require a system tmux installation.
-- Restores group layout, session order, active state, working directories, unread state, link history, and bounded scrollback after restarting SideTerm or Ubuntu.
+- Keeps running shells and coding agents alive when the SideTerm window closes, then reconnects to them when it reopens. On Ubuntu, SideTerm bundles an isolated tmux backend, so this does not require a system tmux installation; on Windows and macOS, sessions run directly and end with the app.
+- Restores group layout, session order, active state, working directories, unread state, link history, and bounded scrollback after restarting SideTerm or the computer.
 - Marks completed/stopped background work with a red session dot and aggregates unread counts on each group. Each submitted prompt creates one notification cycle, preventing idle terminal repaints from repeatedly re-arming a dot.
 - Shows an animated activity ring while a submitted task is continuously producing output, while ignoring terminal redraws and terminal-generated focus/query responses.
 - Keeps every open session visible in a resizable left rail and lets you collapse the rail to icons.
@@ -24,7 +24,7 @@ SideTerm is a native-feeling Ubuntu terminal with live shell sessions arranged i
 - Queues the current branch pull request after a successful commit or push, checks open PRs every minute, routes new Codex review comments back to the linked coding chat, and asks before merging after Codex reacts 👍 to the main post.
 - Gives the supervisor narrow modular tools to inspect session context, create and relevantly name sessions, request archival, use semantic TUIs, and propose exact terminal input. Destructive or raw terminal actions remain policy- and confirmation-gated.
 - Adds optional DeepSeek Harness integration through an authenticated loopback bridge. Harness instructions use `followup`, `steer`, or `inject`; SideTerm does not type them into the agent PTY.
-- Adds local opt-in voice mode with configurable personality, agent instructions, wake word, NVIDIA Parakeet STT, Pocket TTS voice, per-voice preview, and explicit model installers. Explicitly selected cloud STT providers never receive audio through silent fallback.
+- Adds local opt-in voice mode with configurable personality, agent instructions, wake word, NVIDIA Parakeet STT, Pocket TTS voice, per-voice preview, and explicit model installers. A rebindable keyboard chord (`Ctrl+Shift+A` by default) activates listening without the wake word. Explicitly selected cloud STT providers never receive audio through silent fallback.
 - Optionally uses a custom OpenAI-compatible provider to turn recent coding-terminal activity into useful two-line labels such as `Codex: Fix token refresh` or `Hermes: Review checkout PR`.
 - Right-click copies a selection or pastes when nothing is selected.
 - Produces Ubuntu `.deb` and AppImage packages, including app-menu/taskbar launcher metadata.
@@ -57,7 +57,7 @@ The bridge binds only to loopback, requires a token of at least 24 characters, p
 
 ## Run for development
 
-Requirements: Ubuntu, Node.js 20 or newer, npm, and the native build toolchain used by `node-pty` (`build-essential`, Python, and `libsecret-1-dev` may be needed depending on your Electron installation).
+Requirements: Ubuntu, Windows 10 or newer, or macOS; Node.js 20 or newer; npm; and the native build toolchain used by `node-pty` (Ubuntu: `build-essential`, Python, and `libsecret-1-dev`; Windows: Visual Studio Build Tools, though node-pty's prebuilt binaries usually make a rebuild unnecessary; macOS: Xcode Command Line Tools).
 
 ```bash
 npm install
@@ -83,6 +83,10 @@ sudo apt install ./release/SideTerm-0.3.0-amd64.deb
 ```
 
 After installation, open the Ubuntu app grid, search for **SideTerm**, launch it, then right-click its dock icon and choose **Pin to Dash** / **Add to Favorites**. The AppImage in `release/` can also run without installation after `chmod +x`.
+
+## Run on Windows or macOS
+
+Packaged installers currently target Ubuntu only. On Windows and macOS, run from source using the development flow above. Windows sessions default to PowerShell (override with `SIDETERM_SHELL`), and macOS sessions use your configured `$SHELL`.
 
 ## Security model
 

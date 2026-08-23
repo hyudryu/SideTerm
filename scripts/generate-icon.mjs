@@ -3,9 +3,35 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
-const size = 512;
-const bytesPerPixel = 4;
-const pixels = Buffer.alloc((size * bytesPerPixel + 1) * size);
+// ">ω<" face: squeezed ">" "<" eyes with a curvy two-lobed cat mouth.
+// Geometry is authored on a 512 grid and scaled per render size.
+// Keep in sync with build/icon.svg.
+const EYES_AND_TOP = [
+  [138, 194, 190, 236], [190, 236, 138, 278],
+  [374, 194, 322, 236], [322, 236, 374, 278]
+];
+const MOUTH_CURVES = [
+  [[224, 298], [224, 330], [254, 332], [256, 304]],
+  [[256, 304], [258, 332], [288, 330], [288, 298]]
+];
+const GLYPH_STROKE = 24;
+
+function glyphSegments() {
+  const segments = [...EYES_AND_TOP];
+  const cubic = (p0, p1, p2, p3, t) => {
+    const u = 1 - t;
+    return [
+      u ** 3 * p0[0] + 3 * u ** 2 * t * p1[0] + 3 * u * t ** 2 * p2[0] + t ** 3 * p3[0],
+      u ** 3 * p0[1] + 3 * u ** 2 * t * p1[1] + 3 * u * t ** 2 * p2[1] + t ** 3 * p3[1]
+    ];
+  };
+  for (const [p0, p1, p2, p3] of MOUTH_CURVES) {
+    for (let i = 0; i < 12; i += 1) {
+      segments.push([...cubic(p0, p1, p2, p3, i / 12), ...cubic(p0, p1, p2, p3, (i + 1) / 12)]);
+    }
+  }
+  return segments;
+}
 
 function roundedRectDistance(x, y, left, top, right, bottom, radius) {
   const cx = Math.max(left + radius, Math.min(x, right - radius));
@@ -20,37 +46,57 @@ function inStroke(x, y, ax, ay, bx, by, width) {
   return Math.hypot(x - (ax + t * abx), y - (ay + t * aby)) <= width / 2;
 }
 
-for (let y = 0; y < size; y += 1) {
-  const row = y * (size * bytesPerPixel + 1);
-  pixels[row] = 0;
-  for (let x = 0; x < size; x += 1) {
-    const offset = row + 1 + x * bytesPerPixel;
-    const distance = roundedRectDistance(x, y, 30, 30, 482, 482, 92);
-    if (distance <= 0) {
-      const blend = (x + y) / (size * 2);
-      pixels[offset] = Math.round(24 + blend * 68);
-      pixels[offset + 1] = Math.round(116 - blend * 50);
-      pixels[offset + 2] = Math.round(183 + blend * 40);
-      pixels[offset + 3] = 255;
-    }
+function renderPng(size) {
+  const scale = size / 512;
+  const bytesPerPixel = 4;
+  const pixels = Buffer.alloc((size * bytesPerPixel + 1) * size);
+  const segments = glyphSegments().map((segment) => segment.map((value) => value * scale));
+  const strokeWidth = GLYPH_STROKE * scale;
 
-    const terminalPanel = roundedRectDistance(x, y, 92, 112, 420, 400, 30);
-    if (terminalPanel <= 0) {
-      pixels[offset] = 14;
-      pixels[offset + 1] = 15;
-      pixels[offset + 2] = 18;
-      pixels[offset + 3] = 245;
-    }
+  for (let y = 0; y < size; y += 1) {
+    const row = y * (size * bytesPerPixel + 1);
+    pixels[row] = 0;
+    for (let x = 0; x < size; x += 1) {
+      const offset = row + 1 + x * bytesPerPixel;
+      const distance = roundedRectDistance(x, y, 30 * scale, 30 * scale, 482 * scale, 482 * scale, 92 * scale);
+      if (distance <= 0) {
+        const blend = (x + y) / (size * 2);
+        pixels[offset] = Math.round(24 + blend * 68);
+        pixels[offset + 1] = Math.round(116 - blend * 50);
+        pixels[offset + 2] = Math.round(183 + blend * 40);
+        pixels[offset + 3] = 255;
+      }
 
-    const chevron = inStroke(x, y, 154, 204, 218, 256, 24) || inStroke(x, y, 218, 256, 154, 308, 24);
-    const underscore = inStroke(x, y, 245, 307, 333, 307, 22);
-    if (chevron || underscore) {
-      pixels[offset] = 242;
-      pixels[offset + 1] = 247;
-      pixels[offset + 2] = 251;
-      pixels[offset + 3] = 255;
+      const terminalPanel = roundedRectDistance(x, y, 92 * scale, 112 * scale, 420 * scale, 400 * scale, 30 * scale);
+      if (terminalPanel <= 0) {
+        pixels[offset] = 14;
+        pixels[offset + 1] = 15;
+        pixels[offset + 2] = 18;
+        pixels[offset + 3] = 245;
+      }
+
+      const onGlyph = segments.some(([ax, ay, bx, by]) => inStroke(x, y, ax, ay, bx, by, strokeWidth));
+      if (onGlyph) {
+        pixels[offset] = 242;
+        pixels[offset + 1] = 247;
+        pixels[offset + 2] = 251;
+        pixels[offset + 3] = 255;
+      }
     }
   }
+
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8;
+  header[9] = 6;
+
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', zlib.deflateSync(pixels, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
 }
 
 function crc32(buffer) {
@@ -72,21 +118,36 @@ function chunk(type, data) {
   return result;
 }
 
-const header = Buffer.alloc(13);
-header.writeUInt32BE(size, 0);
-header.writeUInt32BE(size, 4);
-header[8] = 8;
-header[9] = 6;
-
-const png = Buffer.concat([
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-  chunk('IHDR', header),
-  chunk('IDAT', zlib.deflateSync(pixels, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0))
-]);
+// Windows .ico with PNG-compressed frames (valid since Vista).
+function buildIco(sizes) {
+  const frames = sizes.map((size) => ({ size, png: renderPng(size) }));
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(frames.length, 4);
+  const entries = Buffer.alloc(16 * frames.length);
+  let offset = 6 + entries.length;
+  frames.forEach((frame, index) => {
+    const entry = index * 16;
+    entries[entry] = frame.size >= 256 ? 0 : frame.size;
+    entries[entry + 1] = frame.size >= 256 ? 0 : frame.size;
+    entries[entry + 2] = 0;
+    entries[entry + 3] = 0;
+    entries.writeUInt16LE(1, entry + 4);
+    entries.writeUInt16LE(32, entry + 6);
+    entries.writeUInt32LE(frame.png.length, entry + 8);
+    entries.writeUInt32LE(offset, entry + 12);
+    offset += frame.png.length;
+  });
+  return Buffer.concat([header, entries, ...frames.map((frame) => frame.png)]);
+}
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const output = path.resolve(scriptDir, '..', 'build', 'icon.png');
-fs.mkdirSync(path.dirname(output), { recursive: true });
-fs.writeFileSync(output, png);
-console.log(`Generated ${output}`);
+const buildDir = path.resolve(scriptDir, '..', 'build');
+fs.mkdirSync(buildDir, { recursive: true });
+const pngPath = path.join(buildDir, 'icon.png');
+const icoPath = path.join(buildDir, 'icon.ico');
+fs.writeFileSync(pngPath, renderPng(512));
+fs.writeFileSync(icoPath, buildIco([16, 24, 32, 48, 64, 128, 256]));
+console.log(`Generated ${pngPath}`);
+console.log(`Generated ${icoPath}`);

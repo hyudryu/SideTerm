@@ -6,7 +6,8 @@ export const DEFAULT_HOTKEYS = {
   toggleSidebar: 'Ctrl+Shift+B',
   nextSession: 'Ctrl+Tab',
   previousSession: 'Ctrl+Shift+Tab',
-  openSettings: 'Ctrl+,'
+  openSettings: 'Ctrl+,',
+  voiceActivation: 'Ctrl+Shift+A'
 };
 
 const ACTIONS = {
@@ -17,7 +18,8 @@ const ACTIONS = {
   toggleSidebar: 'toggle-sidebar',
   nextSession: 'next-session',
   previousSession: 'previous-session',
-  openSettings: 'open-settings'
+  openSettings: 'open-settings',
+  voiceActivation: 'voice-activation'
 };
 
 export function keyboardEventToAccelerator(event) {

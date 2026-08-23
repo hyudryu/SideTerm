@@ -9,6 +9,7 @@ import { renderMarkdown } from './markdown.js';
 import { compactLastResponseAge, sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import { releaseStaleMouseDrag } from './pointer-release.js';
+import { isVoiceShortcutBypassActive } from './voice-shortcut.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -37,6 +38,7 @@ const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 // Restored sessions get a longer window: tmux attach redraws and slow shell
 // startup output must not count as a fresh response after an app reboot.
 const RESTORE_REDRAW_SUPPRESS_MS = 5_000;
+const AGENT_IDLE_GRACE_MS = 10_000;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_BUSY_RETRY_DELAY_MS = 1_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
@@ -105,6 +107,7 @@ let settings = {
   ttsVoice: 'alba',
   ttsSpeed: 1,
   sidebarWidth: 282,
+  sidebarAutoWidth: false,
   hotkeys: { ...DEFAULT_HOTKEYS }
 };
 let linkPopoverTimer = null;
@@ -124,6 +127,7 @@ let activeVoicePlayer = null;
 let voiceBargeInStartedAt = 0;
 let voiceReplyUntil = 0;
 let voiceReplyInteractionId = '';
+let voiceShortcutBypassUntil = 0;
 let agentSpeechQueue = Promise.resolve(true);
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
@@ -133,10 +137,10 @@ document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
     <aside class="sidebar" aria-label="Terminal sessions">
       <header class="brand-row">
-        <div class="brand-mark" aria-hidden="true">›_</div>
+        <div class="brand-mark" aria-hidden="true">&gt;ω&lt;</div>
         <div class="brand-copy">
           <strong>SideTerm</strong>
-          <span>Ubuntu terminal</span>
+          <span>A better terminal</span>
         </div>
         <button id="collapse-button" class="icon-button collapse-button" type="button" title="Collapse sidebar (Ctrl+Shift+B)" aria-label="Collapse sidebar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
@@ -209,7 +213,7 @@ document.querySelector('#app').innerHTML = `
           <button id="agent-close" class="secondary-button" type="button">Back to terminal</button>
         </header>
         <div class="agent-panel-body">
-          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><button id="desktop-voice-toggle" class="secondary-button" type="button">Voice off</button></div>
+          <div class="agent-overview"><span id="agent-status-dot"></span><div><strong id="agent-status-label">Idle</strong><small id="agent-status-detail">Ready to help</small></div><label class="voice-switch" title="Voice mode"><input id="desktop-voice-toggle" type="checkbox"><span class="voice-switch-slider"></span></label></div>
           <section class="agent-metrics" aria-label="Supervisor metrics">
             <article><span>Pending sessions</span><strong id="agent-metric-pending">0</strong></article>
             <article><span>Running now</span><strong id="agent-metric-running">0</strong></article>
@@ -309,7 +313,10 @@ document.querySelector('#app').innerHTML = `
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Appearance</strong><span>Navigation sizing</span></div>
-              <label class="range-row"><span>Sidebar width</span><input id="sidebar-width" type="range" min="210" max="480" step="1"><output id="sidebar-width-value"></output></label>
+              <label class="toggle-row">
+                <span><strong>Auto sidebar width</strong><small>Fit the sidebar to its content; it adjusts as session titles change.</small></span>
+                <input id="sidebar-auto-width" type="checkbox"><i></i>
+              </label>
             </section>
             <section class="settings-section">
               <div class="settings-section-title"><strong>Keyboard</strong><span>Click a field, then press a shortcut</span></div>
@@ -329,7 +336,7 @@ document.querySelector('#app').innerHTML = `
         </header>
         <div class="mobile-panel-body">
           <div class="mobile-status-row"><span id="mobile-status-dot"></span><strong id="mobile-status">Checking mobile access…</strong><button id="mobile-toggle" class="primary-button" type="button">Enable</button></div>
-          <p>SideTerm runs a private web app from this Ubuntu computer. The long address contains its access key—only share it with your own devices.</p>
+          <p>SideTerm runs a private web app from this computer. The long address contains its access key—only share it with your own devices.</p>
           <div id="mobile-urls" class="mobile-urls"></div>
           <div class="tailscale-https-row"><div><strong>Secure mobile voice</strong><span id="tailscale-https-status">Checking Tailscale HTTPS…</span></div><button id="enable-tailscale-https" class="secondary-button" type="button">Enable HTTPS</button></div>
           <section class="mobile-steps">
@@ -407,12 +414,14 @@ const HOTKEY_LABELS = {
   toggleSidebar: 'Collapse sidebar',
   nextSession: 'Next session',
   previousSession: 'Previous session',
-  openSettings: 'Open settings'
+  openSettings: 'Open settings',
+  voiceActivation: 'Voice activation (no wake word)'
 };
 
 function applySettings() {
   settings.hotkeys = { ...DEFAULT_HOTKEYS, ...(settings.hotkeys || {}) };
   settings.sidebarWidth = Math.max(210, Math.min(480, Number(settings.sidebarWidth) || 282));
+  shellElement.classList.toggle('sidebar-auto', Boolean(settings.sidebarAutoWidth));
   shellElement.style.setProperty('--sidebar-width', `${settings.sidebarWidth}px`);
   newSessionButton.title = `New session in active group (${settings.hotkeys.newSession})`;
   collapseButton.title = sidebarCollapsed
@@ -504,8 +513,7 @@ function populateSettingsPanel() {
   document.querySelector('#tts-voice').value = settings.ttsVoice || 'alba';
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
   document.querySelector('#tts-speed-value').textContent = `${Number(settings.ttsSpeed || 1).toFixed(2)}×`;
-  document.querySelector('#sidebar-width').value = String(settings.sidebarWidth);
-  document.querySelector('#sidebar-width-value').textContent = `${settings.sidebarWidth}px`;
+  document.querySelector('#sidebar-auto-width').checked = Boolean(settings.sidebarAutoWidth);
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
@@ -595,7 +603,7 @@ function settingsPayload() {
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
-    sidebarWidth: Number(document.querySelector('#sidebar-width').value),
+    sidebarAutoWidth: document.querySelector('#sidebar-auto-width').checked,
     hotkeys
   };
 }
@@ -760,7 +768,7 @@ async function saveSettingsFromPanel({ close = true } = {}) {
 }
 
 function beginSidebarResize(event) {
-  if (sidebarCollapsed) return;
+  if (sidebarCollapsed || settings.sidebarAutoWidth) return;
   event.preventDefault();
   sidebarResizer.setPointerCapture(event.pointerId);
   shellElement.classList.add('resizing-sidebar');
@@ -804,6 +812,7 @@ function detectedAgent(commandOrOutput) {
   if (/(^|\s|\/)codex(?:\s|$)/.test(text)) return 'Codex';
   if (/(^|\s|\/)claude(?:\s|$)/.test(text)) return 'Claude';
   if (/(^|\s|\/)gemini(?:\s|$)/.test(text)) return 'Gemini';
+  if (/(^|\s|\/)kimi(?:\s|$)/.test(text)) return 'Kimi';
   return '';
 }
 
@@ -869,8 +878,13 @@ function trackTerminalInput(session, data) {
           session.activityScanBuffer = '';
           session.lastWorkingAt = 0;
           session.notifyWhenIdle = false;
+          session.suppressAutoArmUntilIdle = false;
           scheduleAiSummary(session);
           schedulePersist();
+        } else {
+          // Merely launching an agent is not a task; its startup working/idle
+          // frames must not create a completion event.
+          session.suppressAutoArmUntilIdle = true;
         }
       }
       session.commandBuffer = '';
@@ -1829,29 +1843,58 @@ function reportSessionCompletion(session) {
   });
 }
 
+function installProgressLabel(progress) {
+  if (progress?.phase === 'model') {
+    return progress.transferred ? `Downloading model… ${progress.transferred}` : 'Downloading model…';
+  }
+  return progress?.percent != null ? `Installing… ${progress.percent}%` : 'Installing…';
+}
+
 function renderSpeechStatus(status) {
   const stt = document.querySelector('#stt-status');
   const tts = document.querySelector('#tts-status');
   if (stt) {
     const configurationError = String(status.sttConfigurationError || '').trim();
-    stt.textContent = status.sttLocation === 'cloud'
-      ? status.sttInstalled
-        ? `Configured · CLOUD — ${status.sttProviderName}`
-        : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
-      : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
-    stt.classList.toggle('install-error', Boolean(configurationError));
-    if (configurationError) stt.title = configurationError;
+    const installError = String(status.sttInstallError || '').trim();
+    stt.textContent = status.sttInstalling
+      ? installProgressLabel(status.sttProgress)
+      : status.sttQueued
+        ? 'Queued…'
+        : status.sttLocation === 'cloud'
+          ? status.sttInstalled
+            ? `Configured · CLOUD — ${status.sttProviderName}`
+            : `Needs setup · CLOUD — ${status.sttProviderName}${configurationError ? ` · ${configurationError}` : ''}`
+          : installError
+            ? 'Install failed · LOCAL — Parakeet'
+            : status.sttInstalled ? 'Installed · LOCAL — Parakeet' : 'Not installed · LOCAL — Parakeet';
+    const detail = configurationError || installError;
+    stt.classList.toggle('install-error', Boolean(detail) && !status.sttInstalling && !status.sttQueued);
+    if (detail) stt.title = detail;
     else stt.removeAttribute('title');
   }
   if (tts) {
-    tts.textContent = status.ttsInstalled ? 'Installed' : 'Not installed';
-    tts.classList.remove('install-error');
-    tts.removeAttribute('title');
+    const installError = String(status.ttsInstallError || '').trim();
+    tts.textContent = status.ttsInstalling
+      ? installProgressLabel(status.ttsProgress)
+      : status.ttsQueued
+        ? 'Queued…'
+        : installError
+          ? 'Install failed'
+          : status.ttsInstalled ? 'Installed' : 'Not installed';
+    tts.classList.toggle('install-error', Boolean(installError));
+    if (installError) tts.title = installError;
+    else tts.removeAttribute('title');
   }
   const installStt = document.querySelector('#install-stt');
   const installTts = document.querySelector('#install-tts');
-  if (installStt) installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
-  if (installTts) installTts.textContent = status.ttsInstalled ? 'Reinstall' : 'Install';
+  if (installStt) {
+    installStt.textContent = status.sttInstalled ? 'Reinstall' : 'Install';
+    installStt.disabled = Boolean(status.sttInstalling || status.sttQueued);
+  }
+  if (installTts) {
+    installTts.textContent = status.ttsInstalled ? 'Reinstall' : 'Install';
+    installTts.disabled = Boolean(status.ttsInstalling || status.ttsQueued);
+  }
 }
 
 async function refreshSpeechStatus() {
@@ -1867,24 +1910,12 @@ async function refreshSpeechStatus() {
 }
 
 async function installSpeech(kind) {
-  const button = document.querySelector(kind === 'stt' ? '#install-stt' : '#install-tts');
-  const status = document.querySelector(kind === 'stt' ? '#stt-status' : '#tts-status');
-  button.disabled = true;
-  status.classList.remove('install-error');
-  status.removeAttribute('title');
-  status.textContent = 'Installing…';
   try {
     if (!await saveSettingsFromPanel({ close: false })) throw new Error('Could not save the speech settings.');
+    // The install runs in the background; progress and failures arrive via voice:status.
     renderSpeechStatus(await api.installSpeech(kind));
-    showToast(`${kind === 'stt' ? 'Speech to text' : 'Pocket TTS'} installed`);
   } catch (error) {
-    const message = String(error?.message || error || 'Unknown installer error.');
-    status.textContent = `Install failed: ${message}`;
-    status.classList.add('install-error');
-    status.title = message;
-    showToast(message);
-  } finally {
-    button.disabled = false;
+    showToast(String(error?.message || error || 'Unknown installer error.'));
   }
 }
 
@@ -1945,7 +1976,21 @@ function queueAgentSpeech(text, options = {}) {
   return agentSpeechQueue;
 }
 
-async function processVoiceUtterance(blob, durationMs) {
+async function activateVoiceByShortcut() {
+  if (!desktopVoiceMode) {
+    try {
+      await startDesktopVoiceMode();
+    } catch (error) {
+      showToast(`Voice: ${error.message}`);
+      return;
+    }
+  }
+  // The next utterance is an explicit command and skips the wake word.
+  voiceShortcutBypassUntil = Date.now() + 10_000;
+  document.querySelector('#agent-status-detail').textContent = 'Listening — speak your request';
+}
+
+async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false } = {}) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
@@ -1959,7 +2004,7 @@ async function processVoiceUtterance(blob, durationMs) {
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
-      replyWindowActive
+      replyWindowActive || shortcutBypass
     );
     if (transcript.ignored) {
       label.textContent = transcript.reason || 'Waiting for the wake word';
@@ -2006,6 +2051,7 @@ async function startDesktopVoiceMode() {
   let header = null;
   let preRoll = [];
   let utterance = [];
+  let utteranceShortcutBypass = false;
   let speaking = false;
   let startedAt = 0;
   let silenceAt = 0;
@@ -2039,6 +2085,8 @@ async function startDesktopVoiceMode() {
           silenceAt = 0;
           utterance = [];
           preRoll = [];
+          utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+          voiceShortcutBypassUntil = 0;
         }
       } else {
         voiceBargeInStartedAt = 0;
@@ -2048,6 +2096,8 @@ async function startDesktopVoiceMode() {
         speaking = true;
         startedAt = now;
         utterance = [...preRoll];
+        utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+        voiceShortcutBypassUntil = 0;
       }
       silenceAt = 0;
     } else if (speaking) {
@@ -2057,19 +2107,20 @@ async function startDesktopVoiceMode() {
       const duration = now - startedAt;
       const material = header ? [header, ...utterance] : utterance;
       const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const shortcutBypass = utteranceShortcutBypass;
       speaking = false;
       silenceAt = 0;
       utterance = [];
+      utteranceShortcutBypass = false;
       preRoll = [];
-      void processVoiceUtterance(blob, duration);
+      void processVoiceUtterance(blob, duration, { shortcutBypass });
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
   voiceMonitorFrame = requestAnimationFrame(monitor);
   desktopVoiceMode = true;
   api.setAgentVoiceMode(true);
-  document.querySelector('#desktop-voice-toggle').textContent = 'Voice on';
-  document.querySelector('#desktop-voice-toggle').classList.add('voice-active');
+  document.querySelector('#desktop-voice-toggle').checked = true;
   document.querySelector('#agent-status-detail').textContent = `Listening for “${settings.wakeWord || 'speech'}”`;
 }
 
@@ -2079,6 +2130,7 @@ function stopDesktopVoiceMode() {
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
   voiceReplyInteractionId = '';
+  voiceShortcutBypassUntil = 0;
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;
@@ -2088,8 +2140,7 @@ function stopDesktopVoiceMode() {
   voiceStream = null;
   void voiceAudioContext?.close();
   voiceAudioContext = null;
-  document.querySelector('#desktop-voice-toggle').textContent = 'Voice off';
-  document.querySelector('#desktop-voice-toggle').classList.remove('voice-active');
+  document.querySelector('#desktop-voice-toggle').checked = false;
   document.querySelector('#agent-status-detail').textContent = 'Watching all SideTerm sessions';
 }
 
@@ -2488,7 +2539,7 @@ function isSessionForeground(session) {
 }
 
 function markSessionNotification(session) {
-  if (!session || isSessionForeground(session) || session.notified) return;
+  if (!session || session.busy || isSessionForeground(session) || session.notified) return;
   session.notified = true;
   session.attentionCycleId = session.activityCycleId || crypto.randomUUID();
   session.activityArmed = false;
@@ -2496,6 +2547,17 @@ function markSessionNotification(session) {
   updateSessionItem(session);
   updateVisualState();
   schedulePersist();
+}
+
+function clearSessionNotification(session) {
+  if (!session?.notified) return;
+  const cycleId = session.attentionCycleId;
+  session.notified = false;
+  session.attentionCycleId = '';
+  updateSessionItem(session);
+  updateVisualState();
+  schedulePersist();
+  if (cycleId) void api.acknowledgeSessionAttention(session.id, cycleId).catch(() => {});
 }
 
 function acknowledgeSessionNotification(session) {
@@ -2555,15 +2617,19 @@ function setSessionInputRequired(session, inputRequired) {
 
 function refreshSessionInputRequired(session, visibleText = visibleTerminalText(session?.terminal)) {
   if (!session || session.exited) return;
-  const codingAgent = /^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim());
+  const codingAgent = /^(?:Codex|Hermes|Claude|Gemini|Kimi)$/i.test(String(session.agent || '').trim());
   setSessionInputRequired(session, codingAgent && isAgentInputRequiredText(visibleText));
 }
 
 function settleSessionBusy(session) {
   if (!session?.busy) return;
-  if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal), {
+  const visible = visibleTerminalText(session.terminal);
+  const activityState = agentActivityState(visible);
+  if (activityState === 'working') session.lastWorkingAt = Date.now();
+  if (shouldKeepSessionBusy(session.activityArmed, visible, {
     lastWorkingAt: session.lastWorkingAt,
-    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS,
+    idleGraceMs: AGENT_IDLE_GRACE_MS
   })) {
     session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
     return;
@@ -2574,8 +2640,13 @@ function settleSessionBusy(session) {
   updateSessionItem(session);
   reportSessionCompletion(session);
   if (session.notifyWhenIdle) {
-    session.notifyWhenIdle = false;
-    if (!isSessionForeground(session)) markSessionNotification(session);
+    if (activityState === 'idle') {
+      session.notifyWhenIdle = false;
+      if (!isSessionForeground(session)) markSessionNotification(session);
+    }
+    // An unknown reading only means the working indicator left the visible
+    // status rows, so the run may still be going: stay armed without latching
+    // the unread dot, and let the spinner return with the next output.
   } else if (isSessionForeground(session)) {
     session.activityArmed = false;
     schedulePersist();
@@ -2585,9 +2656,12 @@ function settleSessionBusy(session) {
 function recheckSuppressedAgentBusy(session) {
   session.busyTimer = null;
   if (!session.activityArmed || session.notified || session.exited) return;
-  if (!shouldKeepSessionBusy(true, visibleTerminalText(session.terminal), {
+  const visible = visibleTerminalText(session.terminal);
+  if (agentActivityState(visible) === 'working') session.lastWorkingAt = Date.now();
+  if (!shouldKeepSessionBusy(true, visible, {
     lastWorkingAt: session.lastWorkingAt,
-    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS,
+    idleGraceMs: AGENT_IDLE_GRACE_MS
   })) {
     session.activityArmed = false;
     schedulePersist();
@@ -2607,9 +2681,15 @@ function noteSessionBusy(session, data) {
     ? agentActivityState(session.activityScanBuffer)
     : visibleState;
   const agentIsWorking = activityState === 'working';
+  if (activityState === 'idle') session.suppressAutoArmUntilIdle = false;
   if (agentIsWorking) session.lastWorkingAt = Date.now();
   if (!output.trim() && !agentIsWorking) return;
-  if (canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
+  if (agentIsWorking && !session.activityArmed && session.notified) {
+    // A new run supersedes the unread dot from the previous one; the spinner
+    // takes over until this run finishes unread.
+    clearSessionNotification(session);
+  }
+  if (!session.suppressAutoArmUntilIdle && canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
     session.activityArmed = true;
     session.activityCycleId = crypto.randomUUID();
     session.notifyWhenIdle = !isSessionForeground(session);
@@ -2661,6 +2741,12 @@ function noteBackgroundActivity(session, data) {
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
   if (data.includes('\x07')) {
+    if (session.busy || agentActivityState(visibleTerminalText(session.terminal)) === 'working') {
+      // A beep during a run defers to the completion notification instead of
+      // latching the unread dot while the agent is still working.
+      session.notifyWhenIdle = true;
+      return;
+    }
     session.notifyWhenIdle = false;
     markSessionNotification(session);
     return;
@@ -2812,7 +2898,7 @@ async function addSession(cwd, options = {}) {
     schedulePersist();
   });
   terminal.onBell(() => {
-    if (/^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim())) {
+    if (/^(?:Codex|Hermes|Claude|Gemini|Kimi)$/i.test(String(session.agent || '').trim())) {
       setSessionInputRequired(session, true);
     }
     if (session.activityArmed) markSessionNotification(session);
@@ -2831,6 +2917,7 @@ async function addSession(cwd, options = {}) {
     if (action === 'next-session') cycleSession(1);
     if (action === 'previous-session') cycleSession(-1);
     if (action === 'open-settings') openSettingsPanel();
+    if (action === 'voice-activation') void activateVoiceByShortcut();
     return false;
   });
   pane.addEventListener('contextmenu', (event) => {
@@ -3190,12 +3277,6 @@ settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
   void saveSettingsFromPanel();
 });
-document.querySelector('#sidebar-width').addEventListener('input', (event) => {
-  const width = Number(event.target.value);
-  document.querySelector('#sidebar-width-value').textContent = `${width}px`;
-  shellElement.style.setProperty('--sidebar-width', `${width}px`);
-  window.setTimeout(fitActive, 0);
-});
 document.querySelector('#tts-speed').addEventListener('input', (event) => {
   document.querySelector('#tts-speed-value').textContent = `${Number(event.target.value).toFixed(2)}×`;
 });
@@ -3360,14 +3441,17 @@ document.querySelector('#preview-voice').addEventListener('click', async (event)
     button.textContent = 'Play preview';
   }
 });
-document.querySelector('#desktop-voice-toggle').addEventListener('click', async () => {
-  if (desktopVoiceMode) {
+document.querySelector('#desktop-voice-toggle').addEventListener('change', async (event) => {
+  if (!event.target.checked) {
     stopDesktopVoiceMode();
+    settings = await api.saveSettings({ voiceModeEnabled: false }).catch(() => settings);
     return;
   }
   try {
     await startDesktopVoiceMode();
+    settings = await api.saveSettings({ voiceModeEnabled: true }).catch(() => settings);
   } catch (error) {
+    event.target.checked = false;
     showToast(`Voice: ${error.message}`);
   }
 });
@@ -3428,6 +3512,7 @@ window.addEventListener('keydown', (event) => {
   if (action === 'next-session') cycleSession(1);
   if (action === 'previous-session') cycleSession(-1);
   if (action === 'open-settings') openSettingsPanel();
+  if (action === 'voice-activation') void activateVoiceByShortcut();
 });
 
 window.addEventListener('beforeunload', persistWorkspaceNow);
@@ -3500,6 +3585,16 @@ async function initializeApp() {
     renderAgentState(await api.getAgentState());
   } catch {
     // The terminal remains usable if the optional supervisor is unavailable.
+  }
+  if (settings.voiceModeEnabled && !desktopVoiceMode) {
+    // Restore the saved voice-mode switch; a failure (missing mic, missing
+    // speech models) surfaces as a toast and leaves the switch off.
+    try {
+      await startDesktopVoiceMode();
+    } catch (error) {
+      document.querySelector('#desktop-voice-toggle').checked = false;
+      showToast(`Voice: ${error.message}`);
+    }
   }
 }
 
