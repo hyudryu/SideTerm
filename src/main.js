@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
+import sideTermIconUrl from '../build/icon.svg?url';
 import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isAgentInputRequiredText, isForegroundSession, isShellLevelAgentLaunch, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from './activity.js';
 import { aiSummaryRetryDelay, isAiSessionStale, MAX_AI_SUMMARY_FAILURES, shouldBackfillAiSessionLabel, shouldPauseStaleAiSummary, shouldRearmAiSummary } from './ai-summary.js';
 import { renderMarkdown } from './markdown.js';
@@ -137,7 +138,7 @@ document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
     <aside class="sidebar" aria-label="Terminal sessions">
       <header class="brand-row">
-        <div class="brand-mark" aria-hidden="true">&gt;ω&lt;</div>
+        <img class="brand-mark" src="${sideTermIconUrl}" alt="" aria-hidden="true" draggable="false">
         <div class="brand-copy">
           <strong>SideTerm</strong>
           <span>A better terminal</span>
