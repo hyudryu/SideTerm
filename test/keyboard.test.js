@@ -31,6 +31,12 @@ test('session and sidebar shortcuts are recognized', () => {
   assert.equal(resolveTerminalShortcut(key('Tab', { shiftKey: true }), false), 'previous-session');
 });
 
+test('the voice activation chord is recognized and rebindable', () => {
+  assert.equal(resolveTerminalShortcut(key('a', { shiftKey: true }), false), 'voice-activation');
+  assert.equal(resolveTerminalShortcut(key('a', { shiftKey: true }), false, { voiceActivation: 'Ctrl+Shift+M' }), null);
+  assert.equal(resolveTerminalShortcut(key('m', { shiftKey: true }), false, { voiceActivation: 'Ctrl+Shift+M' }), 'voice-activation');
+});
+
 test('unrelated and Alt-modified keys are left to the terminal', () => {
   assert.equal(resolveTerminalShortcut(key('l'), false), null);
   assert.equal(resolveTerminalShortcut(key('c', { altKey: true }), true), null);
