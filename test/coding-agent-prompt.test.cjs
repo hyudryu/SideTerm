@@ -22,6 +22,37 @@ test('a branded idle TUI prompt is accepted when the process name is wrapped', (
   }), true);
 });
 
+test('direct sessions can trust verified agent metadata after branding scrolls away', () => {
+  const screen = `${'completed output\n'.repeat(1000)}› Ask Codex to do anything`;
+  assert.equal(isIdleCodingAgentPrompt({
+    agent: 'Codex',
+    busy: false,
+    currentCommand: '',
+    screen,
+    trustAgentMetadata: true
+  }), true);
+  assert.equal(isIdleCodingAgentPrompt({
+    agent: 'Codex',
+    busy: false,
+    currentCommand: '',
+    screen
+  }), false);
+  assert.equal(isIdleCodingAgentPrompt({
+    agent: 'Codex',
+    busy: true,
+    currentCommand: '',
+    screen,
+    trustAgentMetadata: true
+  }), false);
+  assert.equal(isIdleCodingAgentPrompt({
+    agent: 'Codex',
+    busy: false,
+    currentCommand: '',
+    screen: `${screen}\n• Working (2s • esc to interrupt)`,
+    trustAgentMetadata: true
+  }), false);
+});
+
 test('an idle Kimi boxed prompt is recognized despite ANSI chrome', () => {
   const kimiScreen = `\x1b[2K \x1b[38;2;79;168;255m│\x1b[39m  \x1b[1m\x1b[38;2;79;168;255mWelcome to Kimi Code!\x1b[39m\x1b[22m  \x1b[38;2;79;168;255m│\x1b[39m\x1b[0m
 \x1b[2K \x1b[38;2;79;168;255m│\x1b[39m \x1b[38;2;224;224;224mplan\x1b[39m  \x1b[38;2;224;224;224mK3 thinking: high\x1b[39m  \x1b[38;2;136;136;136mmain [±]\x1b[39m\x1b[0m

@@ -115,6 +115,10 @@ test('an idle coding-agent prompt does not keep the spinner active', () => {
   assert.equal(shouldKeepSessionBusy(true, idle), false);
 });
 
+test('a Kimi boxed prompt is classified as idle', () => {
+  assert.equal(agentActivityState('Kimi Code\n│ >'), 'idle');
+});
+
 test('coding-agent questions and confirmations are recognized as requiring input', () => {
   assert.equal(isAgentInputRequiredText('Question 1/2 (1 unanswered)\nType your answer'), true);
   assert.equal(isAgentInputRequiredText('Questions 2/2 answered\nEnter to submit all'), true);

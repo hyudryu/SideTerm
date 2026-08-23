@@ -55,6 +55,7 @@ const { deterministicPresentation, PresentationCoordinator, presentationDelivere
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
+const { rememberSessionCwd } = require('./sessions/runtime-state.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
@@ -847,7 +848,8 @@ function sendCodexFixRequest(pull, commentCount) {
     agent: metadata?.agent,
     busy: metadata?.busy,
     currentCommand,
-    screen: captureSessionScreen(session)
+    screen: captureSessionScreen(session),
+    trustAgentMetadata: !session.tmux
   })) return false;
   const input = [
     `Codex left ${commentCount} new or updated review comment${commentCount === 1 ? '' : 's'} on ${pull.url}.`,
@@ -3373,6 +3375,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     processHandle,
     tmux,
     tmuxSession,
+    cwd: workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
     mobileRevision: 0,
     mobileOutputBuffer: '',
@@ -3506,21 +3509,22 @@ function registerIpc() {
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);
     if (!session) return null;
-    let cwd = os.homedir();
+    let discoveredCwd = '';
     if (session.tmux && session.tmuxSession) {
       try {
-        cwd = runTmux(session.tmux, ['display-message', '-p', '-t', session.tmuxSession, '#{pane_current_path}'], { capture: true }).trim() || cwd;
+        discoveredCwd = runTmux(session.tmux, ['display-message', '-p', '-t', session.tmuxSession, '#{pane_current_path}'], { capture: true }).trim();
       } catch {
-        // Fall back to the attached client's working directory.
+        // Fall back to process discovery or the last known working directory.
       }
     }
-    if (cwd === os.homedir()) {
+    if (!discoveredCwd) {
       try {
-        cwd = fs.readlinkSync(`/proc/${session.processHandle.pid}/cwd`);
+        discoveredCwd = fs.readlinkSync(`/proc/${session.processHandle.pid}/cwd`);
       } catch {
         // The process may be exiting or /proc may not expose its working directory.
       }
     }
+    const cwd = rememberSessionCwd(session, discoveredCwd, os.homedir());
     return { cwd, pid: session.processHandle.pid, persistent: Boolean(session.tmux) };
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());

@@ -93,6 +93,7 @@ export function agentActivityState(value) {
   const idleIndex = lastMatchIndex(text, [
     /^[^\n]*[│|]\s*✓\s*\d[^\n]*$/gmu,
     /^\s*[❯>]\s*$/gmu,
+    /^\s*[│┃╎╽]\s*[❯>]\s*$/gmu,
     /^(?:[^\n]*@[^:\n]+:[^\n]*[$#]|[$#])\s*$/gmu
   ]);
   const codexIdleIndex = lastMatchIndex(text, [

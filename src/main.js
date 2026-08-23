@@ -9,6 +9,7 @@ import { renderMarkdown } from './markdown.js';
 import { compactLastResponseAge, sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
 import { releaseStaleMouseDrag } from './pointer-release.js';
+import { isVoiceShortcutBypassActive } from './voice-shortcut.js';
 import {
   DEFAULT_HOTKEYS,
   consumeTerminalShortcutEvent,
@@ -1989,7 +1990,7 @@ async function activateVoiceByShortcut() {
   document.querySelector('#agent-status-detail').textContent = 'Listening — speak your request';
 }
 
-async function processVoiceUtterance(blob, durationMs) {
+async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false } = {}) {
   if (!desktopVoiceMode || voiceCaptureMuted || voiceTranscriptionInFlight || durationMs < 650 || blob.size < 1000) return;
   voiceTranscriptionInFlight = true;
   const label = document.querySelector('#agent-status-detail');
@@ -2000,8 +2001,6 @@ async function processVoiceUtterance(blob, durationMs) {
   try {
     const replyWindowActive = Date.now() <= voiceReplyUntil;
     if (!replyWindowActive) voiceReplyInteractionId = '';
-    const shortcutBypass = Date.now() <= voiceShortcutBypassUntil;
-    if (shortcutBypass) voiceShortcutBypassUntil = 0;
     const transcript = await api.transcribeSpeech(
       new Uint8Array(await blob.arrayBuffer()),
       blob.type,
@@ -2052,6 +2051,7 @@ async function startDesktopVoiceMode() {
   let header = null;
   let preRoll = [];
   let utterance = [];
+  let utteranceShortcutBypass = false;
   let speaking = false;
   let startedAt = 0;
   let silenceAt = 0;
@@ -2085,6 +2085,8 @@ async function startDesktopVoiceMode() {
           silenceAt = 0;
           utterance = [];
           preRoll = [];
+          utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+          voiceShortcutBypassUntil = 0;
         }
       } else {
         voiceBargeInStartedAt = 0;
@@ -2094,6 +2096,8 @@ async function startDesktopVoiceMode() {
         speaking = true;
         startedAt = now;
         utterance = [...preRoll];
+        utteranceShortcutBypass = isVoiceShortcutBypassActive(voiceShortcutBypassUntil);
+        voiceShortcutBypassUntil = 0;
       }
       silenceAt = 0;
     } else if (speaking) {
@@ -2103,11 +2107,13 @@ async function startDesktopVoiceMode() {
       const duration = now - startedAt;
       const material = header ? [header, ...utterance] : utterance;
       const blob = new Blob(material, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const shortcutBypass = utteranceShortcutBypass;
       speaking = false;
       silenceAt = 0;
       utterance = [];
+      utteranceShortcutBypass = false;
       preRoll = [];
-      void processVoiceUtterance(blob, duration);
+      void processVoiceUtterance(blob, duration, { shortcutBypass });
     }
     voiceMonitorFrame = requestAnimationFrame(monitor);
   };
