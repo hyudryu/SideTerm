@@ -59,7 +59,7 @@ test('session capture restores the live active session without dropping PTY outp
   assert.match(renderer, /sessions\.get\(activeId\)\?\.pane\.classList\.add\('active'\)/);
   assert.doesNotMatch(renderer, /for \(const pane of activePanes\) pane\.classList\.add\('active'\)/);
   assert.doesNotMatch(renderer, /captureRedrawSuppressedUntil/);
-  assert.match(renderer, /api\.onData[\s\S]*recordSessionResponse\(session, data\);[\s\S]*appendSessionContext\(session, data\);[\s\S]*noteBackgroundActivity\(session, data\)/);
+  assert.match(renderer, /api\.onData[\s\S]*session\.terminal\.write\(data, \(\) => \{[\s\S]*noteSessionBusy\(session, data\);[\s\S]*noteBackgroundActivity\(session, data\);[\s\S]*recordSessionResponse\(session, data\);[\s\S]*appendSessionContext\(session, data\)/);
 });
 
 test('whole-window capture preserves the dashboard while masking sensitive overlays', () => {

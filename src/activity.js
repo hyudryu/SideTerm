@@ -3,6 +3,30 @@ export function isBareAgentLaunchCommand(command) {
   return /^(?:(?:sudo|env)\s+)*(?:\S*\/)?(?:codex|claude|hermes|gemini|kimi)(?:\s+--?[^\s]+)*$/i.test(value);
 }
 
+export function isShellLevelAgentLaunch(command, visibleTerminalText) {
+  const submitted = String(command).trim();
+  if (!isBareAgentLaunchCommand(submitted)) return false;
+
+  const lines = String(visibleTerminalText).replace(/\r/g, '').split('\n');
+  let promptLine = '';
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim()) {
+      promptLine = lines[index].trimEnd();
+      break;
+    }
+  }
+  if (promptLine.endsWith(submitted)) {
+    promptLine = promptLine.slice(0, -submitted.length).trimEnd();
+  }
+
+  const unixPrompt = /^(?:.*@[^:\n]+:[^\n]*[$#%]|[$#%])\s*$/u;
+  const powershellPrompt = /^(?:\([^\n)]+\)\s*)?PS(?:\s+[^>\n]+)?>\s*$/iu;
+  const commandPrompt = /^(?:\([^\n)]+\)\s*)?[A-Za-z]:\\[^>\n]*>\s*$/u;
+  return unixPrompt.test(promptLine)
+    || powershellPrompt.test(promptLine)
+    || commandPrompt.test(promptLine);
+}
+
 export function isForegroundSession({ sessionId, activeId, dashboardActive, documentVisible, windowFocused }) {
   return Boolean(sessionId
     && sessionId === activeId
