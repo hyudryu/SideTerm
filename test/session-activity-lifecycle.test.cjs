@@ -25,6 +25,7 @@ test('a bare agent launch retires the previous activity cycle and timer', () => 
   assert.match(retire, /session\.busy = false/);
   assert.match(retire, /session\.activityArmed = false/);
   assert.match(retire, /session\.notifyWhenIdle = false/);
+  assert.match(renderer, /isShellLevelAgentLaunch\(command, visibleTerminalText\(session\.terminal\)\)/);
   assert.match(renderer, /retireSessionActivityCycle\(session, \{ suppressAutoArmUntilIdle: true \}\)/);
 });
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isForegroundSession, isAgentInputRequiredText, isAgentWorkingText, isBareAgentLaunchCommand, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
+import { agentActivityState, canAutoArmAgentActivity, consumeTerminalInputEcho, isForegroundSession, isAgentInputRequiredText, isAgentWorkingText, isBareAgentLaunchCommand, isShellLevelAgentLaunch, normalizeGithubPullRequestUrl, restoredContextState, scanTerminalUrls, shouldKeepSessionBusy, stripTerminalControlInput, terminalStatusRowRange, terminalWheelAmount } from '../src/activity.js';
 
 test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('codex'), true);
@@ -10,6 +10,20 @@ test('bare coding-agent launches do not count as naming context', () => {
   assert.equal(isBareAgentLaunchCommand('kimi --help'), true);
   assert.equal(isBareAgentLaunchCommand('codex fix the auth failure'), false);
   assert.equal(isBareAgentLaunchCommand('fix the auth failure'), false);
+});
+
+test('bare agent launches retire activity only at a recognized shell prompt', () => {
+  assert.equal(isShellLevelAgentLaunch('codex', 'mark@host:/repo$ codex'), true);
+  assert.equal(isShellLevelAgentLaunch('claude', '$ claude'), true);
+  assert.equal(isShellLevelAgentLaunch('gemini', 'PS C:\\repo> gemini'), true);
+  assert.equal(isShellLevelAgentLaunch('kimi', 'C:\\repo>kimi'), true);
+  assert.equal(isShellLevelAgentLaunch('codex', 'PS C:\\repo>'), true);
+
+  assert.equal(isShellLevelAgentLaunch('codex', '› codex'), false);
+  assert.equal(isShellLevelAgentLaunch('claude', '❯ claude'), false);
+  assert.equal(isShellLevelAgentLaunch('gemini', '│ > gemini'), false);
+  assert.equal(isShellLevelAgentLaunch('kimi', '> kimi'), false);
+  assert.equal(isShellLevelAgentLaunch('codex fix auth', 'mark@host:/repo$ codex fix auth'), false);
 });
 
 test('plain wheel scrolls terminal history while Ctrl+wheel passes through', () => {
