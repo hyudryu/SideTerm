@@ -3,35 +3,15 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
-// ">ω<" face: squeezed ">" "<" eyes with a curvy two-lobed cat mouth.
-// Geometry is authored on a 512 grid and scaled per render size.
+// SideTerm's original terminal prompt mark. Geometry is authored on a 512
+// grid and scaled per render size.
 // Keep in sync with build/icon.svg.
-const EYES_AND_TOP = [
-  [138, 194, 190, 236], [190, 236, 138, 278],
-  [374, 194, 322, 236], [322, 236, 374, 278]
-];
-const MOUTH_CURVES = [
-  [[224, 298], [224, 330], [254, 332], [256, 304]],
-  [[256, 304], [258, 332], [288, 330], [288, 298]]
+const GLYPH_SEGMENTS = [
+  [154, 204, 218, 256],
+  [218, 256, 154, 308],
+  [245, 307, 333, 307]
 ];
 const GLYPH_STROKE = 24;
-
-function glyphSegments() {
-  const segments = [...EYES_AND_TOP];
-  const cubic = (p0, p1, p2, p3, t) => {
-    const u = 1 - t;
-    return [
-      u ** 3 * p0[0] + 3 * u ** 2 * t * p1[0] + 3 * u * t ** 2 * p2[0] + t ** 3 * p3[0],
-      u ** 3 * p0[1] + 3 * u ** 2 * t * p1[1] + 3 * u * t ** 2 * p2[1] + t ** 3 * p3[1]
-    ];
-  };
-  for (const [p0, p1, p2, p3] of MOUTH_CURVES) {
-    for (let i = 0; i < 12; i += 1) {
-      segments.push([...cubic(p0, p1, p2, p3, i / 12), ...cubic(p0, p1, p2, p3, (i + 1) / 12)]);
-    }
-  }
-  return segments;
-}
 
 function roundedRectDistance(x, y, left, top, right, bottom, radius) {
   const cx = Math.max(left + radius, Math.min(x, right - radius));
@@ -50,7 +30,7 @@ function renderPng(size) {
   const scale = size / 512;
   const bytesPerPixel = 4;
   const pixels = Buffer.alloc((size * bytesPerPixel + 1) * size);
-  const segments = glyphSegments().map((segment) => segment.map((value) => value * scale));
+  const segments = GLYPH_SEGMENTS.map((segment) => segment.map((value) => value * scale));
   const strokeWidth = GLYPH_STROKE * scale;
 
   for (let y = 0; y < size; y += 1) {
