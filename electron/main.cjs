@@ -12,7 +12,7 @@ const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } =
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
 const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
-const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
+const { automaticPresenterSentinel, catchUpPrompt, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
   changedPullRequestComments,
@@ -55,7 +55,6 @@ const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = r
 const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator, presentationDelivered } = require('./supervisor/presentation.cjs');
-const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { rememberSessionCwd } = require('./sessions/runtime-state.cjs');
@@ -1028,10 +1027,8 @@ async function monitorPullRequest(url, sessionId = '', options = {}) {
 }
 
 async function discoverPullRequestForMonitoring(details = {}) {
-  try {
-    return await discoverPullRequest(details.cwd || os.homedir());
-  } catch (discoveryError) {
-    const candidates = [...new Set((details.links || []).map(String))].reverse();
+  const candidates = [...new Set((details.links || []).map(String))].reverse();
+  const capturedPullRequest = async () => {
     for (const candidate of candidates) {
       try {
         const snapshot = await fetchPullRequest(candidate);
@@ -1041,6 +1038,17 @@ async function discoverPullRequestForMonitoring(details = {}) {
         // Captured terminal URLs are untrusted until GitHub validates them.
       }
     }
+    return '';
+  };
+  if (details.preferLinks) {
+    const captured = await capturedPullRequest();
+    if (captured) return captured;
+  }
+  try {
+    return await discoverPullRequest(details.cwd || os.homedir());
+  } catch (discoveryError) {
+    const captured = await capturedPullRequest();
+    if (captured) return captured;
     throw discoveryError;
   }
 }
@@ -1101,7 +1109,8 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
       const codexActors = readSettingsRecord().githubCodexActorLogins;
       const codexComments = snapshot.comments.filter((comment) => isActionableCodexComment(comment, codexActors));
       const codexCount = codexComments.length;
-      if (queuedPull && codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
+      if (details.dispatchExistingComments !== false
+        && queuedPull && codexCount && sendCodexFixRequest(linkedPull, codexCount)) {
         queuedPull.handledCodexComments = codexComments.map(commentRevisionKey).slice(-1000);
         const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
         addAgentMessage(state, 'event', `SideTerm told ${metadata?.title || sessionId} to address the existing Codex comments on PR #${snapshot.number}.`);
@@ -1119,6 +1128,26 @@ async function beginPullRequestMonitoring(sessionId, details = {}) {
     }
   } catch {
     // A push can target a branch without an open PR. Monitoring starts once one can be discovered.
+  }
+}
+
+function observeWorkspacePullRequestLinks() {
+  const monitored = new Set(readAgentState().pullRequests.map((pull) => pull.url));
+  for (const metadata of mobileWorkspace.sessions) {
+    const session = sessions.get(metadata.id);
+    if (!session) continue;
+    const links = [...new Set((metadata.links || []).map(String))];
+    const fingerprint = links.join('\n');
+    if (session.observedPullRequestLinksFingerprint === fingerprint) continue;
+    session.observedPullRequestLinksFingerprint = fingerprint;
+    const unmonitored = links.filter((url) => !monitored.has(url));
+    if (!unmonitored.length) continue;
+    void beginPullRequestMonitoring(metadata.id, {
+      cwd: metadata.cwd,
+      links: unmonitored,
+      preferLinks: true,
+      dispatchExistingComments: false
+    });
   }
 }
 
@@ -1740,7 +1769,9 @@ async function performSupervisorChat(text, {
       .sort((left, right) => right.createdAt - left.createdAt)[0];
     const presenterSentinel = automatic || proactive ? automaticPresenterSentinel(result.text) : '';
     const needsEnrichment = presenterSentinel === 'NEEDS_ENRICHMENT';
-    const suppressed = Boolean(presenterSentinel);
+    const staleCompletion = Boolean((automatic || proactive)
+      && unread.some((item) => item.kind === 'COMPLETED' && liveSessionStillWorking(item.sessionId)));
+    const suppressed = Boolean(presenterSentinel || staleCompletion);
     if (!suppressed) {
       addAgentMessage(latest, 'assistant', result.text, proactive ? {
         proactive: true,
@@ -1903,31 +1934,26 @@ async function performVoiceActivationUpdate(targets, { taskId = '', isCurrent } 
   if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
   let eventState = readAgentState();
   if (eventBusFor(eventState).next(eventState.activeInteractionId)) {
-    await present('I’ve got an update—one sec.', { opensReplyWindow: false });
-    if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-    eventState = readAgentState();
-    if (eventBusFor(eventState).next(eventState.activeInteractionId)) {
-      const outcome = await runProactiveCatchUp({ taskId, targets, isCurrent });
-      if (outcome === 'ran') return;
-      if (outcome === 'failed') throw new Error('the queued update could not be processed');
-    }
+    const outcome = await runProactiveCatchUp({ taskId, targets, isCurrent });
+    if (outcome === 'ran') return;
+    if (outcome === 'failed') throw new Error('the queued update could not be processed');
   }
   if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-  const acknowledgement = 'I’m checking the latest.';
   const result = await chatWithSupervisor(
-    'Voice mode was just enabled. Give the user the latest useful status across active sessions. Be concise; if nothing needs attention, say they are caught up.',
+    'Voice mode was just enabled. Give the user only a useful status that needs their attention across active sessions. Be concise. If nothing needs attention, reply with exactly NO_UPDATE.',
     {
       synthetic: true,
       notificationIds: [],
       voice: true,
+      automatic: true,
       taskId,
       priority: 2,
-      interruptible: true,
-      onAccepted: () => void present(acknowledgement, { opensReplyWindow: false })
+      interruptible: true
     }
   );
   if (!activationStillCurrent(targets, isCurrent)) throw staleActivationError();
-  if (!result.speech || !await present(result.speech, { opensReplyWindow: true })) {
+  if (!result.speech) return;
+  if (!await present(result.speech, { opensReplyWindow: true })) {
     throw new Error('the latest update could not be delivered');
   }
 }
@@ -1980,25 +2006,21 @@ async function runProactiveCatchUp(activation = {}) {
     broadcastAgentState();
   };
   try {
+    if (event.kind === 'COMPLETED' && liveSessionStillWorking(event.sessionId)) {
+      acknowledge();
+      return 'ran';
+    }
     const presentation = deterministicPresentation(event);
     if (!presentation) {
-      let streamed = false;
-      const sentences = new SentenceBuffer((sentence) => {
-        if (isAutomaticPresenterSentinel(sentence)) return;
-        streamed = true;
-        queueSpeech(sentence);
-      });
       const result = await chatWithSupervisor(PROACTIVE_CATCH_UP_PROMPT, {
         synthetic: true,
         notificationIds: [event.id],
         proactive: true,
         automatic: true,
         voice,
-        taskId: activation.taskId,
-        onTextDelta: (delta) => sentences.push(delta)
+        taskId: activation.taskId
       });
-      sentences.flush();
-      if (voice && result.speech && !streamed) queueSpeech(result.speech);
+      if (voice && result.speech) queueSpeech(result.speech);
       if (!voice && result.response) notifyHiddenSupervisorUpdate(result.response);
       if (result.needsEnrichment) {
         if (!activationStillCurrent(voiceSnapshot.targets, voiceSnapshot.isCurrent)) throw staleActivationError();
@@ -3361,6 +3383,13 @@ async function getWindowsPtyHostClient() {
   return windowsPtyHostConnection;
 }
 
+function liveSessionStillWorking(sessionId) {
+  const metadata = mobileWorkspace.sessions.find((item) => item.id === sessionId);
+  if (metadata?.busy) return true;
+  const screen = captureSessionViewport(sessions.get(sessionId));
+  return /(?:working|thinking|running|processing|waiting(?:\s+for\s+background\s+terminal)?)\s*\([^\n)]*(?:esc|ctrl\s*\+\s*c)\s+to\s+interrupt[^\n)]*\)/iu.test(screen);
+}
+
 function disconnectWindowsPtyHost() {
   windowsPtyHostClient?.disconnect();
   windowsPtyHostClient = null;
@@ -3424,6 +3453,7 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
+    observedPullRequestLinksFingerprint: '',
     githubPushOutput: '',
     githubActivityOutput: '',
     pendingLocalHeadSha: '',
@@ -3625,6 +3655,7 @@ function registerIpc() {
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
     reconcileWorkspaceAttention();
+    observeWorkspacePullRequestLinks();
     broadcastMobileSnapshot();
     broadcastAgentState();
   });

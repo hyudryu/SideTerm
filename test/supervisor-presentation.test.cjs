@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { PresentationCoordinator, deterministicPresentation, presentationDelivered } = require('../electron/supervisor/presentation.cjs');
 
 test('deterministic presenter gives useful trusted updates', () => {
-  assert.equal(deterministicPresentation({ kind: 'COMPLETED', title: 'Toolbar', summary: 'Tests pass.' }), 'Toolbar finished. Tests pass.');
+  assert.equal(deterministicPresentation({ kind: 'COMPLETED', title: 'Toolbar', summary: 'Tests pass.' }), '');
   assert.equal(deterministicPresentation({ kind: 'INPUT_REQUIRED', title: 'API' }), 'API needs your input.');
 });
 

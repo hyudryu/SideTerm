@@ -29,6 +29,11 @@ test('a bare agent launch retires the previous activity cycle and timer', () => 
   assert.match(renderer, /retireSessionActivityCycle\(session, \{ suppressAutoArmUntilIdle: true \}\)/);
 });
 
+test('work resuming after an early report opens a fresh completion cycle', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(source, /agentIsWorking && session\.activityCycleId[\s\S]*session\.lastReportedCycleId === session\.activityCycleId[\s\S]*session\.activityCycleId = crypto\.randomUUID\(\)/);
+});
+
 test('terminal bells cannot notify before their rendered activity frame is evaluated', () => {
   const bellHandler = renderer.match(/terminal\.onBell\(\(\) => \{[\s\S]*?\n  \}\);/)?.[0] || '';
   assert.ok(bellHandler);

@@ -20,12 +20,15 @@ function parsePullRequestUrl(value) {
 function githubCliAvailable(environment = process.env) {
   return String(environment.PATH || '').split(path.delimiter).some((directory) => {
     if (!directory) return false;
-    try {
-      fs.accessSync(path.join(directory, 'gh'), fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
+    for (const executable of ['gh', 'gh.exe']) {
+      try {
+        fs.accessSync(path.join(directory, executable), fs.constants.X_OK);
+        return true;
+      } catch {
+        // Keep checking PATHEXT-compatible names on Windows.
+      }
     }
+    return false;
   });
 }
 
@@ -48,25 +51,55 @@ function githubRepositoryOwner(cwd) {
   }
 }
 
-function githubEnvironment(owner) {
+function githubRepositoryFromArgs(args = []) {
+  const text = args.map(String).join(' ');
+  return text.match(/(?:https:\/\/github\.com\/|\brepos\/)([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)/i)?.[1] || '';
+}
+
+function githubEnvironment(owner, repository = '') {
   const environment = { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1' };
   if (!owner || environment.GH_TOKEN || environment.GITHUB_TOKEN) return environment;
-  if (!githubTokenCache.has(owner)) {
+  const cacheKey = repository || owner;
+  if (!githubTokenCache.has(cacheKey)) {
+    let selectedToken = null;
     try {
       const authEnvironment = { ...process.env };
       delete authEnvironment.GH_TOKEN;
       delete authEnvironment.GITHUB_TOKEN;
-      const token = execFileSync('gh', ['auth', 'token', '--hostname', 'github.com', '--user', owner], {
-        encoding: 'utf8',
-        env: authEnvironment,
-        stdio: ['ignore', 'pipe', 'ignore']
-      }).trim();
-      githubTokenCache.set(owner, token || null);
+      const status = JSON.parse(execFileSync('gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'], {
+        encoding: 'utf8', env: authEnvironment, stdio: ['ignore', 'pipe', 'ignore']
+      }) || '{}');
+      const accounts = (status?.hosts?.['github.com'] || [])
+        .filter((account) => account?.state === 'success' && account?.login)
+        .sort((left, right) => Number(right.active) - Number(left.active));
+      for (const account of accounts) {
+        try {
+          const token = execFileSync('gh', ['auth', 'token', '--hostname', 'github.com', '--user', account.login], {
+            encoding: 'utf8', env: authEnvironment, stdio: ['ignore', 'pipe', 'ignore']
+          }).trim();
+          if (!token) continue;
+          if (repository) {
+            execFileSync('gh', ['api', `repos/${repository}`], {
+              encoding: 'utf8',
+              env: { ...authEnvironment, GH_TOKEN: token, GH_PAGER: 'cat', NO_COLOR: '1' },
+              stdio: ['ignore', 'ignore', 'ignore'],
+              timeout: 10_000
+            });
+          } else if (String(account.login).toLowerCase() !== String(owner).toLowerCase()) {
+            continue;
+          }
+          selectedToken = token;
+          break;
+        } catch {
+          // Try the next authenticated account when this one cannot read the repository.
+        }
+      }
     } catch {
-      githubTokenCache.set(owner, null);
+      // Fall back to the active gh account below.
     }
+    githubTokenCache.set(cacheKey, selectedToken);
   }
-  const token = githubTokenCache.get(owner);
+  const token = githubTokenCache.get(cacheKey);
   if (token) environment.GH_TOKEN = token;
   return environment;
 }
@@ -78,7 +111,7 @@ async function runGh(args, options = {}) {
       cwd: options.cwd,
       timeout: options.timeout || 20_000,
       maxBuffer: 32 * 1024 * 1024,
-      env: githubEnvironment(options.owner)
+      env: githubEnvironment(options.owner, githubRepositoryFromArgs(args))
     });
     return stdout;
   } catch (error) {
@@ -319,6 +352,7 @@ module.exports = {
   fetchPullRequest,
   flattenPages,
   githubCliAvailable,
+  githubRepositoryFromArgs,
   githubRepositoryOwner,
   isCodexAuthor,
   isActionableCodexComment,

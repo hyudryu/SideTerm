@@ -59,6 +59,13 @@ test('GitHub pull request URLs are captured across terminal output chunks', () =
   assert.deepEqual(second.urls, ['https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pull/684']);
 });
 
+test('URL capture waits for a complete pull request number at a chunk boundary', () => {
+  const partial = scanTerminalUrls('', 'Review https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pull/7');
+  assert.deepEqual(partial.urls, []);
+  const complete = scanTerminalUrls(partial.buffer, '09\n');
+  assert.deepEqual(complete.urls, ['https://github.com/Andorra-Labs/Andorra-Labs-Alpha/pull/709']);
+});
+
 test('URL capture keeps only canonical GitHub pull requests', () => {
   const result = scanTerminalUrls('', [
     'https://github.com/Andorra-Labs/Andorra-Labs-Alpha/issues/12',
@@ -88,6 +95,12 @@ test('coding-agent work indicators keep an armed session busy through quiet outp
   assert.equal(isAgentWorkingText(hermes), true);
   assert.equal(shouldKeepSessionBusy(true, codex), true);
   assert.equal(shouldKeepSessionBusy(false, codex), false);
+});
+
+test('Codex background terminal waits remain working', () => {
+  const waiting = 'Waiting for background terminal (4m 02s • esc to interrupt) · 1 background terminal running';
+  assert.equal(agentActivityState(waiting), 'working');
+  assert.equal(shouldKeepSessionBusy(true, waiting), true);
 });
 
 test('Codex remains working while its editable prompt and footer stay visible', () => {

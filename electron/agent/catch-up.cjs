@@ -66,7 +66,10 @@ function isNoUpdateResponse(value) {
 }
 
 function automaticPresenterSentinel(value) {
-  const normalized = String(value || '').trim().replace(/[.!]+$/, '').toUpperCase();
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const normalized = text.replace(/[.!]+$/, '').toUpperCase();
+  const explicitNoAttention = /(?:^|[.!?]\s+)(?:nothing(?: else)? (?:needs|requires) (?:your )?(?:attention|input|action)(?: right now)?|no (?:further )?(?:action|input) (?:is )?(?:needed|required)(?: right now)?|you(?:'re| are) (?:all )?caught up)[.!?]*$/i.test(text);
+  if (explicitNoAttention) return 'NO_UPDATE';
   return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT' ? normalized : '';
 }
 

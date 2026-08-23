@@ -69,6 +69,32 @@ test('automatic presenter sentinels are never spoken as updates', () => {
   assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
   assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
   assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
+  assert.equal(automaticPresenterSentinel("One session is working, and another is waiting on PR 709. Nothing needs your attention right now."), 'NO_UPDATE');
+  assert.equal(automaticPresenterSentinel('You are all caught up.'), 'NO_UPDATE');
+  assert.equal(automaticPresenterSentinel('Nothing needs your attention except the failed deployment.'), '');
+});
+
+test('automatic updates wait for final classification before presentation', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const proactive = main.match(/async function runProactiveCatchUp[\s\S]*?function scheduleProactiveCatchUp/)?.[0] || '';
+  assert.doesNotMatch(proactive, /onTextDelta/);
+  assert.doesNotMatch(proactive, /SentenceBuffer/);
+  assert.match(proactive, /await chatWithSupervisor[\s\S]*if \(voice && result\.speech\) queueSpeech\(result\.speech\)/);
+});
+
+test('a stale completion is suppressed while its live session is still working', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function liveSessionStillWorking\(sessionId\)[\s\S]*waiting[\s\S]*to\\s\+interrupt/);
+  assert.match(main, /const staleCompletion = Boolean\([\s\S]*item\.kind === 'COMPLETED'[\s\S]*liveSessionStillWorking\(item\.sessionId\)/);
+  assert.match(main, /if \(event\.kind === 'COMPLETED' && liveSessionStillWorking\(event\.sessionId\)\)[\s\S]*acknowledge\(\)/);
+});
+
+test('voice activation does not pre-ping before finding an actionable update', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const activation = main.match(/async function performVoiceActivationUpdate[\s\S]*?async function requestVoiceActivationUpdate/)?.[0] || '';
+  assert.doesNotMatch(activation, /one sec|checking the latest/i);
+  assert.match(activation, /automatic: true/);
+  assert.match(activation, /if \(!result\.speech\) return/);
 });
 
 test('proactive enrichment also suppresses presenter sentinels', () => {

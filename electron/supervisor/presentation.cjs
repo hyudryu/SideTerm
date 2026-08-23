@@ -8,7 +8,10 @@ function deterministicPresentation(event = {}) {
     case 'REVIEW_RECEIVED': return summary || `${name} received new review feedback.`;
     case 'CI_FAILED': return summary || `${name} has a failing check.`;
     case 'WATCH_CONDITION_MET': return summary || `${name} reached the condition you asked me to watch for.`;
-    case 'COMPLETED': return summary ? `${name} finished. ${summary}` : `${name} finished.`;
+    // Completion summaries frequently describe a transient repaint or an
+    // intermediate step. Let the automatic presenter decide whether the
+    // evidence is actually worth interrupting the user for.
+    case 'COMPLETED': return '';
     case 'CI_PASSED': return summary || `${name} checks passed.`;
     default: return summary;
   }

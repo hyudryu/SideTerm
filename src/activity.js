@@ -84,6 +84,12 @@ export function scanTerminalUrls(previousBuffer, chunk) {
   const urls = new Set();
 
   for (const match of buffer.matchAll(/https?:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/\d+(?:\/[^\s<>"'`]*)?/gi)) {
+    const endsAtBufferBoundary = (match.index || 0) + match[0].length === buffer.length;
+    const hasPathAfterNumber = /\/pull\/\d+\//i.test(match[0]);
+    // A TUI commonly paints a URL one character at a time. Do not retain /pull/7
+    // while /pull/709 is still arriving; the rolling buffer will capture it as
+    // soon as a delimiter or path suffix proves the number is complete.
+    if (endsAtBufferBoundary && !hasPathAfterNumber) continue;
     const normalized = normalizeGithubPullRequestUrl(match[0]);
     if (normalized) urls.add(normalized);
   }
@@ -111,7 +117,7 @@ function lastMatchIndex(text, patterns) {
 export function agentActivityState(value) {
   const text = String(value);
   const workingIndex = lastMatchIndex(text, [
-    /(?:working|thinking|running|processing)\s*\([^\n)]*(?:esc|ctrl\s*\+\s*c)\s+to\s+interrupt[^\n)]*\)/giu,
+    /(?:working|thinking|running|processing|waiting(?:\s+for\s+background\s+terminal)?)\s*\([^\n)]*(?:esc|ctrl\s*\+\s*c)\s+to\s+interrupt[^\n)]*\)/giu,
     /⏱\s*\d+(?:m|s|h)[\s\S]{0,400}?(?:msg=interrupt|ctrl\s*\+\s*c\s+cancel)/giu
   ]);
   const idleIndex = lastMatchIndex(text, [

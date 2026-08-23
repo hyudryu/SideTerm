@@ -885,7 +885,9 @@ function trackTerminalInput(session, data) {
         }
         const agent = detectedAgent(command);
         if (agent) session.agent = agent;
-        appendSessionContext(session, `$ ${command}`);
+        // The newline proves a trailing PR number is complete to the streaming
+        // URL scanner, so task URLs are enrolled even when the URL ends the input.
+        appendSessionContext(session, `$ ${command}\n`);
         if (!isShellLevelAgentLaunch(command, visibleTerminalText(session.terminal))) {
           session.hasUserActivity = true;
           session.activityArmed = true;
@@ -2710,6 +2712,13 @@ function noteSessionBusy(session, data) {
   const agentIsWorking = activityState === 'working';
   if (activityState === 'idle') session.suppressAutoArmUntilIdle = false;
   if (agentIsWorking) session.lastWorkingAt = Date.now();
+  if (agentIsWorking && session.activityCycleId
+    && session.lastReportedCycleId === session.activityCycleId) {
+    // An agent can briefly repaint an idle prompt between tool calls. If work
+    // resumes after that repaint was reported, start a fresh cycle so the real
+    // completion is still delivered later.
+    session.activityCycleId = crypto.randomUUID();
+  }
   if (!output.trim() && !agentIsWorking) return;
   if (agentIsWorking && !session.activityArmed && session.notified) {
     // A new run supersedes the unread dot from the previous one; the spinner

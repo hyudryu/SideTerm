@@ -9,6 +9,7 @@ const {
   commentRevisionKey,
   flattenPages,
   githubCliAvailable,
+  githubRepositoryFromArgs,
   githubRepositoryOwner,
   hasCodexThumbsUp,
   isActionableCodexComment,
@@ -28,6 +29,36 @@ test('GitHub monitor accepts only canonical pull request URLs', () => {
     owner: 'hyudryu', repo: 'SideTerm', number: 2, url: 'https://github.com/hyudryu/SideTerm/pull/2'
   });
   assert.throws(() => parsePullRequestUrl('https://github.com/hyudryu/SideTerm/issues/2'), /pull request URL/);
+});
+
+test('GitHub CLI detection accepts the Windows executable name', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-gh-'));
+  try {
+    const executable = path.join(directory, 'gh.exe');
+    fs.writeFileSync(executable, '');
+    fs.chmodSync(executable, 0o755);
+    assert.equal(githubCliAvailable({ PATH: directory }), true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('GitHub account selection is scoped to the repository in each command', () => {
+  assert.equal(
+    githubRepositoryFromArgs(['api', 'repos/Andorra-Labs/Andorra-Labs-Alpha/pulls/709']),
+    'Andorra-Labs/Andorra-Labs-Alpha'
+  );
+  assert.equal(
+    githubRepositoryFromArgs(['pr', 'view', 'https://github.com/hyudryu/SideTerm/pull/22']),
+    'hyudryu/SideTerm'
+  );
+});
+
+test('captured task links enroll without injecting duplicate terminal input', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function observeWorkspacePullRequestLinks\(\)[\s\S]*preferLinks: true,[\s\S]*dispatchExistingComments: false/);
+  assert.match(main, /details\.dispatchExistingComments !== false[\s\S]*sendCodexFixRequest/);
+  assert.match(main, /mobile:update-workspace[\s\S]*observeWorkspacePullRequestLinks\(\)/);
 });
 
 test('approved merge actions execute the canonical pull request once', async () => {
