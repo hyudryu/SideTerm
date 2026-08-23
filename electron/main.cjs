@@ -47,6 +47,7 @@ const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, conve
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
+const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
 const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
@@ -3370,6 +3371,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
       TERM_PROGRAM: 'SideTerm'
     }
   });
+  const outputNormalizer = createWindowsVtOutputNormalizer();
 
   const session = {
     processHandle,
@@ -3387,15 +3389,20 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     lastGithubCommitFingerprint: ''
   };
   sessions.set(id, session);
-  processHandle.onData((data) => {
+  const forwardOutput = (data) => {
+    if (!data) return;
     observePotentialGitPush(id, data);
     send('terminal:data', { id, data });
     session.mobileRevision += 1;
     session.mobileOutputBuffer = `${session.mobileOutputBuffer}${data}`.slice(-300_000);
     broadcastMobile({ type: 'terminal:activity', id, revision: session.mobileRevision });
     scheduleMobileTerminalFrame(id);
+  };
+  processHandle.onData((data) => {
+    forwardOutput(outputNormalizer.push(data));
   });
   processHandle.onExit(({ exitCode, signal }) => {
+    forwardOutput(outputNormalizer.flush());
     clearMobileTerminalFrame(id);
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
