@@ -3371,8 +3371,6 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
       TERM_PROGRAM: 'SideTerm'
     }
   });
-  const outputNormalizer = createWindowsVtOutputNormalizer();
-
   const session = {
     processHandle,
     tmux,
@@ -3390,7 +3388,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   };
   sessions.set(id, session);
   const forwardOutput = (data) => {
-    if (!data) return;
+    if (!data || sessions.get(id) !== session) return;
     observePotentialGitPush(id, data);
     send('terminal:data', { id, data });
     session.mobileRevision += 1;
@@ -3398,10 +3396,16 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     broadcastMobile({ type: 'terminal:activity', id, revision: session.mobileRevision });
     scheduleMobileTerminalFrame(id);
   };
+  const outputNormalizer = createWindowsVtOutputNormalizer({ onOutput: forwardOutput });
+  session.outputNormalizer = outputNormalizer;
   processHandle.onData((data) => {
     forwardOutput(outputNormalizer.push(data));
   });
   processHandle.onExit(({ exitCode, signal }) => {
+    if (sessions.get(id) !== session) {
+      outputNormalizer.dispose();
+      return;
+    }
     forwardOutput(outputNormalizer.flush());
     clearMobileTerminalFrame(id);
     if (mobileSocketServer) {
@@ -3432,6 +3436,7 @@ function closeSession(id) {
   const session = sessions.get(id);
   if (!session) return;
   clearMobileTerminalFrame(id);
+  session.outputNormalizer?.dispose();
   sessions.delete(id);
   if (session.tmux && session.tmuxSession) {
     try {
@@ -3451,6 +3456,7 @@ function closeSession(id) {
 function detachAllSessions() {
   for (const [id, session] of sessions) {
     clearMobileTerminalFrame(id);
+    session.outputNormalizer?.dispose();
     sessions.delete(id);
     try {
       session.processHandle.kill();

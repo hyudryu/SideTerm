@@ -1,47 +1,91 @@
 const ESC = '\u001b';
 const CP437_ESCAPE = '\u2190';
 const KIMI_SYNC_OUTPUT_SENTINEL = `${CP437_ESCAPE}[?2026h`;
-const PROBE_LIMIT = 512;
-
-function brokenAnsiSequenceCount(value) {
-  return (String(value || '').match(/\u2190(?:\[[0-?]+[ -/]*[@-~]|\](?:\d{1,4};|8;;))/g) || []).length;
-}
+const DEFAULT_PENDING_DELAY_MS = 25;
 
 function shouldRepairWindowsVtOutput(value) {
-  const text = String(value || '');
-  return text.includes(KIMI_SYNC_OUTPUT_SENTINEL) || brokenAnsiSequenceCount(text) >= 3;
+  return String(value || '').includes(KIMI_SYNC_OUTPUT_SENTINEL);
 }
 
 function repairWindowsVtOutput(value) {
-  return String(value || '').replace(/\u2190(?=[\[\]P^_\\])/g, ESC);
+  return String(value || '').replace(/\u2190(?=[\[\]PX^_\\78=>cDEHMNOZ()*+\-./%#])/g, ESC);
 }
 
-function createWindowsVtOutputNormalizer({ enabled = process.platform === 'win32' } = {}) {
-  let probe = '';
+function sentinelPrefixLength(value) {
+  const text = String(value || '');
+  const limit = Math.min(text.length, KIMI_SYNC_OUTPUT_SENTINEL.length - 1);
+  for (let length = limit; length > 0; length -= 1) {
+    if (text.endsWith(KIMI_SYNC_OUTPUT_SENTINEL.slice(0, length))) return length;
+  }
+  return 0;
+}
+
+function createWindowsVtOutputNormalizer({
+  enabled = process.platform === 'win32',
+  onOutput = () => {},
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  pendingDelayMs = DEFAULT_PENDING_DELAY_MS
+} = {}) {
   let repairing = false;
-  let pendingArrow = '';
+  let pending = '';
+  let pendingTimer = null;
+
+  function cancelPendingTimer() {
+    if (pendingTimer === null) return;
+    clearTimer(pendingTimer);
+    pendingTimer = null;
+  }
+
+  function schedulePendingRelease() {
+    cancelPendingTimer();
+    pendingTimer = setTimer(() => {
+      pendingTimer = null;
+      const output = pending;
+      pending = '';
+      if (output) onOutput(output);
+    }, pendingDelayMs);
+  }
 
   return {
     push(value) {
       let text = String(value || '');
       if (!enabled) return text;
 
-      text = `${pendingArrow}${text}`;
-      pendingArrow = '';
-      if (text.endsWith(CP437_ESCAPE)) {
-        pendingArrow = CP437_ESCAPE;
-        text = text.slice(0, -CP437_ESCAPE.length);
+      cancelPendingTimer();
+      text = `${pending}${text}`;
+      pending = '';
+
+      if (!repairing) {
+        if (shouldRepairWindowsVtOutput(text)) {
+          repairing = true;
+          return repairWindowsVtOutput(text);
+        }
+        const prefixLength = sentinelPrefixLength(text);
+        if (!prefixLength) return text;
+        pending = text.slice(-prefixLength);
+        schedulePendingRelease();
+        return text.slice(0, -prefixLength);
       }
 
-      probe = `${probe}${text}`.slice(-PROBE_LIMIT);
-      if (!repairing && shouldRepairWindowsVtOutput(probe)) repairing = true;
-      return repairing ? repairWindowsVtOutput(text) : text;
+      if (text.endsWith(CP437_ESCAPE)) {
+        pending = CP437_ESCAPE;
+        text = text.slice(0, -CP437_ESCAPE.length);
+        schedulePendingRelease();
+      }
+      return repairWindowsVtOutput(text);
     },
 
     flush() {
-      const text = pendingArrow;
-      pendingArrow = '';
-      return text;
+      cancelPendingTimer();
+      const output = pending;
+      pending = '';
+      return output;
+    },
+
+    dispose() {
+      cancelPendingTimer();
+      pending = '';
     },
 
     get repairing() {
@@ -51,8 +95,8 @@ function createWindowsVtOutputNormalizer({ enabled = process.platform === 'win32
 }
 
 module.exports = {
-  brokenAnsiSequenceCount,
   createWindowsVtOutputNormalizer,
   repairWindowsVtOutput,
+  sentinelPrefixLength,
   shouldRepairWindowsVtOutput
 };
