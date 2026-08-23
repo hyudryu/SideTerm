@@ -122,9 +122,14 @@ export function shouldKeepSessionBusy(activityArmed, visibleTerminalText, option
   if (!activityArmed) return false;
   const state = agentActivityState(visibleTerminalText);
   if (state === 'working') return true;
-  if (state === 'idle') return false;
   const lastWorkingAt = Math.max(0, Number(options.lastWorkingAt) || 0);
   const now = Math.max(0, Number(options.now) || Date.now());
+  if (state === 'idle') {
+    // Agent TUIs can repaint mid-task without their working indicator, so an
+    // idle reading only settles the session once no work was seen for a while.
+    const idleGraceMs = Math.max(0, Number(options.idleGraceMs) || 0);
+    return idleGraceMs > 0 && lastWorkingAt > 0 && now - lastWorkingAt <= idleGraceMs;
+  }
   const unknownGraceMs = Math.max(0, Number(options.unknownGraceMs) || 0);
   return lastWorkingAt > 0 && now - lastWorkingAt <= unknownGraceMs;
 }

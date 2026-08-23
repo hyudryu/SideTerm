@@ -37,6 +37,7 @@ const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
 // Restored sessions get a longer window: tmux attach redraws and slow shell
 // startup output must not count as a fresh response after an app reboot.
 const RESTORE_REDRAW_SUPPRESS_MS = 5_000;
+const AGENT_IDLE_GRACE_MS = 10_000;
 const AI_INITIAL_CONTEXT_DELAY_MS = 30_000;
 const AI_SUMMARY_BUSY_RETRY_DELAY_MS = 1_000;
 const AI_SUMMARY_REQUEST_TIMEOUT_MS = 15_000;
@@ -869,8 +870,13 @@ function trackTerminalInput(session, data) {
           session.activityScanBuffer = '';
           session.lastWorkingAt = 0;
           session.notifyWhenIdle = false;
+          session.suppressAutoArmUntilIdle = false;
           scheduleAiSummary(session);
           schedulePersist();
+        } else {
+          // Merely launching an agent is not a task; its startup working/idle
+          // frames must not create a completion event.
+          session.suppressAutoArmUntilIdle = true;
         }
       }
       session.commandBuffer = '';
@@ -2486,7 +2492,7 @@ function isSessionForeground(session) {
 }
 
 function markSessionNotification(session) {
-  if (!session || isSessionForeground(session) || session.notified) return;
+  if (!session || session.busy || isSessionForeground(session) || session.notified) return;
   session.notified = true;
   session.attentionCycleId = session.activityCycleId || crypto.randomUUID();
   session.activityArmed = false;
@@ -2494,6 +2500,17 @@ function markSessionNotification(session) {
   updateSessionItem(session);
   updateVisualState();
   schedulePersist();
+}
+
+function clearSessionNotification(session) {
+  if (!session?.notified) return;
+  const cycleId = session.attentionCycleId;
+  session.notified = false;
+  session.attentionCycleId = '';
+  updateSessionItem(session);
+  updateVisualState();
+  schedulePersist();
+  if (cycleId) void api.acknowledgeSessionAttention(session.id, cycleId).catch(() => {});
 }
 
 function acknowledgeSessionNotification(session) {
@@ -2559,9 +2576,13 @@ function refreshSessionInputRequired(session, visibleText = visibleTerminalText(
 
 function settleSessionBusy(session) {
   if (!session?.busy) return;
-  if (shouldKeepSessionBusy(session.activityArmed, visibleTerminalText(session.terminal), {
+  const visible = visibleTerminalText(session.terminal);
+  const activityState = agentActivityState(visible);
+  if (activityState === 'working') session.lastWorkingAt = Date.now();
+  if (shouldKeepSessionBusy(session.activityArmed, visible, {
     lastWorkingAt: session.lastWorkingAt,
-    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS,
+    idleGraceMs: AGENT_IDLE_GRACE_MS
   })) {
     session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
     return;
@@ -2572,8 +2593,13 @@ function settleSessionBusy(session) {
   updateSessionItem(session);
   reportSessionCompletion(session);
   if (session.notifyWhenIdle) {
-    session.notifyWhenIdle = false;
-    if (!isSessionForeground(session)) markSessionNotification(session);
+    if (activityState === 'idle') {
+      session.notifyWhenIdle = false;
+      if (!isSessionForeground(session)) markSessionNotification(session);
+    }
+    // An unknown reading only means the working indicator left the visible
+    // status rows, so the run may still be going: stay armed without latching
+    // the unread dot, and let the spinner return with the next output.
   } else if (isSessionForeground(session)) {
     session.activityArmed = false;
     schedulePersist();
@@ -2583,9 +2609,12 @@ function settleSessionBusy(session) {
 function recheckSuppressedAgentBusy(session) {
   session.busyTimer = null;
   if (!session.activityArmed || session.notified || session.exited) return;
-  if (!shouldKeepSessionBusy(true, visibleTerminalText(session.terminal), {
+  const visible = visibleTerminalText(session.terminal);
+  if (agentActivityState(visible) === 'working') session.lastWorkingAt = Date.now();
+  if (!shouldKeepSessionBusy(true, visible, {
     lastWorkingAt: session.lastWorkingAt,
-    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS
+    unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS,
+    idleGraceMs: AGENT_IDLE_GRACE_MS
   })) {
     session.activityArmed = false;
     schedulePersist();
@@ -2605,9 +2634,15 @@ function noteSessionBusy(session, data) {
     ? agentActivityState(session.activityScanBuffer)
     : visibleState;
   const agentIsWorking = activityState === 'working';
+  if (activityState === 'idle') session.suppressAutoArmUntilIdle = false;
   if (agentIsWorking) session.lastWorkingAt = Date.now();
   if (!output.trim() && !agentIsWorking) return;
-  if (canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
+  if (agentIsWorking && !session.activityArmed && session.notified) {
+    // A new run supersedes the unread dot from the previous one; the spinner
+    // takes over until this run finishes unread.
+    clearSessionNotification(session);
+  }
+  if (!session.suppressAutoArmUntilIdle && canAutoArmAgentActivity(session.activityArmed, session.notified, agentIsWorking)) {
     session.activityArmed = true;
     session.activityCycleId = crypto.randomUUID();
     session.notifyWhenIdle = !isSessionForeground(session);
@@ -2659,6 +2694,12 @@ function noteBackgroundActivity(session, data) {
   const meaningfulOutput = plainTerminalText(data).trim();
   if (!meaningfulOutput && !data.includes('\x07')) return;
   if (data.includes('\x07')) {
+    if (session.busy || agentActivityState(visibleTerminalText(session.terminal)) === 'working') {
+      // A beep during a run defers to the completion notification instead of
+      // latching the unread dot while the agent is still working.
+      session.notifyWhenIdle = true;
+      return;
+    }
     session.notifyWhenIdle = false;
     markSessionNotification(session);
     return;
