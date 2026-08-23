@@ -686,6 +686,13 @@ kbd { padding: 1px 4px; color: #aaa; background: #2e2e2e; border: 1px solid #444
 .agent-overview > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .agent-overview strong { font-size: 12px; }
 .agent-overview small { color: #888; font-size: 9px; }
+.voice-switch { position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer; }
+.voice-switch input { position: absolute; width: 0; height: 0; opacity: 0; }
+.voice-switch-slider { position: absolute; inset: 0; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; transition: background 120ms ease, border-color 120ms ease; }
+.voice-switch-slider::before { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #aaa; border-radius: 50%; transition: transform 120ms ease, background 120ms ease; }
+.voice-switch input:checked + .voice-switch-slider { background: rgba(96,205,255,.25); border-color: var(--accent); }
+.voice-switch input:checked + .voice-switch-slider::before { transform: translateX(16px); background: var(--accent); }
+.voice-switch input:focus-visible + .voice-switch-slider { outline: 1px solid var(--accent); outline-offset: 2px; }
 .agent-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .agent-metrics article { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 13px 14px; background: linear-gradient(145deg, rgba(255,255,255,.045), rgba(255,255,255,.018)); border: 1px solid rgba(255,255,255,.075); border-radius: 8px; }
 .agent-metrics span { overflow: hidden; color: #858585; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
