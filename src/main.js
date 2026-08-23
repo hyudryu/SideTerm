@@ -137,7 +137,7 @@ document.querySelector('#app').innerHTML = `
   <main class="app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}">
     <aside class="sidebar" aria-label="Terminal sessions">
       <header class="brand-row">
-        <div class="brand-mark" aria-hidden="true">&rsaquo;_</div>
+        <div class="brand-mark" aria-hidden="true">&gt;ω&lt;</div>
         <div class="brand-copy">
           <strong>SideTerm</strong>
           <span>A better terminal</span>
