@@ -51,7 +51,8 @@
     "asarUnpack": [
       "node_modules/node-pty/**",
       "node_modules/ffmpeg-static/**",
-      "electron/voice/sidecar.py"
+      "electron/voice/sidecar.py",
+      "electron/voice/windows-media.ps1"
     ],
     "files": [
       "dist/**/*",

@@ -47,6 +47,7 @@ const AI_SUMMARY_RETRY_DELAY_MS = 30_000;
 const AI_SUMMARY_FAILURE_COOLDOWN_MS = 5 * 60_000;
 const MAX_CONTEXT_CHARS = 16_000;
 const VOICE_REPLY_WINDOW_MS = 30_000;
+const VOICE_MEDIA_TRANSITION_MS = 1_000;
 const GROUP_SORT_OPTIONS = [
   { value: 'default', label: 'Default', initialDirection: 'asc' },
   { value: 'created', label: 'Date created', initialDirection: 'desc' },
@@ -130,6 +131,9 @@ let voiceReplyUntil = 0;
 let voiceReplyInteractionId = '';
 let voiceShortcutBypassUntil = 0;
 let agentSpeechQueue = Promise.resolve(true);
+let voiceMediaPaused = false;
+let voiceMediaGeneration = 0;
+let voiceMediaResumeTimer = null;
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
 let aiSummaryCooldownUntil = 0;
@@ -1936,25 +1940,72 @@ async function installSpeech(kind) {
   }
 }
 
-async function playSpeechAudio(audio) {
+function waitForVoiceMediaTransition(delayMs = VOICE_MEDIA_TRANSITION_MS) {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+function clearVoiceMediaResumeTimer() {
+  if (voiceMediaResumeTimer) window.clearTimeout(voiceMediaResumeTimer);
+  voiceMediaResumeTimer = null;
+}
+
+async function resumeVoiceMedia(generation, delayMs = VOICE_MEDIA_TRANSITION_MS) {
+  if (!voiceMediaPaused || generation !== voiceMediaGeneration) return false;
+  clearVoiceMediaResumeTimer();
+  if (delayMs > 0) await waitForVoiceMediaTransition(delayMs);
+  if (!voiceMediaPaused || generation !== voiceMediaGeneration) return false;
+  await api.resumeDesktopMedia().catch(() => {});
+  if (generation === voiceMediaGeneration) voiceMediaPaused = false;
+  return true;
+}
+
+function scheduleVoiceMediaResume(generation, delayMs) {
+  clearVoiceMediaResumeTimer();
+  voiceMediaResumeTimer = window.setTimeout(() => {
+    voiceMediaResumeTimer = null;
+    void resumeVoiceMedia(generation, 0);
+  }, delayMs);
+}
+
+async function pauseVoiceMediaBeforeSpeech() {
+  const generation = ++voiceMediaGeneration;
+  clearVoiceMediaResumeTimer();
+  const status = await api.pauseDesktopMedia().catch(() => ({}));
+  if (Number(status?.paused) > 0 || Number(status?.held) > 0) voiceMediaPaused = true;
+  await waitForVoiceMediaTransition();
+  return generation;
+}
+
+async function finishVoiceMediaAfterSpeech(generation, { completed, expectingResponse }) {
+  if (!voiceMediaPaused || generation !== voiceMediaGeneration) return;
+  if (completed && expectingResponse) {
+    scheduleVoiceMediaResume(generation, VOICE_REPLY_WINDOW_MS + VOICE_MEDIA_TRANSITION_MS);
+    return;
+  }
+  await resumeVoiceMedia(generation);
+}
+
+async function playSpeechAudio(audio, { expectingResponse = false } = {}) {
   if (!audio?.data) throw new Error('The speech runtime returned no audio.');
   voiceCaptureMuted = true;
-  await api.pauseDesktopMedia().catch(() => {});
+  const mediaGeneration = await pauseVoiceMediaBeforeSpeech();
+  let completed = false;
   try {
     const player = new Audio(`data:${audio.mimeType || 'audio/wav'};base64,${audio.data}`);
     activeVoicePlayer = player;
     voiceBargeInStartedAt = 0;
     player.playbackRate = Math.max(0.75, Math.min(1.5, Number(audio.playbackRate) || 1));
     await player.play();
-    return await new Promise((resolve, reject) => {
+    completed = await new Promise((resolve, reject) => {
       player.addEventListener('ended', () => resolve(true), { once: true });
       player.addEventListener('sideterm-interrupted', () => resolve(false), { once: true });
       player.addEventListener('error', () => reject(new Error('Could not play the generated voice.')), { once: true });
     });
+    return completed;
   } finally {
     activeVoicePlayer = null;
     voiceBargeInStartedAt = 0;
-    await api.resumeDesktopMedia().catch(() => {});
+    await finishVoiceMediaAfterSpeech(mediaGeneration, { completed, expectingResponse });
     voiceCaptureMuted = false;
   }
 }
@@ -1972,7 +2023,9 @@ function interruptVoicePlayback() {
 async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}) {
   if (!desktopVoiceMode) return true;
   try {
-    const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
+    const completed = await playSpeechAudio(await api.synthesizeSpeech(text), {
+      expectingResponse: openReplyWindow
+    });
     if (completed && openReplyWindow) {
       voiceReplyInteractionId = String(interactionId || '');
       voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
@@ -2027,6 +2080,7 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
       label.textContent = transcript.reason || 'Waiting for the wake word';
       return;
     }
+    clearVoiceMediaResumeTimer();
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
       voiceReplyInteractionId = transcript.clarification.interactionId || '';
@@ -2045,6 +2099,9 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
     showToast(`Voice: ${error.message}`);
   } finally {
     voiceTranscriptionInFlight = false;
+    if (!voiceReplyUntil && voiceMediaPaused) {
+      scheduleVoiceMediaResume(voiceMediaGeneration, VOICE_MEDIA_TRANSITION_MS);
+    }
     if (desktopVoiceMode) {
       label.textContent = Date.now() <= voiceReplyUntil
         ? 'Listening for your reply'
@@ -2148,6 +2205,8 @@ function stopDesktopVoiceMode() {
   voiceReplyUntil = 0;
   voiceReplyInteractionId = '';
   voiceShortcutBypassUntil = 0;
+  clearVoiceMediaResumeTimer();
+  void resumeVoiceMedia(voiceMediaGeneration, 0);
   api.setAgentVoiceMode(false);
   if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
   voiceMonitorFrame = null;

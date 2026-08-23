@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { execFileSync, spawn } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } = require('./voice/runtime.cjs');
@@ -2626,6 +2626,33 @@ async function transcribeSpeech(audioBytes, mimeType = 'audio/webm', { allowWith
 
 const pausedMediaPlayers = new Set();
 
+function windowsMediaScriptPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', 'voice', 'windows-media.ps1')
+    : path.join(__dirname, 'voice', 'windows-media.ps1');
+}
+
+function runWindowsMediaControl(action, sessionIds = []) {
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', windowsMediaScriptPath(),
+      '-Action', action,
+      '-SessionIdsJson', JSON.stringify(sessionIds)
+    ], { encoding: 'utf8', timeout: 10_000, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      try {
+        resolve(JSON.parse(String(stdout || '{}').trim() || '{}'));
+      } catch (parseError) {
+        reject(parseError);
+      }
+    });
+  });
+}
+
 function mprisPlayers() {
   try {
     const output = execFileSync('/usr/bin/gdbus', ['call', '--session', '--dest', 'org.freedesktop.DBus', '--object-path', '/org/freedesktop/DBus', '--method', 'org.freedesktop.DBus.ListNames'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
@@ -2635,8 +2662,13 @@ function mprisPlayers() {
   }
 }
 
-function pauseDesktopMedia() {
-  pausedMediaPlayers.clear();
+async function pauseDesktopMedia() {
+  if (pausedMediaPlayers.size) return { paused: 0, held: pausedMediaPlayers.size };
+  if (process.platform === 'win32') {
+    const result = await runWindowsMediaControl('pause');
+    for (const sessionId of result.sessionIds || []) pausedMediaPlayers.add(String(sessionId));
+    return { paused: pausedMediaPlayers.size, held: pausedMediaPlayers.size };
+  }
   for (const player of mprisPlayers()) {
     try {
       const status = execFileSync('/usr/bin/gdbus', ['call', '--session', '--dest', player, '--object-path', '/org/mpris/MediaPlayer2', '--method', 'org.freedesktop.DBus.Properties.Get', 'org.mpris.MediaPlayer2.Player', 'PlaybackStatus'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
@@ -2645,10 +2677,16 @@ function pauseDesktopMedia() {
       pausedMediaPlayers.add(player);
     } catch {}
   }
-  return { paused: pausedMediaPlayers.size };
+  return { paused: pausedMediaPlayers.size, held: pausedMediaPlayers.size };
 }
 
-function resumeDesktopMedia() {
+async function resumeDesktopMedia() {
+  if (process.platform === 'win32' && pausedMediaPlayers.size) {
+    const sessionIds = [...pausedMediaPlayers];
+    const result = await runWindowsMediaControl('resume', sessionIds);
+    pausedMediaPlayers.clear();
+    return { resumed: Math.max(0, Number(result.resumed) || 0) };
+  }
   for (const player of pausedMediaPlayers) {
     try {
       execFileSync('/usr/bin/gdbus', ['call', '--session', '--dest', player, '--object-path', '/org/mpris/MediaPlayer2', '--method', 'org.mpris.MediaPlayer2.Player.Play'], { stdio: 'ignore' });
@@ -2873,6 +2911,7 @@ function resetDesktopVoiceActivation() {
   desktopVoiceActivationGeneration += 1;
   supervisorVoiceMode = false;
   settleDesktopPresentations(false);
+  void resumeDesktopMedia().catch(() => {});
 }
 
 function sanitizeMobileWorkspace(value) {
