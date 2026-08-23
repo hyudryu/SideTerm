@@ -2,6 +2,9 @@
 
 SideTerm is a native-feeling terminal for Ubuntu, Windows, and macOS with live shell sessions arranged in a resizable, collapsible left sidebar instead of tabs across the top. Its layout and shortcuts borrow the practical parts of Windows Terminal while keeping normal shell behavior intact.
 
+> [!IMPORTANT]
+> SideTerm is still a work in progress. Features, settings, and platform support may change as development continues.
+
 ## What it does
 
 - Runs real interactive shell sessions through a PTY (your configured `$SHELL` on Linux/macOS with Bash as fallback; PowerShell on Windows, overridable via `SIDETERM_SHELL`).
@@ -20,7 +23,7 @@ SideTerm is a native-feeling terminal for Ubuntu, Windows, and macOS with live s
 - Captures HTTP(S) links printed in each session and shows them chronologically from the link badge. GitHub links are filtered to canonical pull-request URLs and remain detectable when terminal output splits the URL across chunks.
 - Renames the active session by clicking its title in the top command bar; manual titles persist and override later shell title changes.
 - Provides an authenticated mobile web app from the phone icon beside Settings. Every Tailscale, local-network, and localhost address has its own collapsible QR code. It mirrors live groups and terminal sessions, supports touch-drag scrollback, includes a visible command/prompt composer and quick keys, and can be saved to a phone home screen.
-- Adds an opt-in persistent Strands supervisor that watches verified task-completion cycles across every session, delivers a concise catch-up on the next connection, and provides desktop/mobile chat, notifications, status, and confirmation cards.
+- Adds an opt-in persistent supervisor and voice agent that helps manage sessions: ask what is running or finished, inspect bounded session context, create and name sessions, receive completion catch-ups, and review proposed terminal actions or archival from desktop or mobile.
 - Queues the current branch pull request after a successful commit or push, checks open PRs every minute, routes new Codex review comments back to the linked coding chat, and asks before merging after Codex reacts 👍 to the main post.
 - Gives the supervisor narrow modular tools to inspect session context, create and relevantly name sessions, request archival, use semantic TUIs, and propose exact terminal input. Destructive or raw terminal actions remain policy- and confirmation-gated.
 - Adds optional DeepSeek Harness integration through an authenticated loopback bridge. Harness instructions use `followup`, `steer`, or `inject`; SideTerm does not type them into the agent PTY.
@@ -42,6 +45,8 @@ SideTerm recognizes common coding-agent commands including Codex, Hermes, Claude
 Open **Settings → Strands supervisor**, enable the agent, and customize its Personality and Agent instructions. It uses the same custom OpenAI-compatible API URL, model, and encrypted optional provider key as session naming. Its conversation snapshots, completion inbox, confirmations, and archived-session summaries persist locally across app restarts.
 
 The supervisor can list and inspect bounded session context, create a terminal with a relevant manual name, and request that completed sessions be archived. Any terminal input or archival request is shown as an Approve/Deny card on both desktop and mobile. Terminal output is treated as untrusted evidence rather than agent instructions.
+
+With voice mode enabled, the supervisor also works as a hands-free session manager. You can ask which sessions are active or finished, request a concise update, inspect a named session, create and name a new session, or respond to a proposed action. SideTerm keeps terminal input and archival behind explicit confirmation so voice interaction does not bypass its safety controls.
 
 Voice mode is off until explicitly enabled from an agent dashboard. NVIDIA Parakeet is the local/default speech-to-text provider. Deepgram, Google, Azure, AWS, and OpenAI are available only after selecting that cloud provider and saving its encrypted credential; SideTerm never silently changes providers. Install Pocket TTS separately, select one of its included voices, and use **Play preview** before saving. The configurable wake word and browser-side VAD reject short noise, breaths, and empty audio before invoking the agent. If recognition is uncertain, SideTerm pauses and asks colloquially, “Did you mean …?” instead of acting on a dubious transcript. After the supervisor speaks, its next reply window remains open for 30 seconds without requiring the wake word; unsolicited requests still require it.
 
