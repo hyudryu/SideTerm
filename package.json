@@ -20,6 +20,7 @@
     "build:web": "vite build",
     "generate:icon": "node scripts/generate-icon.mjs",
     "build": "npm run test && npm run build:web",
+    "pack:win": "npm run generate:icon && npm run build && electron-builder --win --dir --publish never --config.npmRebuild=false --config.electronDist=node_modules/electron/dist --config.directories.output=release-win-packaged",
     "dist": "npm run generate:icon && npm run build && electron-builder --linux deb AppImage",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -56,6 +57,7 @@
       "dist/**/*",
       "electron/**/*",
       "build/icon.png",
+      "build/icon.ico",
       "package.json"
     ],
     "extraResources": [
@@ -88,6 +90,13 @@
           "Keywords": "terminal;shell;console;command;prompt;"
         }
       }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "executableName": "SideTerm"
     },
     "deb": {
       "priority": "optional",
