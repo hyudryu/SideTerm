@@ -845,6 +845,20 @@ function appendSessionContext(session, text) {
   if (agent) session.agent = agent;
 }
 
+function retireSessionActivityCycle(session, { suppressAutoArmUntilIdle = false } = {}) {
+  window.clearTimeout(session.busyTimer);
+  session.busyTimer = null;
+  session.busy = false;
+  session.activityArmed = false;
+  session.activityCycleId = '';
+  session.activityScanBuffer = '';
+  session.lastWorkingAt = 0;
+  session.notifyWhenIdle = false;
+  session.suppressAutoArmUntilIdle = suppressAutoArmUntilIdle;
+  updateSessionItem(session);
+  schedulePersist();
+}
+
 function trackTerminalInput(session, data) {
   const input = stripTerminalControlInput(data);
   if (input) {
@@ -875,8 +889,8 @@ function trackTerminalInput(session, data) {
           schedulePersist();
         } else {
           // Merely launching an agent is not a task; its startup working/idle
-          // frames must not create a completion event.
-          session.suppressAutoArmUntilIdle = true;
+          // frames must not inherit or create a completion event.
+          retireSessionActivityCycle(session, { suppressAutoArmUntilIdle: true });
         }
       }
       session.commandBuffer = '';
@@ -2584,7 +2598,7 @@ function settleSessionBusy(session) {
     unknownGraceMs: SESSION_BUSY_UNKNOWN_GRACE_MS,
     idleGraceMs: AGENT_IDLE_GRACE_MS
   })) {
-    session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
+    scheduleSessionBusySettlement(session);
     return;
   }
   session.busy = false;
@@ -2606,6 +2620,16 @@ function settleSessionBusy(session) {
   }
 }
 
+function scheduleSessionBusySettlement(session) {
+  window.clearTimeout(session.busyTimer);
+  if (!session.busy) {
+    session.busy = true;
+    updateSessionItem(session);
+    schedulePersist();
+  }
+  session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
+}
+
 function recheckSuppressedAgentBusy(session) {
   session.busyTimer = null;
   if (!session.activityArmed || session.notified || session.exited) return;
@@ -2620,7 +2644,9 @@ function recheckSuppressedAgentBusy(session) {
     schedulePersist();
     return;
   }
-  noteSessionBusy(session, '');
+  // The visible state can be idle but still inside the grace period. Promote
+  // the armed cycle directly so it always gets another bounded settle pass.
+  scheduleSessionBusySettlement(session);
 }
 
 function noteSessionBusy(session, data) {
@@ -2658,13 +2684,7 @@ function noteSessionBusy(session, data) {
     }
     return;
   }
-  window.clearTimeout(session.busyTimer);
-  if (!session.busy) {
-    session.busy = true;
-    updateSessionItem(session);
-    schedulePersist();
-  }
-  session.busyTimer = window.setTimeout(() => settleSessionBusy(session), SESSION_BUSY_SETTLE_MS);
+  scheduleSessionBusySettlement(session);
 }
 
 function recordSessionResponse(session, data) {
@@ -2809,6 +2829,7 @@ async function addSession(cwd, options = {}) {
     activityCycleId: '',
     activityScanBuffer: '',
     lastWorkingAt: 0,
+    suppressAutoArmUntilIdle: false,
     lastReportedCycleId: '',
     persistent: false
   };
@@ -2854,7 +2875,6 @@ async function addSession(cwd, options = {}) {
     if (/^(?:Codex|Hermes|Claude|Gemini)$/i.test(String(session.agent || '').trim())) {
       setSessionInputRequired(session, true);
     }
-    if (session.activityArmed) markSessionNotification(session);
   });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
@@ -3120,10 +3140,12 @@ sessionList.addEventListener('dragend', cleanupDrag);
 api.onData(({ id, data }) => {
   const session = sessions.get(id);
   if (!session) return;
-  session.terminal.write(data, () => noteSessionBusy(session, data));
+  session.terminal.write(data, () => {
+    noteSessionBusy(session, data);
+    noteBackgroundActivity(session, data);
+  });
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
-  noteBackgroundActivity(session, data);
 });
 
 api.onRemoteInput(({ id, data }) => {
