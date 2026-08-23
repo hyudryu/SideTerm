@@ -31,6 +31,15 @@ function interpretApprovalAnswer(value) {
   return null;
 }
 
+function interpretConfirmationApprovalAnswer(value, confirmation) {
+  const answer = interpretApprovalAnswer(value);
+  if (answer !== null || confirmation?.source !== 'codex-review-handoff') return answer;
+  const text = String(value || '').trim().toLowerCase();
+  if (/\b(?:no|nope|not yet|don't|do not|cancel)\b/.test(text)) return false;
+  if (/\b(?:yes|okay|ok|please|go ahead)\b[\s\S]*\b(?:fix|address|handle)\b[\s\S]*\bcodex\b[\s\S]*\bcomments?\b/.test(text)) return true;
+  return null;
+}
+
 function shouldConsumeInteractionAnswer(interaction, text) {
   return interaction?.kind !== 'approval' || interpretApprovalAnswer(text) !== null;
 }
@@ -103,4 +112,10 @@ class PendingInteractionManager {
   }
 }
 
-module.exports = { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };
+module.exports = {
+  interpretApprovalAnswer,
+  interpretConfirmationApprovalAnswer,
+  PendingInteractionManager,
+  normalizePendingInteraction,
+  shouldConsumeInteractionAnswer
+};

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { interpretApprovalAnswer, PendingInteractionManager, shouldConsumeInteractionAnswer } = require('../electron/supervisor/interactions.cjs');
+const { interpretApprovalAnswer, interpretConfirmationApprovalAnswer, PendingInteractionManager, shouldConsumeInteractionAnswer } = require('../electron/supervisor/interactions.cjs');
 
 test('new events do not steal an answer from the active interaction', () => {
   const interactions = [];
@@ -22,6 +22,14 @@ test('approval answers are explicit and colloquial without guessing ambiguous sp
   assert.equal(interpretApprovalAnswer('maybe after the tests'), null);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'maybe after the tests'), false);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'yeah'), true);
+});
+
+test('the Codex review handoff accepts one explicit spoken instruction', () => {
+  const handoff = { source: 'codex-review-handoff' };
+  assert.equal(interpretConfirmationApprovalAnswer('Okay, go ahead and fix the Codex comments.', handoff), true);
+  assert.equal(interpretConfirmationApprovalAnswer('Not yet, I want to read the Codex comments.', handoff), false);
+  assert.equal(interpretConfirmationApprovalAnswer('Fix the thing', handoff), null);
+  assert.equal(interpretConfirmationApprovalAnswer('Okay, go ahead and fix the Codex comments.', { source: 'merge' }), null);
 });
 
 test('failed approval execution restores the same interaction for retry', () => {

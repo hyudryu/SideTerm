@@ -186,6 +186,12 @@ function hasCodexThumbsUp(pull, actorLogins) {
     && (reaction.authors || []).some((author) => isCodexAuthor(author, actorLogins)));
 }
 
+function hasCodexEyes(pull, actorLogins) {
+  return (pull?.reactions || []).some((reaction) => reaction.name === 'eyes'
+    && reaction.count > 0
+    && (reaction.authors || []).some((author) => isCodexAuthor(author, actorLogins)));
+}
+
 function successfulGitCommit(output) {
   const plain = String(output || '').replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '');
   return plain.match(/(?:^|\n)\[[^\]\r\n]+\s+([0-9a-f]{7,40})\]\s+[^\r\n]+/i)?.[1] || '';
@@ -194,6 +200,16 @@ function successfulGitCommit(output) {
 function isActionableCodexComment(comment, actorLogins) {
   if (!isCodexAuthor(comment?.author, actorLogins) || !String(comment?.body || '').trim()) return false;
   return comment.kind !== 'review' || String(comment.state || '').toUpperCase() !== 'APPROVED';
+}
+
+function codexReviewSignal(previous, next, actorLogins) {
+  if (!previous) return { comments: [], eyesCleared: false };
+  const comments = changedPullRequestComments(previous, next)
+    .filter((comment) => isActionableCodexComment(comment, actorLogins));
+  const eyesCleared = hasCodexEyes(previous, actorLogins)
+    && !hasCodexEyes(next, actorLogins)
+    && !hasCodexThumbsUp(next, actorLogins);
+  return { comments, eyesCleared };
 }
 
 function sameGitRevision(left, right) {
@@ -347,6 +363,7 @@ function pullRequestChanged(previous, next) {
 
 module.exports = {
   changedPullRequestComments,
+  codexReviewSignal,
   commentRevisionKey,
   discoverPullRequest,
   fetchPullRequest,
@@ -354,6 +371,7 @@ module.exports = {
   githubCliAvailable,
   githubRepositoryFromArgs,
   githubRepositoryOwner,
+  hasCodexEyes,
   isCodexAuthor,
   isActionableCodexComment,
   hasCodexThumbsUp,

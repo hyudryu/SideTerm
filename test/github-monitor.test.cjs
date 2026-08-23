@@ -6,11 +6,13 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   changedPullRequestComments,
+  codexReviewSignal,
   commentRevisionKey,
   flattenPages,
   githubCliAvailable,
   githubRepositoryFromArgs,
   githubRepositoryOwner,
+  hasCodexEyes,
   hasCodexThumbsUp,
   isActionableCodexComment,
   isCodexAuthor,
@@ -54,11 +56,20 @@ test('GitHub account selection is scoped to the repository in each command', () 
   );
 });
 
-test('captured task links enroll without injecting duplicate terminal input', () => {
+test('captured task links establish a silent monitoring baseline', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(main, /function observeWorkspacePullRequestLinks\(\)[\s\S]*preferLinks: true,[\s\S]*dispatchExistingComments: false/);
-  assert.match(main, /details\.dispatchExistingComments !== false[\s\S]*sendCodexFixRequest/);
+  assert.match(main, /function observeWorkspacePullRequestLinks\(\)[\s\S]*preferLinks: true/);
+  assert.match(main, /async function beginPullRequestMonitoring[\s\S]*monitorPullRequest\(url, sessionId, \{[\s\S]*notify: false/);
+  assert.doesNotMatch(main, /sendCodexFixRequest|SideTerm told .*Codex comments|dispatchExistingComments/);
   assert.match(main, /mobile:update-workspace[\s\S]*observeWorkspacePullRequestLinks\(\)/);
+});
+
+test('PR polling interrupts only for actionable Codex evidence or a review-complete transition', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /codexReviewSignal\(previous, next, codexActors\)/);
+  assert.match(main, /addCodexReviewHandoff\(state, next/);
+  assert.match(main, /githubMonitorTimer = setInterval\([^\n]+60_000\)/);
+  assert.doesNotMatch(main, /Pull request reactions or review status changed|new or updated PR comments\./);
 });
 
 test('approved merge actions execute the canonical pull request once', async () => {
@@ -142,6 +153,34 @@ test('a Codex thumbs-up on the main post marks the pull request merge-ready', ()
   assert.equal(hasCodexThumbsUp({ reactions: [{ name: '+1', count: 1, authors: ['human-reviewer'] }] }), false);
 });
 
+test('Codex eyes are distinguished from another reviewer watching the main post', () => {
+  assert.equal(hasCodexEyes({ reactions: [{ name: 'eyes', count: 1, authors: ['codex[bot]'] }] }), true);
+  assert.equal(hasCodexEyes({ reactions: [{ name: 'eyes', count: 1, authors: ['human-reviewer'] }] }), false);
+  assert.equal(hasCodexEyes({ reactions: [] }), false);
+});
+
+test('review signals ignore baseline and routine PR churn, then detect useful Codex evidence', () => {
+  const watching = {
+    comments: [{ id: 'author-reply', author: 'owner', body: 'Pushed a fix', updatedAt: '1', state: '' }],
+    reactions: [{ name: 'eyes', count: 1, authors: ['codex[bot]'] }]
+  };
+  assert.deepEqual(codexReviewSignal(null, watching), { comments: [], eyesCleared: false });
+  assert.deepEqual(codexReviewSignal(watching, {
+    comments: [...watching.comments, { id: 'author-reply-2', author: 'owner', body: 'Checks passed', updatedAt: '2', state: '' }],
+    reactions: watching.reactions
+  }), { comments: [], eyesCleared: false });
+  assert.deepEqual(codexReviewSignal(watching, { ...watching, reactions: [] }), { comments: [], eyesCleared: true });
+  assert.equal(codexReviewSignal(watching, {
+    ...watching,
+    reactions: [],
+    comments: [...watching.comments, { id: 'codex-finding', kind: 'review-comment', author: 'codex[bot]', body: 'Handle null.', updatedAt: '2', state: '' }]
+  }).comments.length, 1);
+  assert.equal(codexReviewSignal(watching, {
+    ...watching,
+    reactions: [{ name: '+1', count: 1, authors: ['codex[bot]'] }]
+  }).eyesCleared, false);
+});
+
 test('new and edited comments are detected without replaying unchanged comments', () => {
   const previous = { comments: [{ id: 'one', updatedAt: '1', body: 'before', state: '' }] };
   const next = { comments: [
@@ -221,7 +260,7 @@ test('only open pull requests remain on the regular polling loop', () => {
   assert.equal(shouldPollPullRequest({ state: 'open', headSha: 'def', codexApprovalHeadSha: 'abc' }), true);
 });
 
-test('non-comment pull request changes still trigger an update', () => {
+test('non-comment pull request changes still update the internal fingerprint', () => {
   assert.equal(pullRequestChanged({ fingerprint: 'before', commentFingerprint: 'same' }, { fingerprint: 'after', commentFingerprint: 'same' }), true);
   assert.equal(pullRequestChanged({ fingerprint: 'same' }, { fingerprint: 'same' }), false);
 });
