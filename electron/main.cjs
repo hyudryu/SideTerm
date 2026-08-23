@@ -49,6 +49,8 @@ const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, conve
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
+const { reattachSession, sessionDetails } = require('./sessions/reattach.cjs');
+const { connectWindowsPtyHost } = require('./sessions/windows-pty-client.cjs');
 const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
@@ -96,6 +98,8 @@ process.on('unhandledRejection', (reason) => appLog.error('unhandledRejection', 
 
 const isDev = !app.isPackaged;
 const sessions = new Map();
+let windowsPtyHostClient = null;
+let windowsPtyHostConnection = null;
 let mainWindow;
 let backgroundTray = null;
 let quitRequested = false;
@@ -3513,10 +3517,34 @@ async function stopMobileServer({ persist = true } = {}) {
   return mobileInfo();
 }
 
-function createSession({ id, cwd, cols = 100, rows = 30 }) {
-  if (!id || sessions.has(id)) {
-    throw new Error('A unique session id is required.');
+async function getWindowsPtyHostClient() {
+  if (windowsPtyHostClient) return windowsPtyHostClient;
+  if (!windowsPtyHostConnection) {
+    windowsPtyHostConnection = connectWindowsPtyHost({
+      metadataPath: path.join(app.getPath('userData'), 'windows-pty-host.json'),
+      hostScript: path.join(__dirname, 'sessions', 'windows-pty-host.cjs')
+    }).then((client) => {
+      windowsPtyHostClient = client;
+      return client;
+    }).catch((error) => {
+      windowsPtyHostConnection = null;
+      throw error;
+    });
   }
+  return windowsPtyHostConnection;
+}
+
+function disconnectWindowsPtyHost() {
+  windowsPtyHostClient?.disconnect();
+  windowsPtyHostClient = null;
+  windowsPtyHostConnection = null;
+}
+
+async function createSession({ id, cwd, cols = 100, rows = 30 }) {
+  if (!id) throw new Error('A session id is required.');
+
+  const existingSession = sessions.get(id);
+  if (existingSession) return reattachSession(id, existingSession, { cols, rows });
 
   const shellPath = resolveShell();
   const workingDirectory = safeCwd(cwd);
@@ -3531,25 +3559,41 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   const args = tmux
     ? ['-L', 'sideterm', 'attach-session', '-t', tmuxSession]
     : [];
-  const processHandle = pty.spawn(executable, args, {
-    name: 'xterm-256color',
-    cols: Math.max(2, cols),
-    rows: Math.max(1, rows),
-    cwd: workingDirectory,
-    env: {
-      ...process.env,
-      ...(tmux?.env || {}),
-      COLORTERM: 'truecolor',
-      TERM: 'xterm-256color',
-      TERM_PROGRAM: 'SideTerm'
-    }
-  });
+  const sessionEnvironment = {
+    ...process.env,
+    ...(tmux?.env || {}),
+    COLORTERM: 'truecolor',
+    TERM: 'xterm-256color',
+    TERM_PROGRAM: 'SideTerm'
+  };
+  const windowsHosted = process.platform === 'win32' && !tmux;
+  const processHandle = windowsHosted
+    ? await (await getWindowsPtyHostClient()).createSession({
+      id,
+      executable,
+      args,
+      name: 'xterm-256color',
+      cols: Math.max(2, cols),
+      rows: Math.max(1, rows),
+      cwd: workingDirectory,
+      env: sessionEnvironment
+    })
+    : pty.spawn(executable, args, {
+      name: 'xterm-256color',
+      cols: Math.max(2, cols),
+      rows: Math.max(1, rows),
+      cwd: workingDirectory,
+      env: sessionEnvironment
+    });
   const session = {
     processHandle,
     rendererFlow: createOutputFlowControl(processHandle),
     tmux,
     tmuxSession,
-    cwd: workingDirectory,
+    resumed,
+    windowsHosted,
+    shell: processHandle.process || path.basename(shellPath),
+    cwd: processHandle.cwd || workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
     cols: Math.max(2, Math.floor(cols)),
     mobileRevision: 0,
@@ -3603,14 +3647,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
 
   broadcastMobileSnapshot();
 
-  return {
-    id,
-    pid: processHandle.pid,
-    cwd: workingDirectory,
-    shell: path.basename(shellPath),
-    resumed,
-    persistent: Boolean(tmux)
-  };
+  return sessionDetails(id, session, { resumed, reattached: Boolean(processHandle.reattached) });
 }
 
 function closeSession(id) {
@@ -3645,12 +3682,17 @@ function detachAllSessions() {
     session.outputNormalizer?.dispose();
     session.rendererFlow.dispose();
     sessions.delete(id);
-    try {
-      session.processHandle.kill();
-    } catch {
-      // The process may already have exited.
+    if (session.windowsHosted && typeof session.processHandle.detach === 'function') {
+      session.processHandle.detach();
+    } else {
+      try {
+        session.processHandle.kill();
+      } catch {
+        // The process may already have exited.
+      }
     }
   }
+  disconnectWindowsPtyHost();
 }
 
 function scrollSession(id, amount) {
@@ -3729,7 +3771,12 @@ function registerIpc() {
       }
     }
     const cwd = rememberSessionCwd(session, discoveredCwd, os.homedir());
-    return { cwd, pid: session.processHandle.pid, persistent: Boolean(session.tmux) };
+    return {
+      cwd,
+      pid: session.processHandle.pid,
+      persistent: Boolean(session.tmux || session.windowsHosted),
+      serverScrollback: Boolean(session.tmux)
+    };
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());
   ipcMain.handle('clipboard:write', (_event, text) => clipboard.writeText(String(text)));
