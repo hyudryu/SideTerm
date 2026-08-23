@@ -47,6 +47,7 @@ const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, conve
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
+const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
 const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
@@ -3370,7 +3371,6 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
       TERM_PROGRAM: 'SideTerm'
     }
   });
-
   const session = {
     processHandle,
     tmux,
@@ -3387,15 +3387,26 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     lastGithubCommitFingerprint: ''
   };
   sessions.set(id, session);
-  processHandle.onData((data) => {
+  const forwardOutput = (data) => {
+    if (!data || sessions.get(id) !== session) return;
     observePotentialGitPush(id, data);
     send('terminal:data', { id, data });
     session.mobileRevision += 1;
     session.mobileOutputBuffer = `${session.mobileOutputBuffer}${data}`.slice(-300_000);
     broadcastMobile({ type: 'terminal:activity', id, revision: session.mobileRevision });
     scheduleMobileTerminalFrame(id);
+  };
+  const outputNormalizer = createWindowsVtOutputNormalizer({ onOutput: forwardOutput });
+  session.outputNormalizer = outputNormalizer;
+  processHandle.onData((data) => {
+    forwardOutput(outputNormalizer.push(data));
   });
   processHandle.onExit(({ exitCode, signal }) => {
+    if (sessions.get(id) !== session) {
+      outputNormalizer.dispose();
+      return;
+    }
+    forwardOutput(outputNormalizer.flush());
     clearMobileTerminalFrame(id);
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
@@ -3425,6 +3436,7 @@ function closeSession(id) {
   const session = sessions.get(id);
   if (!session) return;
   clearMobileTerminalFrame(id);
+  session.outputNormalizer?.dispose();
   sessions.delete(id);
   if (session.tmux && session.tmuxSession) {
     try {
@@ -3444,6 +3456,7 @@ function closeSession(id) {
 function detachAllSessions() {
   for (const [id, session] of sessions) {
     clearMobileTerminalFrame(id);
+    session.outputNormalizer?.dispose();
     sessions.delete(id);
     try {
       session.processHandle.kill();
