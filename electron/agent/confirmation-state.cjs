@@ -11,6 +11,53 @@ function restoreConfirmation(state, confirmation) {
   return state;
 }
 
+function isCodexReviewHandoff(confirmation) {
+  return confirmation?.source === 'codex-review-handoff'
+    || (confirmation?.kind === 'terminal-input'
+      && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(String(confirmation?.pullRequestUrl || ''))
+      && /^Please inspect the latest Codex review comments on https:\/\/github\.com\//i.test(String(confirmation?.input || '')));
+}
+
+function compactCodexReviewHandoffs(state) {
+  const newestByPullRequest = new Map();
+  for (const confirmation of state.confirmations || []) {
+    if (!isCodexReviewHandoff(confirmation)) continue;
+    confirmation.source = 'codex-review-handoff';
+    confirmation.handoffKey = `codex-review-handoff:${confirmation.pullRequestUrl}`;
+    const existing = newestByPullRequest.get(confirmation.pullRequestUrl);
+    if (!existing || Number(confirmation.createdAt) >= Number(existing.createdAt)) {
+      newestByPullRequest.set(confirmation.pullRequestUrl, confirmation);
+    }
+  }
+  const retainedIds = new Set([...newestByPullRequest.values()].map((item) => String(item.id)));
+  for (const confirmation of newestByPullRequest.values()) {
+    const pull = (state.pullRequests || []).find((item) => item.url === confirmation.pullRequestUrl);
+    if (!pull) continue;
+    confirmation.headSha = String(pull.headSha || confirmation.headSha || '');
+    pull.codexReviewPromptedHeadSha = confirmation.headSha;
+  }
+  const removedIds = new Set((state.confirmations || [])
+    .filter((item) => isCodexReviewHandoff(item) && !retainedIds.has(String(item.id)))
+    .map((item) => String(item.id)));
+  if (!removedIds.size) return removedIds;
+  state.confirmations = state.confirmations.filter((item) => !removedIds.has(String(item.id)));
+  state.interactions = (state.interactions || []).filter((item) => !removedIds.has(String(item.id)));
+  for (const event of state.notifications || []) {
+    if (!removedIds.has(String(event.payload?.interactionId || ''))) continue;
+    event.state = 'acknowledged';
+    event.read = true;
+  }
+  if (removedIds.has(String(state.activeInteractionId || ''))) state.activeInteractionId = '';
+  if (!state.activeInteractionId) {
+    const next = state.interactions
+      .filter((item) => ['queued', 'presented', 'awaiting_answer'].includes(item.state))
+      .sort((left, right) => left.priority - right.priority || left.createdAt - right.createdAt)[0];
+    state.activeInteractionId = next?.id || '';
+    if (next?.state === 'queued') next.state = 'presented';
+  }
+  return removedIds;
+}
+
 function retirePullRequestConfirmations(state, pullRequestUrl) {
   const retired = state.confirmations.filter((item) => item.kind === 'merge-pull-request'
     && item.pullRequestUrl === pullRequestUrl);
@@ -83,4 +130,12 @@ function reconcileConfirmationInteractions(state, { migrateLegacy = false } = {}
   return removedIds;
 }
 
-module.exports = { claimConfirmation, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
+module.exports = {
+  claimConfirmation,
+  compactCodexReviewHandoffs,
+  isCodexReviewHandoff,
+  legacyApprovalInteraction,
+  reconcileConfirmationInteractions,
+  restoreConfirmation,
+  retirePullRequestConfirmations
+};

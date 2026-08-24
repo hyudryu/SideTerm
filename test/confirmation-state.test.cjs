@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
+const { claimConfirmation, compactCodexReviewHandoffs, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
 
 test('a confirmation can only be claimed once', () => {
   const state = { confirmations: [{ id: 'one', body: 'post once' }] };
@@ -81,4 +81,31 @@ test('legacy confirmations gain approval interactions before pair reconciliation
   assert.equal(state.interactions[0].id, 'legacy');
   assert.equal(state.interactions[0].kind, 'approval');
   assert.equal(state.activeInteractionId, 'legacy');
+});
+
+test('Codex review handoffs compact to one pending task per pull request', () => {
+  const input = (number) => `Please inspect the latest Codex review comments on https://github.com/acme/repo/pull/${number}. Address every valid finding.`;
+  const state = {
+    confirmations: [
+      { id: 'old', kind: 'terminal-input', pullRequestUrl: 'https://github.com/acme/repo/pull/7', input: input(7), createdAt: 1 },
+      { id: 'new', kind: 'terminal-input', pullRequestUrl: 'https://github.com/acme/repo/pull/7', input: input(7), createdAt: 2 },
+      { id: 'other', kind: 'terminal-input', pullRequestUrl: 'https://github.com/acme/repo/pull/8', input: input(8), createdAt: 1 }
+    ],
+    interactions: [
+      { id: 'old', kind: 'approval', state: 'awaiting_answer', priority: 0, createdAt: 1 },
+      { id: 'new', kind: 'approval', state: 'awaiting_answer', priority: 0, createdAt: 2 },
+      { id: 'other', kind: 'approval', state: 'awaiting_answer', priority: 0, createdAt: 3 }
+    ],
+    notifications: [{ id: 'old-event', state: 'queued', read: false, payload: { interactionId: 'old' } }],
+    pullRequests: [{ url: 'https://github.com/acme/repo/pull/7', headSha: 'current-head' }],
+    activeInteractionId: 'old'
+  };
+  assert.deepEqual([...compactCodexReviewHandoffs(state)], ['old']);
+  assert.deepEqual(state.confirmations.map((item) => item.id), ['new', 'other']);
+  assert.equal(state.confirmations[0].source, 'codex-review-handoff');
+  assert.equal(state.confirmations[0].handoffKey, 'codex-review-handoff:https://github.com/acme/repo/pull/7');
+  assert.equal(state.confirmations[0].headSha, 'current-head');
+  assert.equal(state.pullRequests[0].codexReviewPromptedHeadSha, 'current-head');
+  assert.equal(state.notifications[0].read, true);
+  assert.equal(state.activeInteractionId, 'new');
 });

@@ -70,6 +70,19 @@ test('PR polling interrupts only for actionable Codex evidence or a review-compl
   assert.match(main, /addCodexReviewHandoff\(state, next/);
   assert.match(main, /githubMonitorTimer = setInterval\([^\n]+60_000\)/);
   assert.doesNotMatch(main, /Pull request reactions or review status changed|new or updated PR comments\./);
+  assert.match(main, /const handoffKey = `codex-review-handoff:\$\{pull\.url\}`/);
+  assert.match(main, /codexReviewPromptedHeadSha/);
+  assert.match(main, /kind: 'REVIEW_RECEIVED'[\s\S]*presentation: \{[\s\S]*shortText: summary[\s\S]*requiresUserReply/);
+  assert.match(main, /if \(prNotificationAdded\) scheduleProactiveCatchUp\(\)/);
+});
+
+test('Codex review approval cards stay concise on desktop and mobile', () => {
+  const desktop = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const mobile = fs.readFileSync(path.join(__dirname, '..', 'electron', 'mobile', 'mobile.js'), 'utf8');
+  for (const source of [desktop, mobile]) {
+    assert.match(source, /Fix Codex comments on PR #\$\{pullRequestNumber\}/);
+    assert.match(source, /codexHandoff \? 'Send to session' : 'Approve'/);
+  }
 });
 
 test('approved merge actions execute the canonical pull request once', async () => {

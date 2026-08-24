@@ -278,11 +278,15 @@ function renderAgentState(state) {
   const confirmations = document.querySelector('#mobile-confirmations');
   confirmations.replaceChildren();
   for (const confirmation of agentState.confirmations || []) {
+    const codexHandoff = confirmation.source === 'codex-review-handoff';
+    const pullRequestNumber = confirmation.pullRequestUrl?.match(/\/pull\/(\d+)/i)?.[1] || '';
     const row = document.createElement('div');
     row.className = 'mobile-confirmation';
     const copy = document.createElement('div');
     const heading = document.createElement('strong');
-    heading.textContent = confirmation.kind === 'archive'
+    heading.textContent = codexHandoff
+      ? `Fix Codex comments on PR #${pullRequestNumber}?`
+      : confirmation.kind === 'archive'
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post comment to ${confirmation.pullRequestUrl}?`
@@ -292,7 +296,9 @@ function renderAgentState(state) {
           ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detail = document.createElement('code');
-    detail.textContent = confirmation.kind === 'archive'
+    detail.textContent = codexHandoff
+      ? `${confirmation.title} · ${confirmation.pullRequestUrl}`
+      : confirmation.kind === 'archive'
       ? confirmation.summary
       : confirmation.kind === 'github-comment'
         ? confirmation.body
@@ -304,9 +310,9 @@ function renderAgentState(state) {
     copy.append(heading, detail);
     if (confirmation.kind === 'github-comment') row.classList.add('github-comment');
     const deny = document.createElement('button');
-    deny.textContent = 'Deny';
+    deny.textContent = codexHandoff ? 'Not now' : 'Deny';
     const approve = document.createElement('button');
-    approve.textContent = 'Approve';
+    approve.textContent = codexHandoff ? 'Send to session' : 'Approve';
     const respond = (approved) => {
       deny.disabled = true;
       approve.disabled = true;

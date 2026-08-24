@@ -11,7 +11,7 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } = require('./voice/runtime.cjs');
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
-const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
+const { claimConfirmation, compactCodexReviewHandoffs, isCodexReviewHandoff, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
@@ -636,6 +636,8 @@ function readAgentState() {
       confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations.slice(-120).map((item) => ({
         id: String(item?.id || crypto.randomUUID()),
         kind: ['archive', 'terminal-input', 'tui-selection', 'github-comment', 'merge-pull-request'].includes(item?.kind) ? item.kind : 'terminal-input',
+        source: item?.source === 'codex-review-handoff' ? 'codex-review-handoff' : '',
+        handoffKey: String(item?.handoffKey || '').slice(0, 1200),
         sessionId: String(item?.sessionId || '').slice(0, 100),
         title: String(item?.title || 'Terminal').slice(0, 100),
         input: String(item?.input || '').slice(0, 65_536),
@@ -678,6 +680,7 @@ function readAgentState() {
         mergePrompted: Boolean(item?.mergePrompted),
         mergePromptedHeadSha: String(item?.mergePromptedHeadSha || '').slice(0, 100),
         codexApprovalHeadSha: String(item?.codexApprovalHeadSha || '').slice(0, 100),
+        codexReviewPromptedHeadSha: String(item?.codexReviewPromptedHeadSha || '').slice(0, 100),
         pendingLocalHeadSha: String(item?.pendingLocalHeadSha || '').slice(0, 100),
         headSha: String(item?.headSha || '').slice(0, 100),
         updatedAt: String(item?.updatedAt || '').slice(0, 100),
@@ -699,6 +702,7 @@ function readAgentState() {
         createdAt: Number(item?.createdAt) || Date.now()
       })).filter((item) => item.name && item.description && item.instructions) : []
     };
+    compactCodexReviewHandoffs(state);
     reconcileConfirmationInteractions(state, { migrateLegacy: Number(parsed.version || 1) < 2 });
     migrateLegacyPullRequestWatches(state.watches, state.pullRequests);
     return state;
@@ -719,10 +723,11 @@ function writeAgentState(state) {
 function recoverAbandonedAgentStateEvents() {
   const state = readAgentState();
   const hasAbandonedClaims = state.notifications.some((event) => event.state === 'presented' && !event.read);
-  if (!hasAbandonedClaims) return false;
-  recoverAbandonedEvents(state.notifications);
+  if (hasAbandonedClaims) recoverAbandonedEvents(state.notifications);
+  // Persist state migrations and duplicate approval compaction even when no
+  // abandoned presentation was recovered.
   writeAgentState(state);
-  return true;
+  return hasAbandonedClaims;
 }
 
 function eventBusFor(state) {
@@ -866,16 +871,24 @@ function addCodexReviewHandoff(state, pull, { comments = [] } = {}) {
   const metadata = mobileWorkspace.sessions.find((item) => item.id === pull.sessionId);
   const sessionName = metadata?.title || pull.sessionId || 'the linked session';
   const count = comments.length;
-  const evidenceKey = count
-    ? `comments:${pull.commentFingerprint}`
-    : `eyes-cleared:${pull.headSha}`;
-  const handoffKey = `codex-review-handoff:${pull.url}:${evidenceKey}`;
-  if (state.confirmations.some((item) => item.handoffKey === handoffKey)) return false;
-
+  const handoffKey = `codex-review-handoff:${pull.url}`;
   const exactComments = count > 0;
   const summary = exactComments
     ? `PR #${pull.number} has ${count} new or updated actionable Codex review comment${count === 1 ? '' : 's'}. Would you like me to tell ${sessionName} to fix them?`
     : `Codex's eyes reaction disappeared from PR #${pull.number}. Double-check the pull request to confirm the review comments were posted. If they were, say "go ahead and fix the Codex comments" and I'll send that instruction to ${sessionName}.`;
+  const existing = state.confirmations.find((item) => isCodexReviewHandoff(item)
+    && item.pullRequestUrl === pull.url);
+  if (existing) {
+    existing.source = 'codex-review-handoff';
+    existing.handoffKey = handoffKey;
+    existing.headSha = pull.headSha;
+    const interaction = state.interactions.find((item) => item.id === existing.id);
+    if (interaction) interaction.prompt = summary;
+    pull.codexReviewPromptedHeadSha = pull.headSha;
+    return false;
+  }
+  if (sameGitRevision(pull.codexReviewPromptedHeadSha, pull.headSha)) return false;
+
   let interactionId = '';
   if (pull.sessionId) {
     const confirmation = {
@@ -926,6 +939,7 @@ function addCodexReviewHandoff(state, pull, { comments = [] } = {}) {
     },
     payload: interactionId ? { interactionId } : {}
   });
+  pull.codexReviewPromptedHeadSha = pull.headSha;
   return true;
 }
 
@@ -973,6 +987,9 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
     ...snapshot,
     sessionId: sessionId || previous?.sessionId || '',
     handledCodexComments: [...(previous?.handledCodexComments || [])],
+    codexReviewPromptedHeadSha: sameGitRevision(previous?.headSha, snapshot.headSha)
+      ? String(previous?.codexReviewPromptedHeadSha || '')
+      : '',
     ...approval,
     lastCheckedAt: Date.now()
   };
@@ -1003,7 +1020,7 @@ function updateMonitoredPullRequest(snapshot, sessionId = '', {
       watchManager.activate(reviewWatch.id, { headSha: snapshot.headSha, intervalSeconds });
     }
   }
-  if (!pullIsOpen || approval.ready || (previous?.headSha && previous.headSha !== snapshot.headSha)) {
+  if (!pullIsOpen || approval.ready) {
     retireCodexReviewHandoffs(state, snapshot.url);
   }
   let prNotificationAdded = false;

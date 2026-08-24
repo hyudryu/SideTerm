@@ -1503,11 +1503,15 @@ function renderAgentState(nextState) {
   const confirmations = document.querySelector('#agent-confirmations');
   confirmations.replaceChildren();
   for (const confirmation of agentState.confirmations || []) {
+    const codexHandoff = confirmation.source === 'codex-review-handoff';
+    const pullRequestNumber = confirmation.pullRequestUrl?.match(/\/pull\/(\d+)/i)?.[1] || '';
     const row = document.createElement('div');
     row.className = 'agent-confirmation';
     const copy = document.createElement('div');
     const heading = document.createElement('strong');
-    heading.textContent = confirmation.kind === 'archive'
+    heading.textContent = codexHandoff
+      ? `Fix Codex comments on PR #${pullRequestNumber}?`
+      : confirmation.kind === 'archive'
       ? `Archive ${confirmation.title}?`
       : confirmation.kind === 'github-comment'
         ? `Post comment to ${confirmation.pullRequestUrl}?`
@@ -1517,7 +1521,9 @@ function renderAgentState(nextState) {
           ? `Select “${confirmation.optionLabel}” in ${confirmation.title}?`
         : `Send input to ${confirmation.title}?`;
     const detailText = document.createElement('code');
-    detailText.textContent = confirmation.kind === 'archive'
+    detailText.textContent = codexHandoff
+      ? `${confirmation.title} · ${confirmation.pullRequestUrl}`
+      : confirmation.kind === 'archive'
       ? confirmation.summary
       : confirmation.kind === 'github-comment'
         ? confirmation.body
@@ -1531,11 +1537,11 @@ function renderAgentState(nextState) {
     const deny = document.createElement('button');
     deny.type = 'button';
     deny.className = 'secondary-button';
-    deny.textContent = 'Deny';
+    deny.textContent = codexHandoff ? 'Not now' : 'Deny';
     const approve = document.createElement('button');
     approve.type = 'button';
     approve.className = 'secondary-button approve';
-    approve.textContent = 'Approve';
+    approve.textContent = codexHandoff ? 'Send to session' : 'Approve';
     deny.addEventListener('click', () => void respondToAgentConfirmation(confirmation.id, false));
     approve.addEventListener('click', () => void respondToAgentConfirmation(confirmation.id, true));
     row.append(copy, deny, approve);
