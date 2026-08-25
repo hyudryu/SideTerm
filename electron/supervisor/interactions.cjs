@@ -31,6 +31,19 @@ function interpretApprovalAnswer(value) {
   return null;
 }
 
+function interpretConfirmationApprovalAnswer(value, confirmation) {
+  const answer = interpretApprovalAnswer(value);
+  if (answer !== null) return answer;
+  const text = String(value || '').trim().toLowerCase();
+  if (confirmation?.kind === 'merge-pull-request') {
+    if (/\b(?:no|nope|not yet|don(?:'|\u2019)?t|do not|cancel|stop)\b/.test(text)) return false;
+    if (/\b(?:yes|yeah|yep|okay|ok|approve|approved|please|go ahead|do it)\b[\s\S]*\bmerge\b/.test(text)) return true;
+    if (/^(?:then\s+)?(?:please\s+)?merge(?:\s+(?:it|this|that|the\s+pull\s+request|the\s+pr))?[.!?\s]*$/i.test(text)) return true;
+    return null;
+  }
+  return null;
+}
+
 function shouldConsumeInteractionAnswer(interaction, text) {
   return interaction?.kind !== 'approval' || interpretApprovalAnswer(text) !== null;
 }
@@ -103,4 +116,4 @@ class PendingInteractionManager {
   }
 }
 
-module.exports = { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };
+module.exports = { interpretApprovalAnswer, interpretConfirmationApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };

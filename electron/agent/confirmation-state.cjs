@@ -11,6 +11,21 @@ function restoreConfirmation(state, confirmation) {
   return state;
 }
 
+function createConfirmationExecutionGuard() {
+  const inFlight = new Map();
+  return (id, execute) => {
+    const key = String(id || '');
+    const existing = inFlight.get(key);
+    if (existing) return existing;
+    const pending = Promise.resolve().then(execute);
+    inFlight.set(key, pending);
+    void pending.finally(() => {
+      if (inFlight.get(key) === pending) inFlight.delete(key);
+    }).catch(() => {});
+    return pending;
+  };
+}
+
 function retirePullRequestConfirmations(state, pullRequestUrl) {
   const retired = state.confirmations.filter((item) => item.kind === 'merge-pull-request'
     && item.pullRequestUrl === pullRequestUrl);
@@ -83,4 +98,4 @@ function reconcileConfirmationInteractions(state, { migrateLegacy = false } = {}
   return removedIds;
 }
 
-module.exports = { claimConfirmation, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
+module.exports = { claimConfirmation, createConfirmationExecutionGuard, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };

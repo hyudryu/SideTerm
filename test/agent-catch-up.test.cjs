@@ -69,6 +69,8 @@ test('automatic presenter sentinels are never spoken as updates', () => {
   assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
   assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
   assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
+  assert.equal(automaticPresenterSentinel('Cancelled by user'), 'CANCELLED');
+  assert.equal(automaticPresenterSentinel('Canceled by user.'), 'CANCELLED');
 });
 
 test('proactive enrichment also suppresses presenter sentinels', () => {

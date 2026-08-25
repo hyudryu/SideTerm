@@ -21,3 +21,19 @@ test('renderer reload resets desktop activation and cancellation stays silent', 
   assert.match(main, /if \(error\?\.name === 'AbortError' && activation\.taskId\) throw error/);
   assert.match(main, /taskId,\s+priority: 2,\s+interruptible: true/);
 });
+
+test('a user voice request supersedes stale proactive speech before acknowledging it', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /function beginDesktopVoiceRequest\(\)[\s\S]*desktopVoiceActivationGeneration \+= 1;[\s\S]*settleDesktopPresentations\(false\)[\s\S]*userRequest: true/);
+  assert.match(main, /onAccepted: voice \? beginDesktopVoiceRequest : null/);
+  assert.match(renderer, /let agentSpeechGeneration = 0/);
+  assert.match(renderer, /function supersedeAgentSpeech\(\)[\s\S]*agentSpeechGeneration \+= 1;[\s\S]*interruptVoicePlayback\(\)[\s\S]*agentSpeechQueue = Promise\.resolve\(true\)/);
+  assert.match(renderer, /const audio = await api\.synthesizeSpeech\(text\);\s*if \(generation !== agentSpeechGeneration \|\| !desktopVoiceMode\) return false;\s*const completed = await playSpeechAudio\(audio\)/);
+  assert.match(renderer, /onAgentVoicePing\(async \(\{[^}]*userRequest[^}]*\}[\s\S]*if \(userRequest\) supersedeAgentSpeech\(\)/);
+});
+
+test('voice transcription latency is recorded separately from model and TTS time', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /ipcMain\.handle\('voice:transcribe',[\s\S]*appLog\.info\('speech transcribed',[\s\S]*ms: Date\.now\(\) - startedAt/);
+});

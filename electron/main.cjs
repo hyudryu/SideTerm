@@ -11,7 +11,7 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } = require('./voice/runtime.cjs');
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
-const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
+const { claimConfirmation, createConfirmationExecutionGuard, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
@@ -50,7 +50,7 @@ const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.
 const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
-const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
+const { interpretConfirmationApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator, presentationDelivered } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
@@ -115,6 +115,7 @@ const pendingDesktopPresentations = new Map();
 const pendingMobilePresentations = new Map();
 const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
+const runConfirmationExecution = createConfirmationExecutionGuard();
 const presentationCoordinator = new PresentationCoordinator();
 const supervisorTurnContext = new AsyncLocalStorage();
 const mobilePresentationSurfaces = new WeakMap();
@@ -1667,7 +1668,8 @@ async function performSupervisorChat(text, {
   spokenRequest = false,
   automatic = false,
   interactionId = '',
-  onTextDelta = null
+  onTextDelta = null,
+  isCancelled = null
 } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
@@ -1681,15 +1683,30 @@ async function performSupervisorChat(text, {
   const responseInteractionId = String(interactionId || (spokenRequest ? '' : state.activeInteractionId));
   const pendingInteraction = state.interactions.find((item) => item.id === responseInteractionId);
   const pendingConfirmation = state.confirmations.find((item) => item.id === responseInteractionId);
-  const approvalAnswer = interpretApprovalAnswer(promptText);
-  const answeredInteraction = !synthetic && shouldConsumeInteractionAnswer(pendingInteraction, promptText)
+  const approvalAnswer = interpretConfirmationApprovalAnswer(promptText, pendingConfirmation);
+  const shouldConsumeAnswer = pendingInteraction?.kind === 'approval'
+    ? approvalAnswer !== null
+    : shouldConsumeInteractionAnswer(pendingInteraction, promptText);
+  const answeredInteraction = !synthetic && shouldConsumeAnswer
     ? interactionManagerFor(state).answer(promptText, responseInteractionId)
     : null;
   if (!synthetic) addAgentMessage(state, 'user', promptText);
   writeAgentState(state);
   if (answeredInteraction?.kind === 'approval' && pendingConfirmation && approvalAnswer !== null) {
-    await resolveAgentConfirmation(pendingConfirmation.id, approvalAnswer);
-    state = readAgentState();
+    const resolved = await resolveAgentConfirmation(pendingConfirmation.id, approvalAnswer);
+    const latest = readAgentState();
+    latest.actionResults = latest.actionResults.filter((item) => item.createdAt !== resolved.actionResult.createdAt
+      || item.text !== resolved.actionResult.text);
+    writeAgentState(latest);
+    agentStatus = 'idle';
+    broadcastAgentState();
+    return {
+      response: resolved.resultText,
+      speech: voice ? speechSummary(resolved.resultText) : resolved.resultText,
+      interactionId: '',
+      needsEnrichment: false,
+      state: publicAgentState()
+    };
   }
   if (answeredInteraction) queueMicrotask(scheduleProactiveCatchUp);
   agentStatus = 'thinking';
@@ -1727,6 +1744,11 @@ async function performSupervisorChat(text, {
     const result = await supervisorTurnContext.run(turn, () => (
       runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta })
     ));
+    if (isCancelled?.()) {
+      const error = new Error('Supervisor task was cancelled.');
+      error.name = 'AbortError';
+      throw error;
+    }
     const latest = readAgentState();
     const turnConfirmationIds = new Set(turn.confirmationIds);
     const turnInteraction = latest.interactions
@@ -1759,7 +1781,7 @@ async function performSupervisorChat(text, {
       state: publicAgentState()
     };
   } catch (error) {
-    agentStatus = 'error';
+    agentStatus = error?.name === 'AbortError' ? 'idle' : 'error';
     broadcastAgentState();
     throw error;
   }
@@ -1772,7 +1794,7 @@ function chatWithSupervisor(text, options = {}) {
     : (options.automatic || options.proactive) ? 2 : 0;
   const startedAt = Date.now();
   const task = supervisorActor.enqueue(
-    () => performSupervisorChat(text, options),
+    ({ isCancelled }) => performSupervisorChat(text, { ...options, isCancelled }),
     {
       priority,
       id: options.taskId,
@@ -2123,7 +2145,7 @@ function recordSessionFinished(payload = {}) {
   return broadcastAgentState();
 }
 
-async function resolveAgentConfirmation(id, approved) {
+async function executeAgentConfirmation(id, approved) {
   const claimedState = readAgentState();
   const confirmation = claimConfirmation(claimedState, id);
   interactionManagerFor(claimedState).answer(approved ? 'Approved' : 'Denied', id);
@@ -2202,12 +2224,12 @@ async function resolveAgentConfirmation(id, approved) {
     }
     if (archivedRecord) state.archivedSessions.push(archivedRecord);
     settleInteractionEvents(state, confirmation.id);
-    state.actionResults.push({ text: resultText, createdAt: Date.now() });
+    const actionResult = { text: resultText, createdAt: Date.now() };
+    state.actionResults.push(actionResult);
     addAgentMessage(state, 'event', resultText);
     writeAgentState(state);
     if (refreshPullRequestUrl) await monitorPullRequest(refreshPullRequestUrl, '', { notify: false }).catch(() => {});
-    queueMicrotask(scheduleProactiveCatchUp);
-    return broadcastAgentState();
+    return { state: broadcastAgentState(), resultText, actionResult };
   } catch (error) {
     if (!actionCommitted) {
       const recovery = readAgentState();
@@ -2218,6 +2240,10 @@ async function resolveAgentConfirmation(id, approved) {
     }
     throw error;
   }
+}
+
+function resolveAgentConfirmation(id, approved) {
+  return runConfirmationExecution(id, () => executeAgentConfirmation(id, approved));
 }
 
 function voiceRuntimeDirectory() {
@@ -2845,6 +2871,18 @@ function resetDesktopVoiceActivation() {
   settleDesktopPresentations(false);
 }
 
+function beginDesktopVoiceRequest() {
+  if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
+  desktopVoiceActivationTaskId = '';
+  desktopVoiceActivationGeneration += 1;
+  settleDesktopPresentations(false);
+  send('agent:voice-ping', {
+    text: voiceAcknowledgements.next(),
+    acknowledgement: true,
+    userRequest: true
+  });
+}
+
 function sanitizeMobileWorkspace(value) {
   const groups = Array.isArray(value?.groups) ? value.groups.slice(0, 80).map((group) => ({
     id: String(group?.id || '').slice(0, 100),
@@ -3213,6 +3251,7 @@ async function startMobileServer({ persist = true } = {}) {
       if (message.type === 'agent:confirm') {
         try {
           await resolveAgentConfirmation(String(message.id || ''), Boolean(message.approved));
+          queueMicrotask(scheduleProactiveCatchUp);
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
         }
@@ -3632,14 +3671,18 @@ function registerIpc() {
         voice,
         spokenRequest: Boolean(payload?.spokenRequest),
         interactionId: String(payload?.interactionId || ''),
-        onAccepted: voice ? () => send('agent:voice-ping', { text: voiceAcknowledgements.next(), acknowledgement: true }) : null
+        onAccepted: voice ? beginDesktopVoiceRequest : null
       }
     );
   });
   ipcMain.handle('agent:catch-up', (_event, options = {}) => catchUpWithSupervisor({
     voice: Boolean(options?.voice)
   }));
-  ipcMain.handle('agent:confirm', (_event, { id, approved }) => resolveAgentConfirmation(String(id || ''), Boolean(approved)));
+  ipcMain.handle('agent:confirm', async (_event, { id, approved }) => {
+    const result = await resolveAgentConfirmation(String(id || ''), Boolean(approved));
+    queueMicrotask(scheduleProactiveCatchUp);
+    return result.state;
+  });
   ipcMain.on('agent:session-finished', (_event, payload) => recordSessionFinished(payload));
   ipcMain.on('agent:action-result', (_event, result) => {
     const pending = pendingRendererActions.get(String(result?.requestId || ''));
@@ -3659,11 +3702,27 @@ function registerIpc() {
   });
   ipcMain.handle('voice:preview', (_event, { voice, speed }) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice, speed));
   ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
-  ipcMain.handle('voice:transcribe', (_event, { bytes, mimeType, allowWithoutWakeWord }) => transcribeSpeech(
-    bytes,
-    mimeType,
-    { allowWithoutWakeWord: allowWithoutWakeWord === true }
-  ));
+  ipcMain.handle('voice:transcribe', async (_event, { bytes, mimeType, allowWithoutWakeWord }) => {
+    const startedAt = Date.now();
+    try {
+      const result = await transcribeSpeech(bytes, mimeType, {
+        allowWithoutWakeWord: allowWithoutWakeWord === true
+      });
+      appLog.info('speech transcribed', {
+        ms: Date.now() - startedAt,
+        provider: readSettingsRecord().sttProvider,
+        ignored: Boolean(result?.ignored)
+      });
+      return result;
+    } catch (error) {
+      appLog.warn('speech transcription failed', {
+        ms: Date.now() - startedAt,
+        provider: readSettingsRecord().sttProvider,
+        error: String(error?.message || error)
+      });
+      throw error;
+    }
+  });
   ipcMain.handle('voice:pause-media', () => pauseDesktopMedia());
   ipcMain.handle('voice:resume-media', () => resumeDesktopMedia());
 }

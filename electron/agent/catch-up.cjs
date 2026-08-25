@@ -67,6 +67,7 @@ function isNoUpdateResponse(value) {
 
 function automaticPresenterSentinel(value) {
   const normalized = String(value || '').trim().replace(/[.!]+$/, '').toUpperCase();
+  if (normalized === 'CANCELLED BY USER' || normalized === 'CANCELED BY USER') return 'CANCELLED';
   return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT' ? normalized : '';
 }
 

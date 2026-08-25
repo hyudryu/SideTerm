@@ -36,3 +36,14 @@ test('ordinary voice approvals bind the final reply window to the new interactio
   assert.match(main, /speech\.speak\(result\.speech, \{ opensReplyWindow: true, interactionId: result\.interactionId \|\| '' \}\)/);
   assert.match(desktop, /queueAgentSpeech\(result\.speech \|\| result\.response, \{\s*interactionId: result\.interactionId \|\| ''/);
 });
+
+test('an answered approval returns its deterministic result without another model turn', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const chat = main.match(/async function performSupervisorChat[\s\S]*?\nfunction chatWithSupervisor/)?.[0] || '';
+  const resolution = chat.indexOf('const resolved = await resolveAgentConfirmation');
+  const earlyReturn = chat.indexOf('response: resolved.resultText');
+  const runtime = chat.indexOf('runtime.chat(');
+  assert.ok(resolution >= 0);
+  assert.ok(earlyReturn > resolution);
+  assert.ok(runtime > earlyReturn);
+});

@@ -24,7 +24,10 @@ class SupervisorActor {
       };
       this.queue.push(item);
       this.queue.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
-      if (this.active?.interruptible && priority < this.active.priority) this.active.cancel?.();
+      if (this.active?.interruptible && priority < this.active.priority) {
+        this.active.cancelled = true;
+        this.active.cancel?.();
+      }
       this.onStateChange(this.snapshot());
       void this.drain();
     });
@@ -64,7 +67,7 @@ class SupervisorActor {
     this.active = next;
     this.onStateChange(this.snapshot());
     try {
-      const result = await next.run();
+      const result = await next.run({ isCancelled: () => next.cancelled });
       if (next.cancelled) next.reject(Object.assign(new Error('Supervisor task was cancelled.'), { name: 'AbortError' }));
       else next.resolve(result);
     } catch (error) {
