@@ -59,6 +59,7 @@ let mobileCreateKind = 'session';
 let pendingMobileCreateRequestId = '';
 let pendingCreatedSessionId = '';
 let pendingMobileCreateTimer = null;
+let lastSessionRenderKey = '';
 
 function queueMobileAudio(message) {
   const generation = mobileAudioGeneration;
@@ -151,9 +152,14 @@ function resizeTerminal() {
   terminal.resize(Math.max(24, Math.floor(width / 7.9)), Math.max(8, Math.floor(height / 16.8)));
 }
 
-function setDrawer(open) {
+function setDrawer(open, { refresh = true } = {}) {
   drawer.classList.toggle('open', open);
   shade.hidden = !open;
+  send({
+    type: 'terminal:visibility',
+    visible: !open,
+    ...(refresh && !open ? { requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` } : {})
+  });
 }
 
 function closeMobileCreate() {
@@ -221,7 +227,7 @@ function selectSession(id) {
   mobileTitle.textContent = session.title;
   mobileSubtitle.textContent = session.subtitle || 'Terminal session';
   renderSessions();
-  setDrawer(false);
+  setDrawer(false, { refresh: false });
   setView('terminal');
   send({ type: 'select', id, requestId });
   window.setTimeout(() => terminal.focus(), 80);
@@ -240,8 +246,10 @@ function renderAgentState(state) {
   dot.className = agentState.status === 'thinking' ? 'thinking' : agentState.status === 'error' ? 'error' : '';
   document.querySelector('#agent-mobile-status').textContent = !agentState.enabled ? 'Supervisor disabled' : agentState.status === 'thinking' ? 'Thinking…' : 'Supervisor ready';
   document.querySelector('#agent-mobile-detail').textContent = !agentState.enabled ? 'Enable it from desktop Settings' : mobileVoiceMode ? 'Listening locally' : 'Watching all sessions';
-  const unreadNotifications = (agentState.notifications || []).filter((item) => !item.read);
-  document.querySelector('#mobile-notification-count').textContent = String(unreadNotifications.length);
+  const unreadNotificationCount = Number.isFinite(agentState.unreadNotificationCount)
+    ? agentState.unreadNotificationCount
+    : (agentState.notifications || []).filter((item) => !item.read).length;
+  document.querySelector('#mobile-notification-count').textContent = String(unreadNotificationCount);
   const notificationList = document.querySelector('#mobile-notifications');
   notificationList.replaceChildren();
   const visible = (agentState.notifications || []).slice(-8).reverse();
@@ -317,13 +325,35 @@ function renderAgentState(state) {
     row.append(copy, deny, approve);
     confirmations.append(row);
   }
-  if (agentState.enabled && agentState.status !== 'thinking' && unreadNotifications.length && !catchupRequested) {
+  if (agentState.enabled && agentState.status !== 'thinking' && unreadNotificationCount && !catchupRequested) {
     catchupRequested = send({ type: 'agent:catch-up', voiceMode: mobileVoiceMode });
   }
   if (viewMode === 'agent') setView('agent');
 }
 
+function sessionRenderKey() {
+  return JSON.stringify({
+    activeId,
+    unread: [...unread].sort(),
+    groups: groups.map((group) => [group.id, group.title, group.color, group.sessionIds]),
+    sessions: sessions.map((session) => [session.id, session.title, session.subtitle, Boolean(session.notified), Boolean(session.inputRequired)])
+  });
+}
+
+function markSessionUnread(id) {
+  if (!id || unread.has(id)) return false;
+  unread.add(id);
+  const button = [...sessionList.querySelectorAll('.mobile-session')]
+    .find((item) => item.dataset.sessionId === id);
+  button?.classList.add('unread');
+  lastSessionRenderKey = sessionRenderKey();
+  return true;
+}
+
 function renderSessions() {
+  const renderKey = sessionRenderKey();
+  if (renderKey === lastSessionRenderKey) return;
+  lastSessionRenderKey = renderKey;
   sessionList.replaceChildren();
   const grouped = groups.length ? groups : [{ id: '', title: 'Sessions', color: '#60cdff', sessionIds: sessions.map((session) => session.id) }];
   for (const group of grouped) {
@@ -341,6 +371,7 @@ function renderSessions() {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'mobile-session';
+      button.dataset.sessionId = session.id;
       button.classList.toggle('active', session.id === activeId);
       button.classList.toggle('unread', unread.has(session.id));
       button.classList.toggle('notified', session.notified);
@@ -377,6 +408,8 @@ function connect() {
       socketHasSnapshot = true;
       groups = message.groups || [];
       sessions = message.sessions || [];
+      const liveSessionIds = new Set(sessions.map((session) => session.id));
+      for (const id of unread) if (!liveSessionIds.has(id)) unread.delete(id);
       if (!sessions.some((session) => session.id === activeId)) activeId = null;
       renderSessions();
       if (pendingCreatedSessionId && sessions.some((session) => session.id === pendingCreatedSessionId)) {
@@ -389,9 +422,11 @@ function connect() {
     if ((message.type === 'terminal:frame' || message.type === 'reset') && message.id === activeId) {
       terminalFrames.render(message.id, message.data);
     }
-    if (message.type === 'terminal:activity' && message.id !== activeId) {
-      unread.add(message.id);
-      renderSessions();
+    if (message.type === 'terminal:data' && message.id === activeId) {
+      terminalFrames.append(message.id, message.data);
+    }
+    if (message.type === 'terminal:activity' && message.id !== activeId && !unread.has(message.id)) {
+      markSessionUnread(message.id);
     }
     if (message.type === 'exit' && message.id === activeId) {
       mobileSubtitle.textContent = `Process exited with code ${message.exitCode}`;

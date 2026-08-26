@@ -17,6 +17,7 @@
       this.sessionId = null;
       this.generation = 0;
       this.pending = null;
+      this.pendingAppend = '';
       this.writing = false;
       this.preservedViewport = null;
     }
@@ -25,19 +26,41 @@
       this.sessionId = sessionId;
       this.generation += 1;
       this.preservedViewport = null;
+      this.pendingAppend = '';
       this.pending = { generation: this.generation, text: terminalFrameText(placeholder), preserveViewport: false };
       this.drain();
     }
 
     render(sessionId, value) {
       if (!sessionId || sessionId !== this.sessionId) return false;
+      this.pendingAppend = '';
       this.pending = { generation: this.generation, text: terminalFrameText(value), preserveViewport: true };
       this.drain();
       return true;
     }
 
+    append(sessionId, value) {
+      if (!sessionId || sessionId !== this.sessionId) return false;
+      this.pendingAppend += String(value || '');
+      this.drain();
+      return true;
+    }
+
     drain() {
-      if (this.writing || !this.pending) return;
+      if (this.writing) return;
+      if (!this.pending && this.pendingAppend) {
+        const generation = this.generation;
+        const text = this.pendingAppend;
+        this.pendingAppend = '';
+        this.writing = true;
+        this.write(text, () => {
+          this.writing = false;
+          if (generation !== this.generation) return this.drain();
+          this.drain();
+        });
+        return;
+      }
+      if (!this.pending) return;
       const frame = this.pending;
       this.pending = null;
       this.writing = true;
@@ -51,9 +74,11 @@
           return;
         }
         this.preservedViewport = null;
-        if (frame.generation !== this.generation) return;
-        if (viewport && !viewport.atBottom && this.restoreViewport) this.restoreViewport(viewport);
-        else this.scrollToBottom();
+        if (frame.generation === this.generation) {
+          if (viewport && !viewport.atBottom && this.restoreViewport) this.restoreViewport(viewport);
+          else this.scrollToBottom();
+        }
+        this.drain();
       });
     }
   }
