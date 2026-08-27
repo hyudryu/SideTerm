@@ -57,6 +57,7 @@ const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { rememberSessionCwd } = require('./sessions/runtime-state.cjs');
+const { createOutputFlowControl } = require('./sessions/output-flow-control.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
@@ -178,6 +179,7 @@ const DEFAULT_SETTINGS = {
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: DEFAULT_VOICE_SPEED,
+  lowGpuMode: false,
   mobileEnabled: false,
   mobilePort: 43110,
   sidebarWidth: 282,
@@ -269,6 +271,7 @@ function readSettingsRecord() {
       ttsModel: DEFAULT_SETTINGS.ttsModel,
       ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(parsed.ttsVoice) ? parsed.ttsVoice : DEFAULT_SETTINGS.ttsVoice,
       ttsSpeed: normalizeVoiceSpeed(parsed.ttsSpeed),
+      lowGpuMode: typeof parsed.lowGpuMode === 'boolean' ? parsed.lowGpuMode : DEFAULT_SETTINGS.lowGpuMode,
       mobileEnabled: Boolean(parsed.mobileEnabled),
       mobilePort: Number.isInteger(mobilePort) && mobilePort >= 1024 && mobilePort <= 65535 ? mobilePort : DEFAULT_SETTINGS.mobilePort,
       mobileToken: typeof parsed.mobileToken === 'string' && /^[a-f0-9]{32}$/.test(parsed.mobileToken) ? parsed.mobileToken : '',
@@ -278,6 +281,10 @@ function readSettingsRecord() {
     return { ...DEFAULT_SETTINGS, mobilePort: fallbackMobilePort, hotkeys: { ...DEFAULT_HOTKEYS } };
   }
 }
+
+// Hardware acceleration can only be changed before app readiness. Keep it on
+// by default for efficient terminal rendering, with an explicit low-VRAM mode.
+if (readSettingsRecord().lowGpuMode) app.disableHardwareAcceleration();
 
 function publicSettings(record = readSettingsRecord()) {
   const {
@@ -405,6 +412,7 @@ function saveSettings(update = {}) {
     ttsModel: DEFAULT_SETTINGS.ttsModel,
     ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(update.ttsVoice) ? update.ttsVoice : current.ttsVoice,
     ttsSpeed: normalizeVoiceSpeed(update.ttsSpeed, current.ttsSpeed),
+    lowGpuMode: typeof update.lowGpuMode === 'boolean' ? update.lowGpuMode : current.lowGpuMode,
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     sidebarAutoWidth: update.sidebarAutoWidth === undefined ? current.sidebarAutoWidth : Boolean(update.sidebarAutoWidth),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
@@ -2805,7 +2813,20 @@ function safeCwd(requested) {
 function send(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
+    return true;
   }
+  return false;
+}
+
+function terminalRendererCanAcknowledge() {
+  return Boolean(mainWindow
+    && !mainWindow.isDestroyed()
+    && !mainWindow.webContents.isDestroyed()
+    && !mainWindow.webContents.isLoadingMainFrame());
+}
+
+function resetTerminalOutputFlow() {
+  for (const session of sessions.values()) session.rendererFlow?.reset();
 }
 
 presentationCoordinator.registerSurface('desktop', async (text, options) => {
@@ -2837,11 +2858,17 @@ function settleDesktopPresentations(delivered = false) {
   }
 }
 
+function setMainWindowBackgroundThrottling(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.setBackgroundThrottling(Boolean(enabled));
+}
+
 function resetDesktopVoiceActivation() {
   if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
   desktopVoiceActivationTaskId = '';
   desktopVoiceActivationGeneration += 1;
   supervisorVoiceMode = false;
+  setMainWindowBackgroundThrottling(true);
   settleDesktopPresentations(false);
 }
 
@@ -3373,6 +3400,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   });
   const session = {
     processHandle,
+    rendererFlow: createOutputFlowControl(processHandle),
     tmux,
     tmuxSession,
     cwd: workingDirectory,
@@ -3390,7 +3418,9 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   const forwardOutput = (data) => {
     if (!data || sessions.get(id) !== session) return;
     observePotentialGitPush(id, data);
-    send('terminal:data', { id, data });
+    const byteLength = Buffer.byteLength(data);
+    send('terminal:data', { id, data, byteLength });
+    if (terminalRendererCanAcknowledge()) session.rendererFlow.accept(byteLength);
     session.mobileRevision += 1;
     session.mobileOutputBuffer = `${session.mobileOutputBuffer}${data}`.slice(-300_000);
     broadcastMobile({ type: 'terminal:activity', id, revision: session.mobileRevision });
@@ -3403,6 +3433,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) {
+      session.rendererFlow.dispose();
       outputNormalizer.dispose();
       return;
     }
@@ -3415,6 +3446,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
       }
     }
     sessions.delete(id);
+    session.rendererFlow.dispose();
     send('terminal:exit', { id, exitCode, signal });
     broadcastMobile({ type: 'exit', id, exitCode, signal });
     broadcastMobileSnapshot();
@@ -3437,6 +3469,7 @@ function closeSession(id) {
   if (!session) return;
   clearMobileTerminalFrame(id);
   session.outputNormalizer?.dispose();
+  session.rendererFlow.dispose();
   sessions.delete(id);
   if (session.tmux && session.tmuxSession) {
     try {
@@ -3457,6 +3490,7 @@ function detachAllSessions() {
   for (const [id, session] of sessions) {
     clearMobileTerminalFrame(id);
     session.outputNormalizer?.dispose();
+    session.rendererFlow.dispose();
     sessions.delete(id);
     try {
       session.processHandle.kill();
@@ -3497,6 +3531,9 @@ function registerIpc() {
   ipcMain.handle('terminal:create', (_event, options) => createSession(options));
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
+  });
+  ipcMain.on('terminal:data-ack', (_event, { id, byteLength }) => {
+    sessions.get(String(id || ''))?.rendererFlow.acknowledge(byteLength);
   });
   ipcMain.on('terminal:resize', (_event, { id, cols, rows }) => {
     const session = sessions.get(id);
@@ -3601,7 +3638,7 @@ function registerIpc() {
     pendingDesktopPresentations.delete(presentationId);
     pending.resolve(payload.delivered === true);
   });
-  ipcMain.on('agent:voice-mode', (_event, enabled) => {
+  ipcMain.on('agent:voice-mode', (event, enabled) => {
     appLog.info('desktop voice mode toggled', { enabled: Boolean(enabled) });
     const wasEnabled = supervisorVoiceMode;
     if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
@@ -3609,6 +3646,9 @@ function registerIpc() {
     desktopVoiceActivationGeneration += 1;
     settleDesktopPresentations(false);
     supervisorVoiceMode = Boolean(enabled);
+    // Voice activity detection needs timely renderer timers while listening.
+    // Every other background state returns to Chromium's throttled compositor.
+    event.sender.setBackgroundThrottling(!supervisorVoiceMode);
     if (supervisorVoiceMode) {
       void warmTextToSpeech().catch(() => {});
       if (!wasEnabled) {
@@ -3743,7 +3783,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      backgroundThrottling: false
+      backgroundThrottling: true
     }
   });
 
@@ -3754,9 +3794,12 @@ function createWindow() {
     if (!allowed) event.preventDefault();
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
+  mainWindow.webContents.on('did-start-loading', resetTerminalOutputFlow);
+  mainWindow.webContents.on('did-finish-load', resetTerminalOutputFlow);
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appLog.error('renderer process gone', details);
     resetDesktopVoiceActivation();
+    resetTerminalOutputFlow();
   });
   mainWindow.webContents.on('unresponsive', () => appLog.error('renderer became unresponsive'));
   mainWindow.webContents.on('responsive', () => appLog.info('renderer responsive again'));
