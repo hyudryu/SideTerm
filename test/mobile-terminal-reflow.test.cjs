@@ -38,6 +38,37 @@ test('reflow joins soft-wrapped rows and trims trailing blank lines', async () =
   assert.equal(plainText(text), 'this line is much longer than twenty columns total\r\nsecond');
 });
 
+test('reflow treats bare LF captures as line breaks', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 40, rows: 6 });
+  await writeReflow(reflow, 'first\ntwo\nthird');
+  assert.equal(plainText(reflow.serialize()), 'first\r\ntwo\r\nthird');
+});
+
+test('reflow omits wide-glyph continuation cells', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 10, rows: 2 });
+  await writeReflow(reflow, '\x1b[1;1H漢X');
+  assert.equal(plainText(reflow.serialize()), '漢X');
+});
+
+test('reflow preserves concealed cells as concealed', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 20, rows: 2 });
+  await writeReflow(reflow, '\x1b[1;1H\x1b[8msecret\x1b[0m shown');
+  assert.match(reflow.serialize(), /\x1b\[8msecret\x1b\[0m/);
+});
+
+test('reflow trims styled trailing padding before the reset', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 20, rows: 2 });
+  await writeReflow(reflow, '\x1b[1;1H\x1b[41mZ          \x1b[0m');
+  assert.equal(plainText(reflow.serialize()), 'Z');
+  assert.match(reflow.serialize(), /Z(\x1b\[0m)?$/);
+});
+
+test('reflow keeps boundary spaces when joining wrapped rows', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 5, rows: 4 });
+  await writeReflow(reflow, 'word next');
+  assert.equal(plainText(reflow.serialize()), 'word next');
+});
+
 test('reflow resizes the model grid and caps serialized history', async () => {
   const reflow = new TerminalReflow({ Terminal, cols: 10, rows: 4, maxLines: 3 });
   reflow.resize(30, 5);

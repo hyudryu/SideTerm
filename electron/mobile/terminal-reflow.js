@@ -38,6 +38,7 @@
     if (cell.isDim?.()) params.push('2');
     if (cell.isItalic?.()) params.push('3');
     if (cell.isUnderline?.()) params.push('4');
+    if (cell.isInvisible?.()) params.push('8');
     if (cell.isInverse?.()) params.push('7');
     if (cell.isStrikethrough?.()) params.push('9');
     const fg = colorParams(cell.getFgColorMode?.() || 0, cell.getFgColor?.() || 0, false);
@@ -47,29 +48,58 @@
     return params.join(';');
   }
 
-  function serializeLine(line, columns, scratchCell) {
-    let text = '';
+  // serializeLine renders one physical row. Trailing-space padding is only
+  // trimmed on rows that are not continued by a soft-wrapped successor, so a
+  // real space on the final column of a wrapped row survives the join.
+  function serializeLine(line, columns, scratchCell, trimTail) {
+    const parts = [];
+    let charCount = 0;
     let active = '';
     for (let x = 0; x < columns; x += 1) {
       const cell = line.getCell(x, scratchCell);
       if (!cell) break;
+      if ((cell.getWidth?.() ?? 1) === 0) continue;
       const params = attributeParams(cell);
       if (params !== active) {
-        text += active ? SGR_RESET : '';
-        if (params) text += `\x1b[${params}m`;
+        if (active) parts.push(SGR_RESET);
+        if (params) parts.push(`\x1b[${params}m`);
         active = params;
       }
-      text += cell.getChars() || ' ';
+      parts.push(cell.getChars() || ' ');
+      charCount += 1;
     }
-    if (active) text += SGR_RESET;
-    return text.replace(/[ ]+$/, '');
+    if (!charCount) return '';
+    let poppedStyle = false;
+    if (trimTail) {
+      // Pop trailing padding and any style tokens that only styled it — a
+      // trailing SGR run decorates nothing once its spaces are gone.
+      while (parts.length) {
+        const last = parts[parts.length - 1];
+        if (last === ' ') {
+          parts.pop();
+          continue;
+        }
+        if (last.charCodeAt(0) === 27) {
+          poppedStyle = true;
+          parts.pop();
+          continue;
+        }
+        break;
+      }
+    }
+    // Close any style the line still holds so it cannot leak into the next
+    // serialized line on the phone.
+    if (active || poppedStyle) parts.push(SGR_RESET);
+    return parts.join('');
   }
 
   class TerminalReflow {
     constructor({ Terminal, maxLines = 400, cols = 80, rows = 24 } = {}) {
       if (typeof Terminal !== 'function') throw new Error('TerminalReflow requires an xterm Terminal constructor.');
       this.maxLines = Math.max(1, Math.floor(maxLines) || 400);
-      this.model = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+      // convertEol replays tmux-style LF captures as line breaks; captures and
+      // raw PTY streams share the model either way.
+      this.model = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true, convertEol: true });
       this.scratchCell = this.model.buffer.active.getNullCell();
       this.modelSessionCols = cols;
     }
@@ -105,7 +135,8 @@
       for (let y = startLine; y < end; y += 1) {
         const line = buffer.getLine(y);
         if (!line) continue;
-        const text = serializeLine(line, columns, this.scratchCell);
+        const next = y + 1 < end ? buffer.getLine(y + 1) : null;
+        const text = serializeLine(line, columns, this.scratchCell, !next?.isWrapped);
         if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
         else lines.push(text);
       }
