@@ -32,6 +32,7 @@ const api = window.sideTerm;
 const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
+const LIVE_TERMINAL_SCROLLBACK_LINES = 3_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
@@ -106,6 +107,7 @@ let settings = {
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: 1,
+  lowGpuMode: false,
   sidebarWidth: 282,
   sidebarAutoWidth: false,
   hotkeys: { ...DEFAULT_HOTKEYS }
@@ -119,7 +121,7 @@ const terminalCaptureResizeTokens = new Map();
 let desktopVoiceMode = false;
 let voiceStream = null;
 let voiceAudioContext = null;
-let voiceMonitorFrame = null;
+let voiceMonitorTimer = null;
 let voiceRecorder = null;
 let voiceCaptureMuted = false;
 let voiceTranscriptionInFlight = false;
@@ -316,6 +318,10 @@ document.querySelector('#app').innerHTML = `
               <label class="toggle-row">
                 <span><strong>Auto sidebar width</strong><small>Fit the sidebar to its content; it adjusts as session titles change.</small></span>
                 <input id="sidebar-auto-width" type="checkbox"><i></i>
+              </label>
+              <label class="toggle-row">
+                <span><strong>Low GPU mode</strong><small>Use software rendering to reserve VRAM for other apps. Changing this requires a restart.</small></span>
+                <input id="low-gpu-mode" type="checkbox"><i></i>
               </label>
             </section>
             <section class="settings-section">
@@ -514,6 +520,7 @@ function populateSettingsPanel() {
   document.querySelector('#tts-speed').value = String(settings.ttsSpeed || 1);
   document.querySelector('#tts-speed-value').textContent = `${Number(settings.ttsSpeed || 1).toFixed(2)}×`;
   document.querySelector('#sidebar-auto-width').checked = Boolean(settings.sidebarAutoWidth);
+  document.querySelector('#low-gpu-mode').checked = settings.lowGpuMode !== false;
   document.querySelector('#settings-status').textContent = '';
   document.querySelector('#ai-test-status').textContent = '';
   renderHotkeyInputs();
@@ -603,6 +610,7 @@ function settingsPayload() {
     ttsModel: document.querySelector('#tts-model').value,
     ttsVoice: document.querySelector('#tts-voice').value,
     ttsSpeed: Number(document.querySelector('#tts-speed').value),
+    lowGpuMode: document.querySelector('#low-gpu-mode').checked,
     sidebarAutoWidth: document.querySelector('#sidebar-auto-width').checked,
     hotkeys
   };
@@ -749,6 +757,7 @@ async function handleProviderFeatureToggle(input, featureName, settingKey) {
 async function saveSettingsFromPanel({ close = true } = {}) {
   const status = document.querySelector('#settings-status');
   const payload = settingsPayload();
+  const lowGpuModeChanged = Boolean(settings.lowGpuMode) !== payload.lowGpuMode;
   const assigned = Object.values(payload.hotkeys);
   if (new Set(assigned).size !== assigned.length) {
     status.textContent = 'Each action needs a unique keyboard shortcut.';
@@ -760,6 +769,7 @@ async function saveSettingsFromPanel({ close = true } = {}) {
     applySettings();
     status.textContent = 'Saved';
     if (close) closeSettingsPanel();
+    if (lowGpuModeChanged) showToast('Restart SideTerm to apply Low GPU mode');
     return true;
   } catch (error) {
     status.textContent = error.message;
@@ -2129,9 +2139,10 @@ async function startDesktopVoiceMode() {
       preRoll = [];
       void processVoiceUtterance(blob, duration, { shortcutBypass });
     }
-    voiceMonitorFrame = requestAnimationFrame(monitor);
   };
-  voiceMonitorFrame = requestAnimationFrame(monitor);
+  // VAD is audio sampling, not visual animation. A 30 Hz timer keeps speech
+  // boundaries responsive without forcing a 60 Hz compositor frame loop.
+  voiceMonitorTimer = window.setInterval(monitor, 33);
   desktopVoiceMode = true;
   api.setAgentVoiceMode(true);
   document.querySelector('#desktop-voice-toggle').checked = true;
@@ -2146,8 +2157,8 @@ function stopDesktopVoiceMode() {
   voiceReplyInteractionId = '';
   voiceShortcutBypassUntil = 0;
   api.setAgentVoiceMode(false);
-  if (voiceMonitorFrame) cancelAnimationFrame(voiceMonitorFrame);
-  voiceMonitorFrame = null;
+  if (voiceMonitorTimer) window.clearInterval(voiceMonitorTimer);
+  voiceMonitorTimer = null;
   if (voiceRecorder?.state !== 'inactive') voiceRecorder.stop();
   voiceRecorder = null;
   for (const track of voiceStream?.getTracks() || []) track.stop();
@@ -2471,6 +2482,8 @@ function activateSession(id) {
   if (supervisorDashboardActive) closeAgentPanel();
   if (activeTitle.isContentEditable) activeTitle.blur();
   const previous = sessions.get(activeId);
+  if (previous && previous.id !== id) previous.terminal.options.cursorBlink = false;
+  next.terminal.options.cursorBlink = true;
   if (previous && previous.id !== id && previous.busy && previous.activityArmed) {
     previous.notifyWhenIdle = true;
   }
@@ -2789,7 +2802,7 @@ async function addSession(cwd, options = {}) {
   const terminal = new Terminal({
     allowProposedApi: false,
     convertEol: true,
-    cursorBlink: true,
+    cursorBlink: false,
     cursorStyle: 'bar',
     cursorWidth: 2,
     fontFamily: "'Cascadia Code', 'CaskaydiaCove Nerd Font', 'Ubuntu Mono', monospace",
@@ -2798,7 +2811,7 @@ async function addSession(cwd, options = {}) {
     fontWeightBold: '600',
     letterSpacing: 0.1,
     lineHeight: 1.15,
-    scrollback: 10000,
+    scrollback: LIVE_TERMINAL_SCROLLBACK_LINES,
     linkHandler: {
       activate: (event, text) => openTerminalLink(event, text, api.openExternal),
       allowNonHttpProtocols: false
@@ -3185,12 +3198,16 @@ sessionList.addEventListener('drop', (event) => {
 
 sessionList.addEventListener('dragend', cleanupDrag);
 
-api.onData(({ id, data }) => {
+api.onData(({ id, data, byteLength }) => {
   const session = sessions.get(id);
-  if (!session) return;
+  if (!session) {
+    api.acknowledgeData(id, byteLength);
+    return;
+  }
   session.terminal.write(data, () => {
     noteSessionBusy(session, data);
     noteBackgroundActivity(session, data);
+    api.acknowledgeData(id, byteLength);
   });
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
