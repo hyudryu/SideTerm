@@ -1784,7 +1784,12 @@ async function performSupervisorChat(text, {
       state: publicAgentState()
     };
   } catch (error) {
-    agentStatus = error?.name === 'AbortError' ? 'idle' : 'error';
+    // Only an actual actor cancellation is a clean stop; an upstream abort
+    // (timeout, transport shutdown) must surface as an error state.
+    const actorCancelled = (() => {
+      try { return Boolean(isCancelled?.()); } catch { return false; }
+    })();
+    agentStatus = error?.name === 'AbortError' && actorCancelled ? 'idle' : 'error';
     broadcastAgentState();
     throw error;
   }
@@ -2246,7 +2251,7 @@ async function executeAgentConfirmation(id, approved) {
 }
 
 function resolveAgentConfirmation(id, approved) {
-  return runConfirmationExecution(id, () => executeAgentConfirmation(id, approved));
+  return runConfirmationExecution(id, () => executeAgentConfirmation(id, approved), approved);
 }
 
 function voiceRuntimeDirectory() {
@@ -2482,7 +2487,7 @@ function requestSpeechInstall(kind) {
   return speechStatus();
 }
 
-async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed) {
+async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed, token = '') {
   if (!speechStatus().ttsInstalled) throw new Error('Install Pocket TTS in Settings first.');
   const playbackRate = normalizeVoiceSpeed(requestedSpeed, readSettingsRecord().ttsSpeed);
   const safeText = String(text || '').replace(/[`*_#>]/g, '').trim().slice(0, 4000);
@@ -2496,7 +2501,8 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
       model: DEFAULT_SETTINGS.ttsModel,
       voice: String(voice),
       text: safeText,
-      output: outputPath
+      output: outputPath,
+      token: String(token || '')
     });
     appLog.info('speech synthesized', { ms: Date.now() - startedAt, chars: safeText.length });
     return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64'), playbackRate };
@@ -3704,8 +3710,8 @@ function registerIpc() {
     }
   });
   ipcMain.handle('voice:preview', (_event, { voice, speed }) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice, speed));
-  ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
-  ipcMain.handle('voice:synthesize-cancel', () => speechWorker?.cancelSynthesis() || false);
+  ipcMain.handle('voice:synthesize', (_event, { text, voice, token }) => synthesizeSpeech(text, voice, undefined, token));
+  ipcMain.handle('voice:synthesize-cancel', (_event, { token } = {}) => speechWorker?.cancelSynthesis('Speech synthesis was cancelled.', String(token || '')) || false);
   ipcMain.handle('voice:transcribe', async (_event, { bytes, mimeType, allowWithoutWakeWord }) => {
     const startedAt = Date.now();
     try {

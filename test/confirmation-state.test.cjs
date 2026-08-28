@@ -101,3 +101,19 @@ test('legacy confirmations gain approval interactions before pair reconciliation
   assert.equal(state.interactions[0].kind, 'approval');
   assert.equal(state.activeInteractionId, 'legacy');
 });
+
+test('a conflicting concurrent decision is rejected instead of sharing the outcome', async () => {
+  const guard = createConfirmationExecutionGuard();
+  let release;
+  const action = () => new Promise((resolve) => { release = () => resolve('approved-outcome'); });
+  const approval = guard('merge-9', action, 'true');
+  await Promise.resolve();
+  await assert.rejects(
+    guard('merge-9', () => Promise.resolve('denied-outcome'), 'false'),
+    /opposite answer/
+  );
+  release();
+  assert.equal(await approval, 'approved-outcome');
+  // Once settled, either decision runs again.
+  assert.equal(await guard('merge-9', async () => 'retry', 'false'), 'retry');
+});

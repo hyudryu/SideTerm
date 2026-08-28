@@ -29,7 +29,7 @@ test('a user voice request supersedes stale proactive speech before acknowledgin
   assert.match(main, /onAccepted: voice \? beginDesktopVoiceRequest : null/);
   assert.match(renderer, /let agentSpeechGeneration = 0/);
   assert.match(renderer, /function supersedeAgentSpeech\(\)[\s\S]*agentSpeechGeneration \+= 1;[\s\S]*interruptVoicePlayback\(\)[\s\S]*agentSpeechQueue = Promise\.resolve\(true\)/);
-  assert.match(renderer, /const audio = await api\.synthesizeSpeech\(text\);\s*if \(generation !== agentSpeechGeneration \|\| !desktopVoiceMode\) return false;\s*const completed = await playSpeechAudio\(audio\)/);
+  assert.match(renderer, /const audio = await api\.synthesizeSpeech\(text, undefined, 'desktop-voice'\);\s*if \(generation !== agentSpeechGeneration \|\| !desktopVoiceMode\) return false;\s*const completed = await playSpeechAudio\(audio\)/);
   assert.match(renderer, /onAgentVoicePing\(async \(\{[^}]*userRequest[^}]*\}[\s\S]*if \(userRequest\) supersedeAgentSpeech\(\)/);
 });
 

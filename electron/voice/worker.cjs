@@ -64,8 +64,9 @@ class PersistentSpeechWorker {
         reject(new Error('The local speech operation timed out.'));
         this.stop();
       }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer, command });
-      child.stdin.write(`${JSON.stringify({ requestId, command, ...payload })}\n`, (error) => {
+      this.pending.set(requestId, { resolve, reject, timer, command, token: String(payload.token || '') });
+      const { token, ...sidecarPayload } = payload;
+      child.stdin.write(`${JSON.stringify({ requestId, command, ...sidecarPayload })}\n`, (error) => {
         if (!error || !this.pending.has(requestId)) return;
         this.pending.delete(requestId);
         clearTimeout(timer);
@@ -75,21 +76,30 @@ class PersistentSpeechWorker {
   }
 
   // Superseded syntheses must not keep the serial sidecar busy while newer
-  // speech waits behind them. Rejecting the pending synthesis unblocks its
-  // caller; restarting the sidecar is only safe when no transcription is
-  // waiting, because the kill would fail that work mid-flight.
-  cancelSynthesis(reason = 'Speech synthesis was cancelled.') {
+  // speech waits behind them. Only requests carrying the cancelled token are
+  // rejected, so concurrent mobile or preview syntheses are untouched. The
+  // sidecar restart is the only way to stop work it already started, so it
+  // happens solely when nothing that a kill would fail remains pending.
+  cancelSynthesis(reason = 'Speech synthesis was cancelled.', token = '') {
     const entries = [...this.pending.entries()];
-    if (!entries.length) return false;
-    const oldestCommand = entries[0][1].command;
-    const synthEntries = entries.filter(([, entry]) => entry.command === 'synthesize');
-    if (!synthEntries.length) return false;
-    for (const [id, entry] of synthEntries) {
+    const matching = entries.filter(([, entry]) => entry.command === 'synthesize'
+      && (!token || entry.token === token));
+    if (!matching.length) return false;
+    for (const [id, entry] of matching) {
       clearTimeout(entry.timer);
       entry.reject(new Error(reason));
       this.pending.delete(id);
     }
-    if (oldestCommand === 'synthesize' && !this.pending.size) this.stop();
+    const remaining = [...this.pending.values()];
+    const oldest = entries[0][1];
+    // A kill fails every pending request, so it must wait until only
+    // best-effort speech work (the stale synthesis, a TTS warm-up) remains;
+    // transcriptions and other surfaces' syntheses are spared the wait.
+    const remainingImportant = remaining.some((entry) => entry.command === 'transcribe'
+      || (entry.command === 'synthesize' && (!token || entry.token !== token)));
+    if (!remainingImportant && (oldest.command === 'synthesize' || oldest.command === 'warm-tts')) {
+      this.stop();
+    }
     return true;
   }
 

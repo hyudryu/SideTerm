@@ -13,14 +13,20 @@ function restoreConfirmation(state, confirmation) {
 
 function createConfirmationExecutionGuard() {
   const inFlight = new Map();
-  return (id, execute) => {
+  return (id, execute, decision = '') => {
     const key = String(id || '');
+    const wanted = String(decision);
     const existing = inFlight.get(key);
-    if (existing) return existing;
+    if (existing) {
+      // Identical duplicate decisions share the in-flight execution; an
+      // opposite answer must not inherit the other side's outcome.
+      if (existing.decision === wanted) return existing.pending;
+      return Promise.reject(new Error('That confirmation is already being decided with the opposite answer.'));
+    }
     const pending = Promise.resolve().then(execute);
-    inFlight.set(key, pending);
+    inFlight.set(key, { decision: wanted, pending });
     void pending.finally(() => {
-      if (inFlight.get(key) === pending) inFlight.delete(key);
+      if (inFlight.get(key)?.pending === pending) inFlight.delete(key);
     }).catch(() => {});
     return pending;
   };

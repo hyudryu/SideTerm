@@ -1972,7 +1972,7 @@ function supersedeAgentSpeech() {
   interruptVoicePlayback();
   // Resetting the queue alone leaves the stale synthesis occupying the serial
   // speech worker, so the next acknowledgement stays queued behind it.
-  api.cancelSpeechSynthesis?.().catch(() => {});
+  api.cancelSpeechSynthesis?.('desktop-voice').catch(() => {});
   agentSpeechQueue = Promise.resolve(true);
   return agentSpeechGeneration;
 }
@@ -1980,7 +1980,7 @@ function supersedeAgentSpeech() {
 async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}, generation = agentSpeechGeneration) {
   if (!desktopVoiceMode) return true;
   try {
-    const audio = await api.synthesizeSpeech(text);
+    const audio = await api.synthesizeSpeech(text, undefined, 'desktop-voice');
     if (generation !== agentSpeechGeneration || !desktopVoiceMode) return false;
     const completed = await playSpeechAudio(audio);
     if (completed && openReplyWindow) {

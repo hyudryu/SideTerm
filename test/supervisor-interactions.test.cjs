@@ -32,6 +32,8 @@ test('a merge confirmation accepts natural explicit speech without guessing', ()
   assert.equal(interpretConfirmationApprovalAnswer("Yes, but let's not merge it.", merge), false);
   assert.equal(interpretConfirmationApprovalAnswer('Okay, not merge it yet.', merge), false);
   assert.equal(interpretConfirmationApprovalAnswer('Yes, merge it.', merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer("Don't wait for anything else; please merge it now.", merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer('Cancel the merge.', merge), false);
   assert.equal(interpretConfirmationApprovalAnswer('Maybe after the deployment finishes.', merge), null);
   assert.equal(interpretConfirmationApprovalAnswer('Is it safe to merge?', merge), null);
   assert.equal(interpretConfirmationApprovalAnswer('Yes, approve the terminal input.', merge), null);
