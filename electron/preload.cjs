@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   close: (id) => ipcRenderer.send('terminal:close', id),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
+  acknowledgeData: (id, byteLength) => ipcRenderer.send('terminal:data-ack', { id, byteLength }),
   onRemoteInput: (callback) => subscribe('terminal:remote-input', callback),
   onExit: (callback) => subscribe('terminal:exit', callback),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
@@ -55,7 +56,8 @@ contextBridge.exposeInMainWorld('sideTerm', {
     return result.status;
   },
   previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
-  synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
+  synthesizeSpeech: (text, voice, token) => ipcRenderer.invoke('voice:synthesize', { text, voice, token }),
+  cancelSpeechSynthesis: (token) => ipcRenderer.invoke('voice:synthesize-cancel', { token }),
   transcribeSpeech: (bytes, mimeType, allowWithoutWakeWord = false) => ipcRenderer.invoke('voice:transcribe', {
     bytes,
     mimeType,

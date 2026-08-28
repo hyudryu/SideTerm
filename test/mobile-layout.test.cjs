@@ -64,3 +64,19 @@ test('mobile loads the one-tap terminal submit helper before its app code', () =
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /route === 'terminal-submit\.js'/);
 });
+
+test('hidden creation rows stay hidden despite display overrides', () => {
+  const css = fs.readFileSync(path.join(mobileDirectory, 'mobile.css'), 'utf8');
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+});
+
+test('new-group creation asks only for a group name', () => {
+  const html = fs.readFileSync(path.join(mobileDirectory, 'index.html'), 'utf8');
+  assert.match(html, /<label id="mobile-create-name-row">/);
+  assert.match(html, /<label id="mobile-create-cwd-row">/);
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  assert.match(script, /document\.querySelector\('#mobile-create-name-row'\)\.hidden = creatingGroup;/);
+  assert.match(script, /document\.querySelector\('#mobile-create-cwd-row'\)\.hidden = creatingGroup;/);
+  assert.match(script, /mobileCreateCwd\.value = creatingGroup \? '' : \(activeSession\?\.cwd \|\| ''\);/);
+  assert.match(script, /mobileCreateName\.value = '';/);
+});

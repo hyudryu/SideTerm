@@ -2,12 +2,31 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
+const { claimConfirmation, createConfirmationExecutionGuard, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('../electron/agent/confirmation-state.cjs');
 
 test('a confirmation can only be claimed once', () => {
   const state = { confirmations: [{ id: 'one', body: 'post once' }] };
   assert.equal(claimConfirmation(state, 'one').body, 'post once');
   assert.throws(() => claimConfirmation(state, 'one'), /no longer pending/);
+});
+
+test('concurrent confirmation responses share one execution', async () => {
+  const executeOnce = createConfirmationExecutionGuard();
+  let release;
+  let calls = 0;
+  const action = () => {
+    calls += 1;
+    return new Promise((resolve) => { release = () => resolve('merged'); });
+  };
+  const first = executeOnce('merge-1', action);
+  const second = executeOnce('merge-1', action);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal(first, second);
+  release();
+  assert.deepEqual(await Promise.all([first, second]), ['merged', 'merged']);
+  await executeOnce('merge-1', async () => { calls += 1; });
+  assert.equal(calls, 2);
 });
 
 test('cancelling a Codex watch also retires its merge interaction', () => {
@@ -81,4 +100,20 @@ test('legacy confirmations gain approval interactions before pair reconciliation
   assert.equal(state.interactions[0].id, 'legacy');
   assert.equal(state.interactions[0].kind, 'approval');
   assert.equal(state.activeInteractionId, 'legacy');
+});
+
+test('a conflicting concurrent decision is rejected instead of sharing the outcome', async () => {
+  const guard = createConfirmationExecutionGuard();
+  let release;
+  const action = () => new Promise((resolve) => { release = () => resolve('approved-outcome'); });
+  const approval = guard('merge-9', action, 'true');
+  await Promise.resolve();
+  await assert.rejects(
+    guard('merge-9', () => Promise.resolve('denied-outcome'), 'false'),
+    /opposite answer/
+  );
+  release();
+  assert.equal(await approval, 'approved-outcome');
+  // Once settled, either decision runs again.
+  assert.equal(await guard('merge-9', async () => 'retry', 'false'), 'retry');
 });

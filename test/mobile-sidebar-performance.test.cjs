@@ -51,3 +51,16 @@ test('tmux snapshots honor drawer visibility and keep activity for other viewers
   assert.match(main, /client\.bufferedAmount > MOBILE_DELTA_SEND_CAP/);
   assert.match(main, /if \(client\.sideTermResyncTimer\) clearTimeout\(client\.sideTermResyncTimer\);/);
 });
+
+test('server resync waits for WebSocket backpressure to drain', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /const state = mobileResyncState\(client\);[\s\S]*state === 'wait'[\s\S]*scheduleMobileResync\(client\);/);
+  assert.match(main, /if \(client\.sideTermDeltaBacklog\) \{[\s\S]*scheduleMobileResync\(client\);[\s\S]*continue;/);
+});
+
+test('exited mobile sessions retain a selectable final frame', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /const mobileExitedSessions = new Map\(\);/);
+  assert.match(main, /retainMobileExitedSession\(id, session, finalScreen, exitCode\);[\s\S]*sessions\.delete\(id\);[\s\S]*broadcastMobileSnapshot\(\);/);
+  assert.match(main, /message\.type === 'select' && \(session \|\| mobileExitedSessions\.has/);
+});

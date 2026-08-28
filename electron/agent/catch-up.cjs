@@ -66,6 +66,9 @@ function isNoUpdateResponse(value) {
 }
 
 function automaticPresenterSentinel(value) {
+  // Only prompts instruct the model to answer with these exact sentinels.
+  // Model text like "Cancelled by user" can be a legitimate update (a canceled
+  // job), so cancellation state is never inferred from response content.
   const normalized = String(value || '').trim().replace(/[.!]+$/, '').toUpperCase();
   return normalized === 'NO_UPDATE' || normalized === 'NEEDS_ENRICHMENT' ? normalized : '';
 }

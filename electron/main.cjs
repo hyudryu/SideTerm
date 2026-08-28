@@ -12,7 +12,8 @@ const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } =
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
 const { mobileAgentState } = require('./mobile/agent-state.cjs');
-const { claimConfirmation, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
+const { MOBILE_DELTA_SEND_CAP, mobileResyncState } = require('./mobile/delta-backpressure.cjs');
+const { claimConfirmation, createConfirmationExecutionGuard, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
 const {
@@ -51,13 +52,14 @@ const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.
 const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
-const { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
+const { interpretConfirmationApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
 const { ALLOW, ASK_USER, authorize } = require('./supervisor/permissions.cjs');
 const { deterministicPresentation, PresentationCoordinator, presentationDelivered } = require('./supervisor/presentation.cjs');
 const { SentenceBuffer } = require('./supervisor/sentence-buffer.cjs');
 const { inferEventKind, semanticStateForEvent } = require('./supervisor/outcome.cjs');
 const { SessionIndex } = require('./sessions/index.cjs');
 const { rememberSessionCwd } = require('./sessions/runtime-state.cjs');
+const { createOutputFlowControl } = require('./sessions/output-flow-control.cjs');
 const { canSubmitTuiKey, namedKeyData, selectionKeys, tuiSelectionAccepted, tuiSnapshot } = require('./sessions/tui.cjs');
 const { DeepSeekHarnessBackend } = require('./sessions/harness-backend.cjs');
 const { HarnessBridgeClient } = require('./sessions/harness-bridge-client.cjs');
@@ -100,6 +102,8 @@ let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
+const mobileExitedSessions = new Map();
+const MOBILE_EXITED_SESSION_LIMIT = 20;
 let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
@@ -116,6 +120,7 @@ const pendingDesktopPresentations = new Map();
 const pendingMobilePresentations = new Map();
 const voiceAcknowledgements = new VoiceAcknowledgementPicker();
 const supervisorActor = new SupervisorActor();
+const runConfirmationExecution = createConfirmationExecutionGuard();
 const presentationCoordinator = new PresentationCoordinator();
 const supervisorTurnContext = new AsyncLocalStorage();
 const mobilePresentationSurfaces = new WeakMap();
@@ -179,6 +184,7 @@ const DEFAULT_SETTINGS = {
   ttsModel: 'kyutai/pocket-tts',
   ttsVoice: 'alba',
   ttsSpeed: DEFAULT_VOICE_SPEED,
+  lowGpuMode: false,
   mobileEnabled: false,
   mobilePort: 43110,
   sidebarWidth: 282,
@@ -270,6 +276,7 @@ function readSettingsRecord() {
       ttsModel: DEFAULT_SETTINGS.ttsModel,
       ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(parsed.ttsVoice) ? parsed.ttsVoice : DEFAULT_SETTINGS.ttsVoice,
       ttsSpeed: normalizeVoiceSpeed(parsed.ttsSpeed),
+      lowGpuMode: typeof parsed.lowGpuMode === 'boolean' ? parsed.lowGpuMode : DEFAULT_SETTINGS.lowGpuMode,
       mobileEnabled: Boolean(parsed.mobileEnabled),
       mobilePort: Number.isInteger(mobilePort) && mobilePort >= 1024 && mobilePort <= 65535 ? mobilePort : DEFAULT_SETTINGS.mobilePort,
       mobileToken: typeof parsed.mobileToken === 'string' && /^[a-f0-9]{32}$/.test(parsed.mobileToken) ? parsed.mobileToken : '',
@@ -279,6 +286,10 @@ function readSettingsRecord() {
     return { ...DEFAULT_SETTINGS, mobilePort: fallbackMobilePort, hotkeys: { ...DEFAULT_HOTKEYS } };
   }
 }
+
+// Hardware acceleration can only be changed before app readiness. Keep it on
+// by default for efficient terminal rendering, with an explicit low-VRAM mode.
+if (readSettingsRecord().lowGpuMode) app.disableHardwareAcceleration();
 
 function publicSettings(record = readSettingsRecord()) {
   const {
@@ -406,6 +417,7 @@ function saveSettings(update = {}) {
     ttsModel: DEFAULT_SETTINGS.ttsModel,
     ttsVoice: ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'].includes(update.ttsVoice) ? update.ttsVoice : current.ttsVoice,
     ttsSpeed: normalizeVoiceSpeed(update.ttsSpeed, current.ttsSpeed),
+    lowGpuMode: typeof update.lowGpuMode === 'boolean' ? update.lowGpuMode : current.lowGpuMode,
     sidebarWidth: Math.max(210, Math.min(480, Number(update.sidebarWidth) || current.sidebarWidth)),
     sidebarAutoWidth: update.sidebarAutoWidth === undefined ? current.sidebarAutoWidth : Boolean(update.sidebarAutoWidth),
     hotkeys: { ...DEFAULT_HOTKEYS, ...current.hotkeys, ...(update.hotkeys || {}) }
@@ -1668,7 +1680,8 @@ async function performSupervisorChat(text, {
   spokenRequest = false,
   automatic = false,
   interactionId = '',
-  onTextDelta = null
+  onTextDelta = null,
+  isCancelled = null
 } = {}) {
   const settings = readSettingsRecord();
   if (!settings.agentEnabled) throw new Error('Enable the Supervisor in Settings first.');
@@ -1682,15 +1695,33 @@ async function performSupervisorChat(text, {
   const responseInteractionId = String(interactionId || (spokenRequest ? '' : state.activeInteractionId));
   const pendingInteraction = state.interactions.find((item) => item.id === responseInteractionId);
   const pendingConfirmation = state.confirmations.find((item) => item.id === responseInteractionId);
-  const approvalAnswer = interpretApprovalAnswer(promptText);
-  const answeredInteraction = !synthetic && shouldConsumeInteractionAnswer(pendingInteraction, promptText)
+  const approvalAnswer = interpretConfirmationApprovalAnswer(promptText, pendingConfirmation);
+  const shouldConsumeAnswer = pendingInteraction?.kind === 'approval'
+    ? approvalAnswer !== null
+    : shouldConsumeInteractionAnswer(pendingInteraction, promptText);
+  const answeredInteraction = !synthetic && shouldConsumeAnswer
     ? interactionManagerFor(state).answer(promptText, responseInteractionId)
     : null;
   if (!synthetic) addAgentMessage(state, 'user', promptText);
   writeAgentState(state);
   if (answeredInteraction?.kind === 'approval' && pendingConfirmation && approvalAnswer !== null) {
-    await resolveAgentConfirmation(pendingConfirmation.id, approvalAnswer);
-    state = readAgentState();
+    const resolved = await resolveAgentConfirmation(pendingConfirmation.id, approvalAnswer);
+    const latest = readAgentState();
+    latest.actionResults = latest.actionResults.filter((item) => item.createdAt !== resolved.actionResult.createdAt
+      || item.text !== resolved.actionResult.text);
+    writeAgentState(latest);
+    agentStatus = 'idle';
+    broadcastAgentState();
+    // This short-circuit bypasses the catch-up scheduling below, so schedule
+    // it here: events queued behind the confirmation must still flush.
+    queueMicrotask(scheduleProactiveCatchUp);
+    return {
+      response: resolved.resultText,
+      speech: voice ? speechSummary(resolved.resultText) : resolved.resultText,
+      interactionId: '',
+      needsEnrichment: false,
+      state: publicAgentState()
+    };
   }
   if (answeredInteraction) queueMicrotask(scheduleProactiveCatchUp);
   agentStatus = 'thinking';
@@ -1728,6 +1759,11 @@ async function performSupervisorChat(text, {
     const result = await supervisorTurnContext.run(turn, () => (
       runtime.chat(enrichedPrompt, settings, readApiKey(settings), { automatic, onTextDelta })
     ));
+    if (isCancelled?.()) {
+      const error = new Error('Supervisor task was cancelled.');
+      error.name = 'AbortError';
+      throw error;
+    }
     const latest = readAgentState();
     const turnConfirmationIds = new Set(turn.confirmationIds);
     const turnInteraction = latest.interactions
@@ -1760,7 +1796,12 @@ async function performSupervisorChat(text, {
       state: publicAgentState()
     };
   } catch (error) {
-    agentStatus = 'error';
+    // Only an actual actor cancellation is a clean stop; an upstream abort
+    // (timeout, transport shutdown) must surface as an error state.
+    const actorCancelled = (() => {
+      try { return Boolean(isCancelled?.()); } catch { return false; }
+    })();
+    agentStatus = error?.name === 'AbortError' && actorCancelled ? 'idle' : 'error';
     broadcastAgentState();
     throw error;
   }
@@ -1773,7 +1814,7 @@ function chatWithSupervisor(text, options = {}) {
     : (options.automatic || options.proactive) ? 2 : 0;
   const startedAt = Date.now();
   const task = supervisorActor.enqueue(
-    () => performSupervisorChat(text, options),
+    ({ isCancelled }) => performSupervisorChat(text, { ...options, isCancelled }),
     {
       priority,
       id: options.taskId,
@@ -2124,7 +2165,7 @@ function recordSessionFinished(payload = {}) {
   return broadcastAgentState();
 }
 
-async function resolveAgentConfirmation(id, approved) {
+async function executeAgentConfirmation(id, approved) {
   const claimedState = readAgentState();
   const confirmation = claimConfirmation(claimedState, id);
   interactionManagerFor(claimedState).answer(approved ? 'Approved' : 'Denied', id);
@@ -2203,12 +2244,12 @@ async function resolveAgentConfirmation(id, approved) {
     }
     if (archivedRecord) state.archivedSessions.push(archivedRecord);
     settleInteractionEvents(state, confirmation.id);
-    state.actionResults.push({ text: resultText, createdAt: Date.now() });
+    const actionResult = { text: resultText, createdAt: Date.now() };
+    state.actionResults.push(actionResult);
     addAgentMessage(state, 'event', resultText);
     writeAgentState(state);
     if (refreshPullRequestUrl) await monitorPullRequest(refreshPullRequestUrl, '', { notify: false }).catch(() => {});
-    queueMicrotask(scheduleProactiveCatchUp);
-    return broadcastAgentState();
+    return { state: broadcastAgentState(), resultText, actionResult };
   } catch (error) {
     if (!actionCommitted) {
       const recovery = readAgentState();
@@ -2219,6 +2260,10 @@ async function resolveAgentConfirmation(id, approved) {
     }
     throw error;
   }
+}
+
+function resolveAgentConfirmation(id, approved) {
+  return runConfirmationExecution(id, () => executeAgentConfirmation(id, approved), approved);
 }
 
 function voiceRuntimeDirectory() {
@@ -2454,7 +2499,7 @@ function requestSpeechInstall(kind) {
   return speechStatus();
 }
 
-async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed) {
+async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, requestedSpeed, token = '') {
   if (!speechStatus().ttsInstalled) throw new Error('Install Pocket TTS in Settings first.');
   const playbackRate = normalizeVoiceSpeed(requestedSpeed, readSettingsRecord().ttsSpeed);
   const safeText = String(text || '').replace(/[`*_#>]/g, '').trim().slice(0, 4000);
@@ -2468,7 +2513,8 @@ async function synthesizeSpeech(text, voice = readSettingsRecord().ttsVoice, req
       model: DEFAULT_SETTINGS.ttsModel,
       voice: String(voice),
       text: safeText,
-      output: outputPath
+      output: outputPath,
+      token: String(token || '')
     });
     appLog.info('speech synthesized', { ms: Date.now() - startedAt, chars: safeText.length });
     return { mimeType: 'audio/wav', data: fs.readFileSync(outputPath).toString('base64'), playbackRate };
@@ -2806,7 +2852,20 @@ function safeCwd(requested) {
 function send(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
+    return true;
   }
+  return false;
+}
+
+function terminalRendererCanAcknowledge() {
+  return Boolean(mainWindow
+    && !mainWindow.isDestroyed()
+    && !mainWindow.webContents.isDestroyed()
+    && !mainWindow.webContents.isLoadingMainFrame());
+}
+
+function resetTerminalOutputFlow() {
+  for (const session of sessions.values()) session.rendererFlow?.reset();
 }
 
 presentationCoordinator.registerSurface('desktop', async (text, options) => {
@@ -2838,12 +2897,30 @@ function settleDesktopPresentations(delivered = false) {
   }
 }
 
+function setMainWindowBackgroundThrottling(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.setBackgroundThrottling(Boolean(enabled));
+}
+
 function resetDesktopVoiceActivation() {
   if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
   desktopVoiceActivationTaskId = '';
   desktopVoiceActivationGeneration += 1;
   supervisorVoiceMode = false;
+  setMainWindowBackgroundThrottling(true);
   settleDesktopPresentations(false);
+}
+
+function beginDesktopVoiceRequest() {
+  if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
+  desktopVoiceActivationTaskId = '';
+  desktopVoiceActivationGeneration += 1;
+  settleDesktopPresentations(false);
+  send('agent:voice-ping', {
+    text: voiceAcknowledgements.next(),
+    acknowledgement: true,
+    userRequest: true
+  });
 }
 
 function sanitizeMobileWorkspace(value) {
@@ -2874,16 +2951,33 @@ function sanitizeMobileWorkspace(value) {
 
 function mobileSessionSnapshot() {
   const metadata = new Map(mobileWorkspace.sessions.map((session) => [session.id, session]));
-  return [...sessions.keys()].map((id) => ({
+  const sessionIds = new Set([...sessions.keys(), ...mobileExitedSessions.keys()]);
+  return [...sessionIds].map((id) => ({
     id,
     title: metadata.get(id)?.title || 'Terminal',
-    subtitle: metadata.get(id)?.subtitle || '',
+    subtitle: metadata.get(id)?.subtitle || (mobileExitedSessions.has(id) ? 'Process exited' : ''),
     cwd: metadata.get(id)?.cwd || '',
     groupId: metadata.get(id)?.groupId || '',
     notified: Boolean(metadata.get(id)?.notified),
     inputRequired: Boolean(metadata.get(id)?.inputRequired),
-    busy: Boolean(metadata.get(id)?.busy)
+    busy: mobileExitedSessions.has(id) ? false : Boolean(metadata.get(id)?.busy),
+    exited: mobileExitedSessions.has(id)
   }));
+}
+
+function retainMobileExitedSession(id, session, data, exitCode) {
+  mobileExitedSessions.delete(id);
+  mobileExitedSessions.set(id, {
+    data,
+    exitCode,
+    revision: session.mobileRevision + 1,
+    cols: session.cols || 100,
+    rows: session.rows || 30,
+    source: session.tmux && session.tmuxSession ? 'capture' : 'raw'
+  });
+  while (mobileExitedSessions.size > MOBILE_EXITED_SESSION_LIMIT) {
+    mobileExitedSessions.delete(mobileExitedSessions.keys().next().value);
+  }
 }
 
 function sendMobile(client, payload) {
@@ -2941,14 +3035,18 @@ function captureSessionViewport(session) {
 }
 
 function sendMobileTerminalFrame(client, id, requestId) {
+  const exited = mobileExitedSessions.get(id);
   const session = sessions.get(id);
-  if (!session || client?.sideTermSessionId !== id) return;
+  if ((!session && !exited) || client?.sideTermSessionId !== id) return;
   if (client.sideTermTerminalVisible === false) return;
   sendMobile(client, {
     type: 'terminal:frame',
     id,
-    data: captureSessionScreen(session),
-    revision: session.mobileRevision,
+    data: exited?.data ?? captureSessionScreen(session),
+    revision: exited?.revision ?? session.mobileRevision,
+    cols: exited?.cols ?? session.cols ?? 100,
+    rows: exited?.rows ?? session.rows ?? 30,
+    source: exited?.source ?? (session.tmux && session.tmuxSession ? 'capture' : 'raw'),
     ...(requestId ? { requestId } : {})
   });
 }
@@ -2979,16 +3077,21 @@ function clearMobileTerminalFrame(id) {
   mobileTerminalFrameTimers.delete(id);
 }
 
-const MOBILE_DELTA_SEND_CAP = 1_000_000;
-
 function scheduleMobileResync(client) {
   if (client.sideTermResyncTimer) return;
   client.sideTermResyncTimer = setTimeout(() => {
     client.sideTermResyncTimer = null;
-    client.sideTermDeltaBacklog = false;
-    if (client.readyState === 1 && client.sideTermSessionId && client.sideTermTerminalVisible !== false) {
-      sendMobileTerminalFrame(client, client.sideTermSessionId);
+    const state = mobileResyncState(client);
+    if (state === 'wait') {
+      scheduleMobileResync(client);
+      return;
     }
+    if (state !== 'ready') {
+      client.sideTermDeltaBacklog = false;
+      return;
+    }
+    client.sideTermDeltaBacklog = false;
+    sendMobileTerminalFrame(client, client.sideTermSessionId);
   }, 400);
 }
 
@@ -3008,9 +3111,7 @@ function broadcastMobileTerminalOutput(id, data, revision) {
         continue;
       }
       if (client.sideTermDeltaBacklog) {
-        if (client.bufferedAmount > MOBILE_DELTA_SEND_CAP / 2) continue;
-        client.sideTermDeltaBacklog = false;
-        sendMobileTerminalFrame(client, id);
+        scheduleMobileResync(client);
         continue;
       }
       sendMobile(client, { type: 'terminal:data', id, data, revision });
@@ -3120,6 +3221,7 @@ async function startMobileServer({ persist = true } = {}) {
   const mobileDirectory = path.join(__dirname, 'mobile');
   const xtermScript = require.resolve('@xterm/xterm');
   const xtermStyles = require.resolve('@xterm/xterm/css/xterm.css');
+  const fitAddonScript = require.resolve('@xterm/addon-fit');
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname === prefix) {
@@ -3134,6 +3236,8 @@ async function startMobileServer({ persist = true } = {}) {
     if (!route || route === 'index.html') return serveMobileFile(response, path.join(mobileDirectory, 'index.html'));
     if (route === 'mobile.js') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.js'));
     if (route === 'terminal-frame.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-frame.js'));
+    if (route === 'terminal-reflow.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-reflow.js'));
+    if (route === 'fit-addon.js') return serveMobileFile(response, fitAddonScript, true);
     if (route === 'terminal-submit.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-submit.js'));
     if (route === 'mobile.css') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.css'));
     if (route === 'xterm.js') return serveMobileFile(response, xtermScript, true);
@@ -3190,8 +3294,8 @@ async function startMobileServer({ persist = true } = {}) {
         send('terminal:remote-input', { id: message.id, data: message.data });
         session.processHandle.write(message.data);
       }
-      if (message.type === 'select' && session) {
-        client.sideTermSessionId = String(message.id);
+      if (message.type === 'select' && (session || mobileExitedSessions.has(String(message.id || '')))) {
+        client.sideTermSessionId = String(message.id || '');
         sendMobileTerminalFrame(client, client.sideTermSessionId, String(message.requestId || '').slice(0, 100));
       }
       if (message.type === 'terminal:visibility') {
@@ -3276,6 +3380,7 @@ async function startMobileServer({ persist = true } = {}) {
       if (message.type === 'agent:confirm') {
         try {
           await resolveAgentConfirmation(String(message.id || ''), Boolean(message.approved));
+          queueMicrotask(scheduleProactiveCatchUp);
         } catch (error) {
           sendMobile(client, { type: 'agent:error', message: error.message });
         }
@@ -3436,10 +3541,12 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   });
   const session = {
     processHandle,
+    rendererFlow: createOutputFlowControl(processHandle),
     tmux,
     tmuxSession,
     cwd: workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
+    cols: Math.max(2, Math.floor(cols)),
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3449,11 +3556,14 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     lastGithubPushFingerprint: '',
     lastGithubCommitFingerprint: ''
   };
+  mobileExitedSessions.delete(id);
   sessions.set(id, session);
   const forwardOutput = (data) => {
     if (!data || sessions.get(id) !== session) return;
     observePotentialGitPush(id, data);
-    send('terminal:data', { id, data });
+    const byteLength = Buffer.byteLength(data);
+    send('terminal:data', { id, data, byteLength });
+    if (terminalRendererCanAcknowledge()) session.rendererFlow.accept(byteLength);
     session.mobileRevision += 1;
     session.mobileOutputBuffer += data;
     if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
@@ -3466,22 +3576,21 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) {
+      session.rendererFlow.dispose();
       outputNormalizer.dispose();
       return;
     }
     forwardOutput(outputNormalizer.flush());
     clearMobileTerminalFrame(id);
+    const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
+    retainMobileExitedSession(id, session, finalScreen, exitCode);
     if (mobileSocketServer) {
-      const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
-        // The exit frame is the session's only authoritative farewell; send it
-        // even while the drawer hides the terminal so the output is not lost.
-        if (client.sideTermSessionId === id) {
-          sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1 });
-        }
+        if (client.sideTermSessionId === id) sendMobileTerminalFrame(client, id);
       }
     }
     sessions.delete(id);
+    session.rendererFlow.dispose();
     send('terminal:exit', { id, exitCode, signal });
     broadcastMobile({ type: 'exit', id, exitCode, signal });
     broadcastMobileSnapshot();
@@ -3501,9 +3610,14 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
 
 function closeSession(id) {
   const session = sessions.get(id);
-  if (!session) return;
+  const removedExitedSession = mobileExitedSessions.delete(id);
+  if (!session) {
+    if (removedExitedSession) broadcastMobileSnapshot();
+    return;
+  }
   clearMobileTerminalFrame(id);
   session.outputNormalizer?.dispose();
+  session.rendererFlow.dispose();
   sessions.delete(id);
   if (session.tmux && session.tmuxSession) {
     try {
@@ -3524,6 +3638,7 @@ function detachAllSessions() {
   for (const [id, session] of sessions) {
     clearMobileTerminalFrame(id);
     session.outputNormalizer?.dispose();
+    session.rendererFlow.dispose();
     sessions.delete(id);
     try {
       session.processHandle.kill();
@@ -3565,12 +3680,16 @@ function registerIpc() {
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
   });
+  ipcMain.on('terminal:data-ack', (_event, { id, byteLength }) => {
+    sessions.get(String(id || ''))?.rendererFlow.acknowledge(byteLength);
+  });
   ipcMain.on('terminal:resize', (_event, { id, cols, rows }) => {
     const session = sessions.get(id);
     if (!session || !Number.isFinite(cols) || !Number.isFinite(rows)) return;
     session.rows = Math.max(1, Math.floor(rows));
+    session.cols = Math.max(2, Math.floor(cols));
     try {
-      session.processHandle.resize(Math.max(2, Math.floor(cols)), session.rows);
+      session.processHandle.resize(session.cols, session.rows);
     } catch {
       // Ignore resize races while a process is exiting.
     }
@@ -3644,6 +3763,10 @@ function registerIpc() {
   ipcMain.handle('mobile:enable-tailscale-https', () => enableTailscaleHttps());
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
+    const workspaceSessionIds = new Set(mobileWorkspace.sessions.map((session) => session.id));
+    for (const id of mobileExitedSessions.keys()) {
+      if (!workspaceSessionIds.has(id)) mobileExitedSessions.delete(id);
+    }
     reconcileWorkspaceAttention();
     broadcastMobileSnapshot();
     broadcastAgentState();
@@ -3668,7 +3791,7 @@ function registerIpc() {
     pendingDesktopPresentations.delete(presentationId);
     pending.resolve(payload.delivered === true);
   });
-  ipcMain.on('agent:voice-mode', (_event, enabled) => {
+  ipcMain.on('agent:voice-mode', (event, enabled) => {
     appLog.info('desktop voice mode toggled', { enabled: Boolean(enabled) });
     const wasEnabled = supervisorVoiceMode;
     if (desktopVoiceActivationTaskId) supervisorActor.cancel(desktopVoiceActivationTaskId);
@@ -3676,6 +3799,9 @@ function registerIpc() {
     desktopVoiceActivationGeneration += 1;
     settleDesktopPresentations(false);
     supervisorVoiceMode = Boolean(enabled);
+    // Voice activity detection needs timely renderer timers while listening.
+    // Every other background state returns to Chromium's throttled compositor.
+    event.sender.setBackgroundThrottling(!supervisorVoiceMode);
     if (supervisorVoiceMode) {
       void warmTextToSpeech().catch(() => {});
       if (!wasEnabled) {
@@ -3699,14 +3825,18 @@ function registerIpc() {
         voice,
         spokenRequest: Boolean(payload?.spokenRequest),
         interactionId: String(payload?.interactionId || ''),
-        onAccepted: voice ? () => send('agent:voice-ping', { text: voiceAcknowledgements.next(), acknowledgement: true }) : null
+        onAccepted: voice ? beginDesktopVoiceRequest : null
       }
     );
   });
   ipcMain.handle('agent:catch-up', (_event, options = {}) => catchUpWithSupervisor({
     voice: Boolean(options?.voice)
   }));
-  ipcMain.handle('agent:confirm', (_event, { id, approved }) => resolveAgentConfirmation(String(id || ''), Boolean(approved)));
+  ipcMain.handle('agent:confirm', async (_event, { id, approved }) => {
+    const result = await resolveAgentConfirmation(String(id || ''), Boolean(approved));
+    queueMicrotask(scheduleProactiveCatchUp);
+    return result.state;
+  });
   ipcMain.on('agent:session-finished', (_event, payload) => recordSessionFinished(payload));
   ipcMain.on('agent:action-result', (_event, result) => {
     const pending = pendingRendererActions.get(String(result?.requestId || ''));
@@ -3725,12 +3855,29 @@ function registerIpc() {
     }
   });
   ipcMain.handle('voice:preview', (_event, { voice, speed }) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice, speed));
-  ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
-  ipcMain.handle('voice:transcribe', (_event, { bytes, mimeType, allowWithoutWakeWord }) => transcribeSpeech(
-    bytes,
-    mimeType,
-    { allowWithoutWakeWord: allowWithoutWakeWord === true }
-  ));
+  ipcMain.handle('voice:synthesize', (_event, { text, voice, token }) => synthesizeSpeech(text, voice, undefined, token));
+  ipcMain.handle('voice:synthesize-cancel', (_event, { token } = {}) => speechWorker?.cancelSynthesis('Speech synthesis was cancelled.', String(token || '')) || false);
+  ipcMain.handle('voice:transcribe', async (_event, { bytes, mimeType, allowWithoutWakeWord }) => {
+    const startedAt = Date.now();
+    try {
+      const result = await transcribeSpeech(bytes, mimeType, {
+        allowWithoutWakeWord: allowWithoutWakeWord === true
+      });
+      appLog.info('speech transcribed', {
+        ms: Date.now() - startedAt,
+        provider: readSettingsRecord().sttProvider,
+        ignored: Boolean(result?.ignored)
+      });
+      return result;
+    } catch (error) {
+      appLog.warn('speech transcription failed', {
+        ms: Date.now() - startedAt,
+        provider: readSettingsRecord().sttProvider,
+        error: String(error?.message || error)
+      });
+      throw error;
+    }
+  });
   ipcMain.handle('voice:pause-media', () => pauseDesktopMedia());
   ipcMain.handle('voice:resume-media', () => resumeDesktopMedia());
 }
@@ -3810,7 +3957,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      backgroundThrottling: false
+      backgroundThrottling: true
     }
   });
 
@@ -3821,9 +3968,12 @@ function createWindow() {
     if (!allowed) event.preventDefault();
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
+  mainWindow.webContents.on('did-start-loading', resetTerminalOutputFlow);
+  mainWindow.webContents.on('did-finish-load', resetTerminalOutputFlow);
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appLog.error('renderer process gone', details);
     resetDesktopVoiceActivation();
+    resetTerminalOutputFlow();
   });
   mainWindow.webContents.on('unresponsive', () => appLog.error('renderer became unresponsive'));
   mainWindow.webContents.on('responsive', () => appLog.info('renderer responsive again'));

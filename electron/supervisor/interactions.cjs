@@ -31,6 +31,32 @@ function interpretApprovalAnswer(value) {
   return null;
 }
 
+const MERGE_NEGATION = /\b(?:no|nope|not|don(?:'|’)?t|do not|never|cancel|stop)\b/;
+
+function interpretConfirmationApprovalAnswer(value, confirmation) {
+  const answer = interpretApprovalAnswer(value);
+  if (answer !== null) return answer;
+  const text = String(value || '').trim().toLowerCase();
+  if (confirmation?.kind === 'merge-pull-request') {
+    // Negation only vetoes when it applies to the merge clause itself: "yes,
+    // but let's not merge it" denies, while "don't wait; please merge it now"
+    // approves because its final clause is an explicit merge instruction.
+    if (/\bmerge\b/.test(text)) {
+      // Split on clause separators and drop empty segments so trailing
+      // punctuation cannot leave an empty final clause.
+      const clauses = text.split(/[,.;!?]+|\b(?:but|except|however)\b/).map((part) => part.trim()).filter(Boolean);
+      const finalClause = clauses[clauses.length - 1] || '';
+      if (MERGE_NEGATION.test(finalClause) && /\bmerge\b/.test(finalClause)) return false;
+      if (/\b(?:yes|yeah|yep|okay|ok|approve|approved|please|go ahead|do it)\b[\s\S]*\bmerge\b/.test(text)) return true;
+      if (/^(?:then\s+)?(?:please\s+)?merge(?:\s+(?:it|this|that|the\s+pull\s+request|the\s+pr))?[.!?\s]*$/i.test(text)) return true;
+      return null;
+    }
+    if (MERGE_NEGATION.test(text)) return false;
+    return null;
+  }
+  return null;
+}
+
 function shouldConsumeInteractionAnswer(interaction, text) {
   return interaction?.kind !== 'approval' || interpretApprovalAnswer(text) !== null;
 }
@@ -103,4 +129,4 @@ class PendingInteractionManager {
   }
 }
 
-module.exports = { interpretApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };
+module.exports = { interpretApprovalAnswer, interpretConfirmationApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer };

@@ -11,6 +11,27 @@ function restoreConfirmation(state, confirmation) {
   return state;
 }
 
+function createConfirmationExecutionGuard() {
+  const inFlight = new Map();
+  return (id, execute, decision = '') => {
+    const key = String(id || '');
+    const wanted = String(decision);
+    const existing = inFlight.get(key);
+    if (existing) {
+      // Identical duplicate decisions share the in-flight execution; an
+      // opposite answer must not inherit the other side's outcome.
+      if (existing.decision === wanted) return existing.pending;
+      return Promise.reject(new Error('That confirmation is already being decided with the opposite answer.'));
+    }
+    const pending = Promise.resolve().then(execute);
+    inFlight.set(key, { decision: wanted, pending });
+    void pending.finally(() => {
+      if (inFlight.get(key)?.pending === pending) inFlight.delete(key);
+    }).catch(() => {});
+    return pending;
+  };
+}
+
 function retirePullRequestConfirmations(state, pullRequestUrl) {
   const retired = state.confirmations.filter((item) => item.kind === 'merge-pull-request'
     && item.pullRequestUrl === pullRequestUrl);
@@ -83,4 +104,4 @@ function reconcileConfirmationInteractions(state, { migrateLegacy = false } = {}
   return removedIds;
 }
 
-module.exports = { claimConfirmation, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
+module.exports = { claimConfirmation, createConfirmationExecutionGuard, legacyApprovalInteraction, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations };
