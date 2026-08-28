@@ -20,7 +20,7 @@ test('mobile terminal pauses behind the drawer and streams incremental output wh
 test('raw-buffer sessions stream deltas while tmux sessions keep authoritative snapshots', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /function sessionSupportsMobileDeltas\(session\)/);
-  assert.match(main, /!sessionSupportsMobileDeltas\(session\)[\s\S]{0,200}scheduleMobileTerminalFrame\(id\)/);
+  assert.match(main, /const deltas = sessionSupportsMobileDeltas\(session\);[\s\S]{0,80}if \(!deltas\) scheduleMobileTerminalFrame\(id\);/);
   assert.match(main, /clearMobileTerminalFrame\(id\);/);
   assert.match(main, /for \(const timer of mobileTerminalFrameTimers\.values\(\)\) clearTimeout\(timer\);/);
 });
@@ -40,4 +40,12 @@ test('incremental overflow falls back to an authoritative frame instead of growi
 test('mobile refuses to approve confirmations it cannot fully display', () => {
   const mobile = fs.readFileSync(path.join(__dirname, '..', 'electron', 'mobile', 'mobile.js'), 'utf8');
   assert.match(mobile, /if \(confirmation\.truncated\) \{[\s\S]*?approve\.disabled = true;[\s\S]*?\}/);
+});
+
+test('tmux snapshots honor drawer visibility and keep activity for other viewers', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /client\.sideTermSessionId === id\r?\n?\s*&& client\.sideTermTerminalVisible !== false/);
+  assert.match(main, /if \(client\.sideTermTerminalVisible === false\) return;/);
+  assert.match(main, /if \(!deltas\) scheduleMobileTerminalFrame\(id\);/);
+  assert.match(main, /if \(deltas && client\.sideTermTerminalVisible !== false\) sendMobile\(client, \{ type: 'terminal:data', id, data, revision \}\);/);
 });

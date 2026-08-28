@@ -2943,6 +2943,7 @@ function captureSessionViewport(session) {
 function sendMobileTerminalFrame(client, id, requestId) {
   const session = sessions.get(id);
   if (!session || client?.sideTermSessionId !== id) return;
+  if (client.sideTermTerminalVisible === false) return;
   sendMobile(client, {
     type: 'terminal:frame',
     id,
@@ -2962,7 +2963,8 @@ function sessionSupportsMobileDeltas(session) {
 
 function scheduleMobileTerminalFrame(id) {
   if (!mobileSocketServer || mobileTerminalFrameTimers.has(id)) return;
-  const watched = [...mobileSocketServer.clients].some((client) => client.sideTermSessionId === id);
+  const watched = [...mobileSocketServer.clients].some((client) => client.sideTermSessionId === id
+    && client.sideTermTerminalVisible !== false);
   if (!watched) return;
   mobileTerminalFrameTimers.set(id, setTimeout(() => {
     mobileTerminalFrameTimers.delete(id);
@@ -2980,13 +2982,11 @@ function clearMobileTerminalFrame(id) {
 function broadcastMobileTerminalOutput(id, data, revision) {
   if (!mobileSocketServer) return;
   const session = sessions.get(id);
-  if (session && !sessionSupportsMobileDeltas(session)) {
-    scheduleMobileTerminalFrame(id);
-    return;
-  }
+  const deltas = sessionSupportsMobileDeltas(session);
+  if (!deltas) scheduleMobileTerminalFrame(id);
   for (const client of mobileSocketServer.clients) {
     if (client.sideTermSessionId === id) {
-      if (client.sideTermTerminalVisible !== false) sendMobile(client, { type: 'terminal:data', id, data, revision });
+      if (deltas && client.sideTermTerminalVisible !== false) sendMobile(client, { type: 'terminal:data', id, data, revision });
     } else {
       sendMobile(client, { type: 'terminal:activity', id, revision });
     }
