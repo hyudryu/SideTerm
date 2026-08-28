@@ -143,6 +143,10 @@ const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
   restoreViewport: ({ distanceFromBottom }) => {
     const buffer = terminal.buffer.active;
     terminal.scrollToLine(Math.max(0, buffer.baseY - Math.max(0, Number(distanceFromBottom) || 0)));
+  },
+  onOverflow: (sessionId) => {
+    if (!sessionId || sessionId !== activeId) return;
+    send({ type: 'select', id: sessionId, requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` });
   }
 });
 
@@ -322,6 +326,13 @@ function renderAgentState(state) {
     };
     deny.addEventListener('click', () => respond(false));
     approve.addEventListener('click', () => respond(true));
+    if (confirmation.truncated) {
+      // The full action never reached the phone, so approving here would
+      // execute content the user could not read.
+      approve.disabled = true;
+      approve.textContent = 'Too long for mobile';
+      deny.textContent = 'Deny here';
+    }
     row.append(copy, deny, approve);
     confirmations.append(row);
   }

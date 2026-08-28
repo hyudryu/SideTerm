@@ -96,3 +96,34 @@ test('incremental terminal data waits for the initial frame and does not reset x
   assert.deepEqual(writes, ['connecting', 'current frame', '\rspinner 1\rspinner 2']);
   assert.equal(resets, 2);
 });
+
+test('incremental queue overflow drops pending data and requests an authoritative frame', () => {
+  const overflows = [];
+  const writer = new TerminalFrameWriter({
+    reset() {},
+    write() {},
+    scrollToBottom() {},
+    maxAppendBytes: 64,
+    onOverflow: (sessionId) => overflows.push(sessionId)
+  });
+
+  writer.select('one', 'connecting');
+  writer.append('one', 'x'.repeat(100));
+  assert.deepEqual(overflows, ['one']);
+  assert.equal(writer.pendingAppend, '');
+  assert.equal(writer.append('one', 'more'), true);
+  assert.equal(writer.pendingAppend, 'more');
+  assert.deepEqual(overflows, ['one']);
+});
+
+test('append overflow is disabled when no handler is configured', () => {
+  const writer = new TerminalFrameWriter({
+    reset() {},
+    write() {},
+    scrollToBottom() {},
+    maxAppendBytes: 16
+  });
+  writer.select('one');
+  writer.append('one', 'x'.repeat(64));
+  assert.equal(writer.pendingAppend, '');
+});

@@ -99,6 +99,7 @@ let backgroundTray = null;
 let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
+const mobileTerminalFrameTimers = new Map();
 let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
@@ -2951,8 +2952,38 @@ function sendMobileTerminalFrame(client, id, requestId) {
   });
 }
 
+// tmux sessions start from a reconstructed capture-pane snapshot whose cursor
+// and wrap state the phone cannot reproduce, so raw PTY deltas would corrupt
+// it. Those sessions keep receiving throttled authoritative snapshots instead;
+// raw-buffer sessions stream deltas that genuinely continue their initial frame.
+function sessionSupportsMobileDeltas(session) {
+  return Boolean(session && !(session.tmux && session.tmuxSession));
+}
+
+function scheduleMobileTerminalFrame(id) {
+  if (!mobileSocketServer || mobileTerminalFrameTimers.has(id)) return;
+  const watched = [...mobileSocketServer.clients].some((client) => client.sideTermSessionId === id);
+  if (!watched) return;
+  mobileTerminalFrameTimers.set(id, setTimeout(() => {
+    mobileTerminalFrameTimers.delete(id);
+    if (!mobileSocketServer) return;
+    for (const client of mobileSocketServer.clients) sendMobileTerminalFrame(client, id);
+  }, 80));
+}
+
+function clearMobileTerminalFrame(id) {
+  const timer = mobileTerminalFrameTimers.get(id);
+  if (timer) clearTimeout(timer);
+  mobileTerminalFrameTimers.delete(id);
+}
+
 function broadcastMobileTerminalOutput(id, data, revision) {
   if (!mobileSocketServer) return;
+  const session = sessions.get(id);
+  if (session && !sessionSupportsMobileDeltas(session)) {
+    scheduleMobileTerminalFrame(id);
+    return;
+  }
   for (const client of mobileSocketServer.clients) {
     if (client.sideTermSessionId === id) {
       if (client.sideTermTerminalVisible !== false) sendMobile(client, { type: 'terminal:data', id, data, revision });
@@ -3137,8 +3168,12 @@ async function startMobileServer({ persist = true } = {}) {
       }
       if (message.type === 'terminal:visibility') {
         client.sideTermTerminalVisible = message.visible !== false;
-        if (client.sideTermTerminalVisible && client.sideTermSessionId) {
-          sendMobileTerminalFrame(client, client.sideTermSessionId, String(message.requestId || '').slice(0, 100));
+        // Only an explicit drawer-close refresh (which carries a requestId)
+        // may capture; selection switches send a bare visibility update and
+        // the following `select` refreshes the new session instead.
+        const refreshId = String(message.requestId || '').slice(0, 100);
+        if (client.sideTermTerminalVisible && client.sideTermSessionId && refreshId) {
+          sendMobileTerminalFrame(client, client.sideTermSessionId, refreshId);
         }
       }
       if (message.type === 'mobile:create') {
@@ -3330,6 +3365,8 @@ async function stopMobileServer({ persist = true } = {}) {
   const socketServer = mobileSocketServer;
   mobileServer = null;
   mobileSocketServer = null;
+  for (const timer of mobileTerminalFrameTimers.values()) clearTimeout(timer);
+  mobileTerminalFrameTimers.clear();
   if (socketServer) {
     for (const client of socketServer.clients) client.close(1001, 'Mobile access disabled');
     socketServer.close();
@@ -3405,6 +3442,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
       return;
     }
     forwardOutput(outputNormalizer.flush());
+    clearMobileTerminalFrame(id);
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
@@ -3434,6 +3472,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
 function closeSession(id) {
   const session = sessions.get(id);
   if (!session) return;
+  clearMobileTerminalFrame(id);
   session.outputNormalizer?.dispose();
   sessions.delete(id);
   if (session.tmux && session.tmuxSession) {
@@ -3453,6 +3492,7 @@ function closeSession(id) {
 
 function detachAllSessions() {
   for (const [id, session] of sessions) {
+    clearMobileTerminalFrame(id);
     session.outputNormalizer?.dispose();
     sessions.delete(id);
     try {

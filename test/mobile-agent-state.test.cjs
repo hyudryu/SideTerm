@@ -29,3 +29,19 @@ test('mobile agent state omits large desktop-only review and notification payloa
   assert.equal(Object.hasOwn(projected.notifications[0], 'context'), false);
   assert.ok(JSON.stringify(projected).length < 20_000);
 });
+
+test('mobile confirmations carry complete actionable content or flag truncation', () => {
+  const exact = 'a'.repeat(65_536);
+  const projected = mobileAgentState({
+    confirmations: [
+      { id: 'fits', kind: 'terminal-input', title: 'S', input: exact },
+      { id: 'cut-input', kind: 'terminal-input', title: 'S', input: `${exact}tail` },
+      { id: 'cut-body', kind: 'github-comment', title: 'S', body: 'x'.repeat(70_000) }
+    ]
+  });
+  assert.equal(projected.confirmations[0].input, exact);
+  assert.equal(projected.confirmations[0].truncated, false);
+  assert.equal(projected.confirmations[1].input.length, 65_536);
+  assert.equal(projected.confirmations[1].truncated, true);
+  assert.equal(projected.confirmations[2].truncated, true);
+});

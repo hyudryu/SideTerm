@@ -8,12 +8,15 @@
   }
 
   class TerminalFrameWriter {
-    constructor({ reset, write, scrollToBottom, captureViewport = null, restoreViewport = null }) {
+    constructor({ reset, write, scrollToBottom, captureViewport = null, restoreViewport = null, maxAppendBytes = 512 * 1024, onOverflow = null }) {
       this.reset = reset;
       this.write = write;
       this.scrollToBottom = scrollToBottom;
       this.captureViewport = captureViewport;
       this.restoreViewport = restoreViewport;
+      const appendLimit = Math.floor(Number(maxAppendBytes));
+      this.maxAppendBytes = Number.isFinite(appendLimit) && appendLimit > 0 ? appendLimit : 512 * 1024;
+      this.onOverflow = onOverflow;
       this.sessionId = null;
       this.generation = 0;
       this.pending = null;
@@ -42,6 +45,12 @@
     append(sessionId, value) {
       if (!sessionId || sessionId !== this.sessionId) return false;
       this.pendingAppend += String(value || '');
+      if (this.pendingAppend.length > this.maxAppendBytes) {
+        // The producer outran the renderer; queued deltas are no longer worth
+        // replaying, so drop them and ask for one authoritative frame.
+        this.pendingAppend = '';
+        this.onOverflow?.(sessionId);
+      }
       this.drain();
       return true;
     }
