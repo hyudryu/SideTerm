@@ -2947,6 +2947,8 @@ function sendMobileTerminalFrame(client, id, requestId) {
     id,
     data: captureSessionScreen(session),
     revision: session.mobileRevision,
+    cols: session.cols || 100,
+    rows: session.rows || 30,
     ...(requestId ? { requestId } : {})
   });
 }
@@ -3068,6 +3070,7 @@ async function startMobileServer({ persist = true } = {}) {
   const mobileDirectory = path.join(__dirname, 'mobile');
   const xtermScript = require.resolve('@xterm/xterm');
   const xtermStyles = require.resolve('@xterm/xterm/css/xterm.css');
+  const fitAddonScript = require.resolve('@xterm/addon-fit');
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname === prefix) {
@@ -3082,6 +3085,8 @@ async function startMobileServer({ persist = true } = {}) {
     if (!route || route === 'index.html') return serveMobileFile(response, path.join(mobileDirectory, 'index.html'));
     if (route === 'mobile.js') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.js'));
     if (route === 'terminal-frame.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-frame.js'));
+    if (route === 'terminal-reflow.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-reflow.js'));
+    if (route === 'fit-addon.js') return serveMobileFile(response, fitAddonScript, true);
     if (route === 'terminal-submit.js') return serveMobileFile(response, path.join(mobileDirectory, 'terminal-submit.js'));
     if (route === 'mobile.css') return serveMobileFile(response, path.join(mobileDirectory, 'mobile.css'));
     if (route === 'xterm.js') return serveMobileFile(response, xtermScript, true);
@@ -3377,6 +3382,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     tmuxSession,
     cwd: workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
+    cols: Math.max(2, Math.floor(cols)),
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3411,7 +3417,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
-        if (client.sideTermSessionId === id) sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1 });
+        if (client.sideTermSessionId === id) sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1, cols: session.cols || 100, rows: session.rows || 30 });
       }
     }
     sessions.delete(id);
@@ -3502,8 +3508,9 @@ function registerIpc() {
     const session = sessions.get(id);
     if (!session || !Number.isFinite(cols) || !Number.isFinite(rows)) return;
     session.rows = Math.max(1, Math.floor(rows));
+    session.cols = Math.max(2, Math.floor(cols));
     try {
-      session.processHandle.resize(Math.max(2, Math.floor(cols)), session.rows);
+      session.processHandle.resize(session.cols, session.rows);
     } catch {
       // Ignore resize races while a process is exiting.
     }
