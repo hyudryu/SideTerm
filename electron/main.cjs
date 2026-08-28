@@ -2979,6 +2979,19 @@ function clearMobileTerminalFrame(id) {
   mobileTerminalFrameTimers.delete(id);
 }
 
+const MOBILE_DELTA_SEND_CAP = 1_000_000;
+
+function scheduleMobileResync(client) {
+  if (client.sideTermResyncTimer) return;
+  client.sideTermResyncTimer = setTimeout(() => {
+    client.sideTermResyncTimer = null;
+    client.sideTermDeltaBacklog = false;
+    if (client.readyState === 1 && client.sideTermSessionId && client.sideTermTerminalVisible !== false) {
+      sendMobileTerminalFrame(client, client.sideTermSessionId);
+    }
+  }, 400);
+}
+
 function broadcastMobileTerminalOutput(id, data, revision) {
   if (!mobileSocketServer) return;
   const session = sessions.get(id);
@@ -2986,7 +2999,21 @@ function broadcastMobileTerminalOutput(id, data, revision) {
   if (!deltas) scheduleMobileTerminalFrame(id);
   for (const client of mobileSocketServer.clients) {
     if (client.sideTermSessionId === id) {
-      if (deltas && client.sideTermTerminalVisible !== false) sendMobile(client, { type: 'terminal:data', id, data, revision });
+      if (!deltas || client.sideTermTerminalVisible === false) continue;
+      // A slow phone must not grow the WebSocket send queue without bound:
+      // skip deltas while it lags, then resync with one authoritative frame.
+      if (client.bufferedAmount > MOBILE_DELTA_SEND_CAP) {
+        client.sideTermDeltaBacklog = true;
+        scheduleMobileResync(client);
+        continue;
+      }
+      if (client.sideTermDeltaBacklog) {
+        if (client.bufferedAmount > MOBILE_DELTA_SEND_CAP / 2) continue;
+        client.sideTermDeltaBacklog = false;
+        sendMobileTerminalFrame(client, id);
+        continue;
+      }
+      sendMobile(client, { type: 'terminal:data', id, data, revision });
     } else {
       sendMobile(client, { type: 'terminal:activity', id, revision });
     }
@@ -3139,6 +3166,7 @@ async function startMobileServer({ persist = true } = {}) {
     sendMobile(client, mobileVoiceSettings());
     sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
+      if (client.sideTermResyncTimer) clearTimeout(client.sideTermResyncTimer);
       if (client.sideTermVoiceActivationTaskId) supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
       settleMobilePresentations(client, false);
       mobilePresentationSurfaces.get(client)?.dispose();
@@ -3446,7 +3474,9 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
-        if (client.sideTermSessionId === id && client.sideTermTerminalVisible !== false) {
+        // The exit frame is the session's only authoritative farewell; send it
+        // even while the drawer hides the terminal so the output is not lost.
+        if (client.sideTermSessionId === id) {
           sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1 });
         }
       }

@@ -47,5 +47,7 @@ test('tmux snapshots honor drawer visibility and keep activity for other viewers
   assert.match(main, /client\.sideTermSessionId === id\r?\n?\s*&& client\.sideTermTerminalVisible !== false/);
   assert.match(main, /if \(client\.sideTermTerminalVisible === false\) return;/);
   assert.match(main, /if \(!deltas\) scheduleMobileTerminalFrame\(id\);/);
-  assert.match(main, /if \(deltas && client\.sideTermTerminalVisible !== false\) sendMobile\(client, \{ type: 'terminal:data', id, data, revision \}\);/);
+  assert.match(main, /if \(!deltas \|\| client\.sideTermTerminalVisible === false\) continue;/);
+  assert.match(main, /client\.bufferedAmount > MOBILE_DELTA_SEND_CAP/);
+  assert.match(main, /if \(client\.sideTermResyncTimer\) clearTimeout\(client\.sideTermResyncTimer\);/);
 });

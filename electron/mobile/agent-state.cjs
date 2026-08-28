@@ -28,7 +28,9 @@ function mobileAgentState(state = {}) {
       summary: text(notification?.summary, 1_000)
     })),
     unreadNotificationCount: notifications.reduce((count, notification) => count + Number(!notification?.read), 0),
-    confirmations: (Array.isArray(state.confirmations) ? state.confirmations : []).slice(-20).map((confirmation) => {
+    // Keep every pending confirmation reachable: the server retains up to 120
+    // and mobile has no pagination, so slicing fewer would hide pending actions.
+    confirmations: (Array.isArray(state.confirmations) ? state.confirmations : []).slice(-120).map((confirmation) => {
       const body = actionableText(confirmation?.body);
       const input = actionableText(confirmation?.input);
       return {
