@@ -49,3 +49,32 @@ test('speech worker errors reject the matching request', async () => {
   await assert.rejects(result, /bad voice/);
   worker.stop();
 });
+
+test('cancelling synthesis rejects stale syntheses but spares in-flight transcription', async () => {
+  const child = fakeChild();
+  let killed = 0;
+  child.kill = () => { killed += 1; };
+  const worker = new PersistentSpeechWorker({ executable: 'python', args: [], spawnProcess: () => child });
+
+  const stale = worker.request('synthesize', { output: 'stale.wav' });
+  assert.equal(worker.cancelSynthesis(), true);
+  await assert.rejects(stale, /cancelled/);
+  assert.equal(killed, 1);
+
+  const transcript = worker.request('transcribe', { input: 'one.webm' });
+  const queued = worker.request('synthesize', { output: 'new.wav' });
+  assert.equal(worker.cancelSynthesis(), true);
+  await assert.rejects(queued, /cancelled/);
+  assert.equal(killed, 1, 'an in-flight transcription must not be killed');
+
+  const transcriptRequest = JSON.parse(child.stdin.writes[1]);
+  child.stdout.emit('data', `${JSON.stringify({ requestId: transcriptRequest.requestId, ok: true, result: { text: 'hello' } })}\n`);
+  assert.deepEqual(await transcript, { text: 'hello' });
+  worker.stop();
+});
+
+test('cancel synthesis is a no-op with nothing pending', () => {
+  const worker = new PersistentSpeechWorker({ executable: 'python', args: [], spawnProcess: () => fakeChild() });
+  assert.equal(worker.cancelSynthesis(), false);
+  worker.stop();
+});

@@ -69,8 +69,9 @@ test('automatic presenter sentinels are never spoken as updates', () => {
   assert.equal(isAutomaticPresenterSentinel('NEEDS_ENRICHMENT!'), true);
   assert.equal(isAutomaticPresenterSentinel('The tests passed.'), false);
   assert.equal(automaticPresenterSentinel('NEEDS_ENRICHMENT.'), 'NEEDS_ENRICHMENT');
-  assert.equal(automaticPresenterSentinel('Cancelled by user'), 'CANCELLED');
-  assert.equal(automaticPresenterSentinel('Canceled by user.'), 'CANCELLED');
+  // Legitimate update text that merely mentions cancellation must be presented.
+  assert.equal(automaticPresenterSentinel('Cancelled by user'), '');
+  assert.equal(automaticPresenterSentinel('Canceled by user.'), '');
 });
 
 test('proactive enrichment also suppresses presenter sentinels', () => {

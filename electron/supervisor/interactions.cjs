@@ -36,7 +36,9 @@ function interpretConfirmationApprovalAnswer(value, confirmation) {
   if (answer !== null) return answer;
   const text = String(value || '').trim().toLowerCase();
   if (confirmation?.kind === 'merge-pull-request') {
-    if (/\b(?:no|nope|not yet|don(?:'|\u2019)?t|do not|cancel|stop)\b/.test(text)) return false;
+    // Standalone `not` counts: "yes, but let's not merge it" must deny rather
+    // than fall through to the positive-word-before-merge pattern below.
+    if (/\b(?:no|nope|not|don(?:'|\u2019)?t|do not|cancel|stop)\b/.test(text)) return false;
     if (/\b(?:yes|yeah|yep|okay|ok|approve|approved|please|go ahead|do it)\b[\s\S]*\bmerge\b/.test(text)) return true;
     if (/^(?:then\s+)?(?:please\s+)?merge(?:\s+(?:it|this|that|the\s+pull\s+request|the\s+pr))?[.!?\s]*$/i.test(text)) return true;
     return null;

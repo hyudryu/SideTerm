@@ -1970,6 +1970,9 @@ function interruptVoicePlayback() {
 function supersedeAgentSpeech() {
   agentSpeechGeneration += 1;
   interruptVoicePlayback();
+  // Resetting the queue alone leaves the stale synthesis occupying the serial
+  // speech worker, so the next acknowledgement stays queued behind it.
+  api.cancelSpeechSynthesis?.().catch(() => {});
   agentSpeechQueue = Promise.resolve(true);
   return agentSpeechGeneration;
 }
@@ -1986,6 +1989,7 @@ async function speakAgentResponse(text, { openReplyWindow = true, interactionId 
     }
     return completed;
   } catch (error) {
+    if (generation !== agentSpeechGeneration || !desktopVoiceMode) return false;
     showToast(`Voice: ${error.message}`);
     return false;
   }
@@ -2040,6 +2044,7 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
     }
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
+      supersedeAgentSpeech();
       voiceReplyInteractionId = transcript.clarification.interactionId || '';
       await queueAgentSpeech(transcript.clarification.prompt, {
         openReplyWindow: true,
@@ -2048,6 +2053,7 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
       return;
     }
     voiceReplyUntil = 0;
+    supersedeAgentSpeech();
     const interactionId = replyWindowActive ? voiceReplyInteractionId : '';
     voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
@@ -2121,7 +2127,10 @@ async function startDesktopVoiceMode() {
       }
     } else if (rms > 0.035) {
       if (!speaking) {
-        supersedeAgentSpeech();
+        // Queued speech stays valid until transcription accepts the utterance:
+        // ambient noise must not invalidate a pending presentation. Accepted
+        // requests supersede via submitAgentChat; clarifications supersede
+        // before their reply is queued.
         speaking = true;
         startedAt = now;
         utterance = [...preRoll];

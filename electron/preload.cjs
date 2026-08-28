@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   },
   previewVoice: (voice, speed) => ipcRenderer.invoke('voice:preview', { voice, speed }),
   synthesizeSpeech: (text, voice) => ipcRenderer.invoke('voice:synthesize', { text, voice }),
+  cancelSpeechSynthesis: () => ipcRenderer.invoke('voice:synthesize-cancel'),
   transcribeSpeech: (bytes, mimeType, allowWithoutWakeWord = false) => ipcRenderer.invoke('voice:transcribe', {
     bytes,
     mimeType,

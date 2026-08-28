@@ -1700,6 +1700,9 @@ async function performSupervisorChat(text, {
     writeAgentState(latest);
     agentStatus = 'idle';
     broadcastAgentState();
+    // This short-circuit bypasses the catch-up scheduling below, so schedule
+    // it here: events queued behind the confirmation must still flush.
+    queueMicrotask(scheduleProactiveCatchUp);
     return {
       response: resolved.resultText,
       speech: voice ? speechSummary(resolved.resultText) : resolved.resultText,
@@ -3702,6 +3705,7 @@ function registerIpc() {
   });
   ipcMain.handle('voice:preview', (_event, { voice, speed }) => synthesizeSpeech('Hey, I’m your SideTerm assistant. I’ll keep your coding sessions organized and tell you what finishes.', voice, speed));
   ipcMain.handle('voice:synthesize', (_event, { text, voice }) => synthesizeSpeech(text, voice));
+  ipcMain.handle('voice:synthesize-cancel', () => speechWorker?.cancelSynthesis() || false);
   ipcMain.handle('voice:transcribe', async (_event, { bytes, mimeType, allowWithoutWakeWord }) => {
     const startedAt = Date.now();
     try {

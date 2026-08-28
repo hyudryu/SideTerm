@@ -64,7 +64,7 @@ class PersistentSpeechWorker {
         reject(new Error('The local speech operation timed out.'));
         this.stop();
       }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer });
+      this.pending.set(requestId, { resolve, reject, timer, command });
       child.stdin.write(`${JSON.stringify({ requestId, command, ...payload })}\n`, (error) => {
         if (!error || !this.pending.has(requestId)) return;
         this.pending.delete(requestId);
@@ -72,6 +72,25 @@ class PersistentSpeechWorker {
         reject(error);
       });
     });
+  }
+
+  // Superseded syntheses must not keep the serial sidecar busy while newer
+  // speech waits behind them. Rejecting the pending synthesis unblocks its
+  // caller; restarting the sidecar is only safe when no transcription is
+  // waiting, because the kill would fail that work mid-flight.
+  cancelSynthesis(reason = 'Speech synthesis was cancelled.') {
+    const entries = [...this.pending.entries()];
+    if (!entries.length) return false;
+    const oldestCommand = entries[0][1].command;
+    const synthEntries = entries.filter(([, entry]) => entry.command === 'synthesize');
+    if (!synthEntries.length) return false;
+    for (const [id, entry] of synthEntries) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(reason));
+      this.pending.delete(id);
+    }
+    if (oldestCommand === 'synthesize' && !this.pending.size) this.stop();
+    return true;
   }
 
   fail(child, error) {
