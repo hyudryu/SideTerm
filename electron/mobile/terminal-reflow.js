@@ -87,6 +87,9 @@
         break;
       }
     }
+    // A row that held only styled padding serializes to nothing, so the
+    // caller's trailing-blank trim can drop it.
+    if (!parts.length) return '';
     // Close any style the line still holds so it cannot leak into the next
     // serialized line on the phone.
     if (active || poppedStyle) parts.push(SGR_RESET);
@@ -97,9 +100,9 @@
     constructor({ Terminal, maxLines = 400, cols = 80, rows = 24 } = {}) {
       if (typeof Terminal !== 'function') throw new Error('TerminalReflow requires an xterm Terminal constructor.');
       this.maxLines = Math.max(1, Math.floor(maxLines) || 400);
-      // convertEol replays tmux-style LF captures as line breaks; captures and
-      // raw PTY streams share the model either way.
-      this.model = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true, convertEol: true });
+      // No convertEol: raw PTY streams use VT line-feed semantics. Capture
+      // frames are CRLF-normalized by the caller before replay.
+      this.model = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
       this.scratchCell = this.model.buffer.active.getNullCell();
       this.modelSessionCols = cols;
     }
@@ -132,6 +135,8 @@
       }
       const startLine = Math.max(0, end - this.maxLines - trailingBlanks);
       const lines = [];
+      let cursorTextRow = -1;
+      const cursorBufferRow = buffer.baseY + buffer.cursorY;
       for (let y = startLine; y < end; y += 1) {
         const line = buffer.getLine(y);
         if (!line) continue;
@@ -139,9 +144,18 @@
         const text = serializeLine(line, columns, this.scratchCell, !next?.isWrapped);
         if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
         else lines.push(text);
+        if (y === cursorBufferRow) cursorTextRow = lines.length - 1;
       }
       while (lines.length && !lines[lines.length - 1]) lines.pop();
-      return lines.join('\r\n');
+      let serialized = lines.join('\r\n');
+      // Reproduce the application's cursor position; the visible terminal is
+      // rewritten wholesale each frame, so the cursor must be placed afresh.
+      // Rows the trim dropped clamp the cursor to the last serialized row.
+      if (cursorTextRow >= 0) {
+        if (cursorTextRow >= lines.length) cursorTextRow = lines.length - 1;
+        serialized += `\x1b[${cursorTextRow + 1};${Math.min(columns, buffer.cursorX + 1)}H`;
+      }
+      return serialized;
     }
   }
 

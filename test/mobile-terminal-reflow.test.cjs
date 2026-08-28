@@ -14,7 +14,7 @@ function writeReflow(reflow, data) {
 }
 
 function plainText(value) {
-  return value.replace(/\x1b\[[0-9;]*m/g, '');
+  return value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 }
 
 test('reflow rebuilds absolute-positioned screens in order', async () => {
@@ -38,10 +38,24 @@ test('reflow joins soft-wrapped rows and trims trailing blank lines', async () =
   assert.equal(plainText(text), 'this line is much longer than twenty columns total\r\nsecond');
 });
 
-test('reflow treats bare LF captures as line breaks', async () => {
+test('reflow keeps raw VT line-feed semantics for un-normalized streams', async () => {
   const reflow = new TerminalReflow({ Terminal, cols: 40, rows: 6 });
-  await writeReflow(reflow, 'first\ntwo\nthird');
-  assert.equal(plainText(reflow.serialize()), 'first\r\ntwo\r\nthird');
+  await writeReflow(reflow, 'first\ntwo');
+  assert.equal(plainText(reflow.serialize()), 'first\r\n     two');
+});
+
+test('reflow repositions the model cursor at the end of serialization', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 20, rows: 4 });
+  await writeReflow(reflow, 'first\r\nsecond');
+  assert.ok(reflow.serialize().endsWith('\x1b[2;7H'));
+});
+
+test('reflow drops reset-only styled rows as trailing blanks', async () => {
+  const reflow = new TerminalReflow({ Terminal, cols: 10, rows: 4 });
+  await writeReflow(reflow, 'keep\r\n\x1b[44m   \x1b[0m');
+  const text = reflow.serialize();
+  assert.equal(plainText(text), 'keep');
+  assert.match(text, /\x1b\[1;\d+H$/);
 });
 
 test('reflow omits wide-glyph continuation cells', async () => {
@@ -60,7 +74,7 @@ test('reflow trims styled trailing padding before the reset', async () => {
   const reflow = new TerminalReflow({ Terminal, cols: 20, rows: 2 });
   await writeReflow(reflow, '\x1b[1;1H\x1b[41mZ          \x1b[0m');
   assert.equal(plainText(reflow.serialize()), 'Z');
-  assert.match(reflow.serialize(), /Z(\x1b\[0m)?$/);
+  assert.match(reflow.serialize(), /Z(\x1b\[0m)?(\x1b\[\d+;\d+H)?$/);
 });
 
 test('reflow keeps boundary spaces when joining wrapped rows', async () => {
@@ -118,7 +132,7 @@ test('attribute params collect active cell styling', () => {
 test('mobile client replays frames through the reflow model before display', () => {
   const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
   assert.match(script, /new SideTermTerminalReflow\.TerminalReflow\(\{ Terminal, maxLines: 400 \}\)/);
-  assert.match(script, /renderMobileFrame\(message\.id, message\.data, message\.cols, message\.rows\)/);
+  assert.match(script, /renderMobileFrame\(message\.id, message\.data, message\.cols, message\.rows, message\.source\)/);
   assert.doesNotMatch(script, /Math\.floor\(width \/ 7\.9\)/);
   assert.match(script, /fitAddon\.fit\(\)/);
 });
@@ -131,6 +145,14 @@ test('mobile pages preload the fit addon and reflow helper', () => {
   assert.match(serviceWorker, /sideterm-mobile-v7/);
   assert.match(serviceWorker, /'\.\/terminal-reflow\.js'/);
   assert.match(serviceWorker, /'\.\/fit-addon\.js'/);
+});
+
+test('mobile client normalizes only capture frames, not raw streams', () => {
+  const script = fs.readFileSync(path.join(mobileDirectory, 'mobile.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(script, /const payload = source === 'raw' \? String\(data \|\| ''\) : SideTermTerminalFrames\.terminalFrameText\(data\);/);
+  assert.match(script, /renderMobileFrame\(message\.id, message\.data, message\.cols, message\.rows, message\.source\)/);
+  assert.match(main, /source: session\.tmux && session\.tmuxSession \? 'capture' : 'raw'/);
 });
 
 test('mobile server tracks the session grid and serves the new assets', () => {

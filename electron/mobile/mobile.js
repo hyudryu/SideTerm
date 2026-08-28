@@ -152,13 +152,16 @@ const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
   }
 });
 
-function renderMobileFrame(sessionId, data, cols, rows) {
+function renderMobileFrame(sessionId, data, cols, rows, source) {
   const generation = ++reflowGeneration;
   reflowChain = reflowChain.then(() => {
     if (generation !== reflowGeneration) return;
     terminalReflow.reset();
     terminalReflow.resize(cols, rows);
-    return new Promise((resolve) => terminalReflow.write(data, resolve)).then(() => {
+    // Capture text is LF-delimited and needs CRLF, but a raw PTY stream must
+    // keep VT line-feed semantics, so only captures are normalized.
+    const payload = source === 'raw' ? String(data || '') : SideTermTerminalFrames.terminalFrameText(data);
+    return new Promise((resolve) => terminalReflow.write(payload, resolve)).then(() => {
       if (generation !== reflowGeneration || sessionId !== terminalFrames.sessionId) return;
       terminalFrames.render(sessionId, terminalReflow.serialize());
     });
@@ -408,7 +411,7 @@ function connect() {
       else if (activeId && shouldRestoreSelection) selectSession(activeId);
     }
     if ((message.type === 'terminal:frame' || message.type === 'reset') && message.id === activeId) {
-      renderMobileFrame(message.id, message.data, message.cols, message.rows);
+      renderMobileFrame(message.id, message.data, message.cols, message.rows, message.source);
     }
     if (message.type === 'terminal:activity' && message.id !== activeId) {
       unread.add(message.id);

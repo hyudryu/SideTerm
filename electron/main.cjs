@@ -2949,6 +2949,7 @@ function sendMobileTerminalFrame(client, id, requestId) {
     revision: session.mobileRevision,
     cols: session.cols || 100,
     rows: session.rows || 30,
+    source: session.tmux && session.tmuxSession ? 'capture' : 'raw',
     ...(requestId ? { requestId } : {})
   });
 }
@@ -3417,7 +3418,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     if (mobileSocketServer) {
       const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
-        if (client.sideTermSessionId === id) sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1, cols: session.cols || 100, rows: session.rows || 30 });
+        if (client.sideTermSessionId === id) sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1, cols: session.cols || 100, rows: session.rows || 30, source: session.tmux && session.tmuxSession ? 'capture' : 'raw' });
       }
     }
     sessions.delete(id);
