@@ -12,7 +12,7 @@ const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } =
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
 const { mobileAgentState } = require('./mobile/agent-state.cjs');
-const { MOBILE_DELTA_SEND_CAP, mobileResyncState } = require('./mobile/delta-backpressure.cjs');
+const { MOBILE_DELTA_SEND_CAP, mobileFrameDeliveryState, mobileResyncState } = require('./mobile/delta-backpressure.cjs');
 const { claimConfirmation, createConfirmationExecutionGuard, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
@@ -3067,7 +3067,16 @@ function scheduleMobileTerminalFrame(id) {
   mobileTerminalFrameTimers.set(id, setTimeout(() => {
     mobileTerminalFrameTimers.delete(id);
     if (!mobileSocketServer) return;
-    for (const client of mobileSocketServer.clients) sendMobileTerminalFrame(client, id);
+    for (const client of mobileSocketServer.clients) {
+      if (client.sideTermSessionId !== id) continue;
+      const state = mobileFrameDeliveryState(client);
+      if (state === 'backlog') {
+        client.sideTermDeltaBacklog = true;
+        scheduleMobileResync(client);
+        continue;
+      }
+      if (state === 'ready') sendMobileTerminalFrame(client, id);
+    }
   }, 80));
 }
 
@@ -3105,12 +3114,8 @@ function broadcastMobileTerminalOutput(id, data, revision) {
       if (!deltas || client.sideTermTerminalVisible === false) continue;
       // A slow phone must not grow the WebSocket send queue without bound:
       // skip deltas while it lags, then resync with one authoritative frame.
-      if (client.bufferedAmount > MOBILE_DELTA_SEND_CAP) {
+      if (mobileFrameDeliveryState(client) === 'backlog') {
         client.sideTermDeltaBacklog = true;
-        scheduleMobileResync(client);
-        continue;
-      }
-      if (client.sideTermDeltaBacklog) {
         scheduleMobileResync(client);
         continue;
       }

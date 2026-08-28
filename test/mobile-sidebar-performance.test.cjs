@@ -48,14 +48,15 @@ test('tmux snapshots honor drawer visibility and keep activity for other viewers
   assert.match(main, /if \(client\.sideTermTerminalVisible === false\) return;/);
   assert.match(main, /if \(!deltas\) scheduleMobileTerminalFrame\(id\);/);
   assert.match(main, /if \(!deltas \|\| client\.sideTermTerminalVisible === false\) continue;/);
-  assert.match(main, /client\.bufferedAmount > MOBILE_DELTA_SEND_CAP/);
+  assert.match(main, /mobileFrameDeliveryState\(client\) === 'backlog'/);
   assert.match(main, /if \(client\.sideTermResyncTimer\) clearTimeout\(client\.sideTermResyncTimer\);/);
 });
 
 test('server resync waits for WebSocket backpressure to drain', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /const state = mobileResyncState\(client\);[\s\S]*state === 'wait'[\s\S]*scheduleMobileResync\(client\);/);
-  assert.match(main, /if \(client\.sideTermDeltaBacklog\) \{[\s\S]*scheduleMobileResync\(client\);[\s\S]*continue;/);
+  assert.match(main, /mobileFrameDeliveryState\(client\) === 'backlog'[\s\S]*scheduleMobileResync\(client\);[\s\S]*continue;/);
+  assert.match(main, /function scheduleMobileTerminalFrame[\s\S]*mobileFrameDeliveryState\(client\)[\s\S]*state === 'backlog'[\s\S]*scheduleMobileResync\(client\)/);
 });
 
 test('exited mobile sessions retain a selectable final frame', () => {
