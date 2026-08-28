@@ -8,15 +8,19 @@
   }
 
   class TerminalFrameWriter {
-    constructor({ reset, write, scrollToBottom, captureViewport = null, restoreViewport = null }) {
+    constructor({ reset, write, scrollToBottom, captureViewport = null, restoreViewport = null, maxAppendBytes = 512 * 1024, onOverflow = null }) {
       this.reset = reset;
       this.write = write;
       this.scrollToBottom = scrollToBottom;
       this.captureViewport = captureViewport;
       this.restoreViewport = restoreViewport;
+      const appendLimit = Math.floor(Number(maxAppendBytes));
+      this.maxAppendBytes = Number.isFinite(appendLimit) && appendLimit > 0 ? appendLimit : 512 * 1024;
+      this.onOverflow = onOverflow;
       this.sessionId = null;
       this.generation = 0;
       this.pending = null;
+      this.pendingAppend = '';
       this.writing = false;
       this.preservedViewport = null;
     }
@@ -25,19 +29,47 @@
       this.sessionId = sessionId;
       this.generation += 1;
       this.preservedViewport = null;
+      this.pendingAppend = '';
       this.pending = { generation: this.generation, text: terminalFrameText(placeholder), preserveViewport: false };
       this.drain();
     }
 
     render(sessionId, value) {
       if (!sessionId || sessionId !== this.sessionId) return false;
+      this.pendingAppend = '';
       this.pending = { generation: this.generation, text: terminalFrameText(value), preserveViewport: true };
       this.drain();
       return true;
     }
 
+    append(sessionId, value) {
+      if (!sessionId || sessionId !== this.sessionId) return false;
+      this.pendingAppend += String(value || '');
+      if (this.pendingAppend.length > this.maxAppendBytes) {
+        // The producer outran the renderer; queued deltas are no longer worth
+        // replaying, so drop them and ask for one authoritative frame.
+        this.pendingAppend = '';
+        this.onOverflow?.(sessionId);
+      }
+      this.drain();
+      return true;
+    }
+
     drain() {
-      if (this.writing || !this.pending) return;
+      if (this.writing) return;
+      if (!this.pending && this.pendingAppend) {
+        const generation = this.generation;
+        const text = this.pendingAppend;
+        this.pendingAppend = '';
+        this.writing = true;
+        this.write(text, () => {
+          this.writing = false;
+          if (generation !== this.generation) return this.drain();
+          this.drain();
+        });
+        return;
+      }
+      if (!this.pending) return;
       const frame = this.pending;
       this.pending = null;
       this.writing = true;
@@ -51,9 +83,11 @@
           return;
         }
         this.preservedViewport = null;
-        if (frame.generation !== this.generation) return;
-        if (viewport && !viewport.atBottom && this.restoreViewport) this.restoreViewport(viewport);
-        else this.scrollToBottom();
+        if (frame.generation === this.generation) {
+          if (viewport && !viewport.atBottom && this.restoreViewport) this.restoreViewport(viewport);
+          else this.scrollToBottom();
+        }
+        this.drain();
       });
     }
   }

@@ -11,6 +11,8 @@ const { WebSocketServer } = require('ws');
 const { ensureVoiceEnvironment: ensurePythonVoiceEnvironment, venvPythonPath } = require('./voice/runtime.cjs');
 const { createInstallQueue } = require('./voice/install-queue.cjs');
 const { formatBytes, parsePipProgress } = require('./voice/install-progress.cjs');
+const { mobileAgentState } = require('./mobile/agent-state.cjs');
+const { MOBILE_DELTA_SEND_CAP, mobileFrameDeliveryState, mobileResyncState } = require('./mobile/delta-backpressure.cjs');
 const { claimConfirmation, createConfirmationExecutionGuard, reconcileConfirmationInteractions, restoreConfirmation, retirePullRequestConfirmations } = require('./agent/confirmation-state.cjs');
 const { automaticPresenterSentinel, catchUpPrompt, isAutomaticPresenterSentinel, latestNotificationsBySession, markSupersededNotificationsRead, pendingNotifications, shouldScheduleWorkspaceCatchUp } = require('./agent/catch-up.cjs');
 const { createCatchUpCoordinator } = require('./agent/catch-up-coordinator.cjs');
@@ -100,6 +102,8 @@ let quitRequested = false;
 let mobileServer = null;
 let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
+const mobileExitedSessions = new Map();
+const MOBILE_EXITED_SESSION_LIMIT = 20;
 let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
@@ -1173,7 +1177,7 @@ function observePotentialGitPush(sessionId, data) {
 function broadcastAgentState() {
   const state = publicAgentState();
   send('agent:state', state);
-  broadcastMobile({ type: 'agent:state', state });
+  broadcastMobile({ type: 'agent:state', state: mobileAgentState(state) });
   return state;
 }
 
@@ -2947,16 +2951,33 @@ function sanitizeMobileWorkspace(value) {
 
 function mobileSessionSnapshot() {
   const metadata = new Map(mobileWorkspace.sessions.map((session) => [session.id, session]));
-  return [...sessions.keys()].map((id) => ({
+  const sessionIds = new Set([...sessions.keys(), ...mobileExitedSessions.keys()]);
+  return [...sessionIds].map((id) => ({
     id,
     title: metadata.get(id)?.title || 'Terminal',
-    subtitle: metadata.get(id)?.subtitle || '',
+    subtitle: metadata.get(id)?.subtitle || (mobileExitedSessions.has(id) ? 'Process exited' : ''),
     cwd: metadata.get(id)?.cwd || '',
     groupId: metadata.get(id)?.groupId || '',
     notified: Boolean(metadata.get(id)?.notified),
     inputRequired: Boolean(metadata.get(id)?.inputRequired),
-    busy: Boolean(metadata.get(id)?.busy)
+    busy: mobileExitedSessions.has(id) ? false : Boolean(metadata.get(id)?.busy),
+    exited: mobileExitedSessions.has(id)
   }));
+}
+
+function retainMobileExitedSession(id, session, data, exitCode) {
+  mobileExitedSessions.delete(id);
+  mobileExitedSessions.set(id, {
+    data,
+    exitCode,
+    revision: session.mobileRevision + 1,
+    cols: session.cols || 100,
+    rows: session.rows || 30,
+    source: session.tmux && session.tmuxSession ? 'capture' : 'raw'
+  });
+  while (mobileExitedSessions.size > MOBILE_EXITED_SESSION_LIMIT) {
+    mobileExitedSessions.delete(mobileExitedSessions.keys().next().value);
+  }
 }
 
 function sendMobile(client, payload) {
@@ -2989,7 +3010,7 @@ function mobileVoiceSettings(saved = false) {
 }
 
 function captureSessionScreen(session) {
-  if (!session?.tmux || !session.tmuxSession) return session?.mobileOutputBuffer || '';
+  if (!session?.tmux || !session.tmuxSession) return String(session?.mobileOutputBuffer || '').slice(-300_000);
   try {
     return runTmux(session.tmux, ['capture-pane', '-p', '-e', '-J', '-S', '-600', '-t', session.tmuxSession], { capture: true }).slice(-300_000);
   } catch {
@@ -3014,28 +3035,48 @@ function captureSessionViewport(session) {
 }
 
 function sendMobileTerminalFrame(client, id, requestId) {
+  const exited = mobileExitedSessions.get(id);
   const session = sessions.get(id);
-  if (!session || client?.sideTermSessionId !== id) return;
+  if ((!session && !exited) || client?.sideTermSessionId !== id) return;
+  if (client.sideTermTerminalVisible === false) return;
   sendMobile(client, {
     type: 'terminal:frame',
     id,
-    data: captureSessionScreen(session),
-    revision: session.mobileRevision,
-    cols: session.cols || 100,
-    rows: session.rows || 30,
-    source: session.tmux && session.tmuxSession ? 'capture' : 'raw',
+    data: exited?.data ?? captureSessionScreen(session),
+    revision: exited?.revision ?? session.mobileRevision,
+    cols: exited?.cols ?? session.cols ?? 100,
+    rows: exited?.rows ?? session.rows ?? 30,
+    source: exited?.source ?? (session.tmux && session.tmuxSession ? 'capture' : 'raw'),
     ...(requestId ? { requestId } : {})
   });
 }
 
+// tmux sessions start from a reconstructed capture-pane snapshot whose cursor
+// and wrap state the phone cannot reproduce, so raw PTY deltas would corrupt
+// it. Those sessions keep receiving throttled authoritative snapshots instead;
+// raw-buffer sessions stream deltas that genuinely continue their initial frame.
+function sessionSupportsMobileDeltas(session) {
+  return Boolean(session && !(session.tmux && session.tmuxSession));
+}
+
 function scheduleMobileTerminalFrame(id) {
   if (!mobileSocketServer || mobileTerminalFrameTimers.has(id)) return;
-  const watched = [...mobileSocketServer.clients].some((client) => client.sideTermSessionId === id);
+  const watched = [...mobileSocketServer.clients].some((client) => client.sideTermSessionId === id
+    && client.sideTermTerminalVisible !== false);
   if (!watched) return;
   mobileTerminalFrameTimers.set(id, setTimeout(() => {
     mobileTerminalFrameTimers.delete(id);
     if (!mobileSocketServer) return;
-    for (const client of mobileSocketServer.clients) sendMobileTerminalFrame(client, id);
+    for (const client of mobileSocketServer.clients) {
+      if (client.sideTermSessionId !== id) continue;
+      const state = mobileFrameDeliveryState(client);
+      if (state === 'backlog') {
+        client.sideTermDeltaBacklog = true;
+        scheduleMobileResync(client);
+        continue;
+      }
+      if (state === 'ready') sendMobileTerminalFrame(client, id);
+    }
   }, 80));
 }
 
@@ -3043,6 +3084,46 @@ function clearMobileTerminalFrame(id) {
   const timer = mobileTerminalFrameTimers.get(id);
   if (timer) clearTimeout(timer);
   mobileTerminalFrameTimers.delete(id);
+}
+
+function scheduleMobileResync(client) {
+  if (client.sideTermResyncTimer) return;
+  client.sideTermResyncTimer = setTimeout(() => {
+    client.sideTermResyncTimer = null;
+    const state = mobileResyncState(client);
+    if (state === 'wait') {
+      scheduleMobileResync(client);
+      return;
+    }
+    if (state !== 'ready') {
+      client.sideTermDeltaBacklog = false;
+      return;
+    }
+    client.sideTermDeltaBacklog = false;
+    sendMobileTerminalFrame(client, client.sideTermSessionId);
+  }, 400);
+}
+
+function broadcastMobileTerminalOutput(id, data, revision) {
+  if (!mobileSocketServer) return;
+  const session = sessions.get(id);
+  const deltas = sessionSupportsMobileDeltas(session);
+  if (!deltas) scheduleMobileTerminalFrame(id);
+  for (const client of mobileSocketServer.clients) {
+    if (client.sideTermSessionId === id) {
+      if (!deltas || client.sideTermTerminalVisible === false) continue;
+      // A slow phone must not grow the WebSocket send queue without bound:
+      // skip deltas while it lags, then resync with one authoritative frame.
+      if (mobileFrameDeliveryState(client) === 'backlog') {
+        client.sideTermDeltaBacklog = true;
+        scheduleMobileResync(client);
+        continue;
+      }
+      sendMobile(client, { type: 'terminal:data', id, data, revision });
+    } else {
+      sendMobile(client, { type: 'terminal:activity', id, revision });
+    }
+  }
 }
 
 function mobileAddresses(port, token) {
@@ -3190,10 +3271,11 @@ async function startMobileServer({ persist = true } = {}) {
   });
   socketServer.on('connection', (client) => {
     sendMobile(client, { type: 'snapshot', groups: mobileWorkspace.groups, sessions: mobileSessionSnapshot() });
-    sendMobile(client, { type: 'agent:state', state: publicAgentState() });
+    sendMobile(client, { type: 'agent:state', state: mobileAgentState(publicAgentState()) });
     sendMobile(client, mobileVoiceSettings());
     sendMobile(client, { type: 'voice:status', status: speechStatus() });
     client.once('close', () => {
+      if (client.sideTermResyncTimer) clearTimeout(client.sideTermResyncTimer);
       if (client.sideTermVoiceActivationTaskId) supervisorActor.cancel(client.sideTermVoiceActivationTaskId);
       settleMobilePresentations(client, false);
       mobilePresentationSurfaces.get(client)?.dispose();
@@ -3217,9 +3299,19 @@ async function startMobileServer({ persist = true } = {}) {
         send('terminal:remote-input', { id: message.id, data: message.data });
         session.processHandle.write(message.data);
       }
-      if (message.type === 'select' && session) {
-        client.sideTermSessionId = String(message.id);
+      if (message.type === 'select' && (session || mobileExitedSessions.has(String(message.id || '')))) {
+        client.sideTermSessionId = String(message.id || '');
         sendMobileTerminalFrame(client, client.sideTermSessionId, String(message.requestId || '').slice(0, 100));
+      }
+      if (message.type === 'terminal:visibility') {
+        client.sideTermTerminalVisible = message.visible !== false;
+        // Only an explicit drawer-close refresh (which carries a requestId)
+        // may capture; selection switches send a bare visibility update and
+        // the following `select` refreshes the new session instead.
+        const refreshId = String(message.requestId || '').slice(0, 100);
+        if (client.sideTermTerminalVisible && client.sideTermSessionId && refreshId) {
+          sendMobileTerminalFrame(client, client.sideTermSessionId, refreshId);
+        }
       }
       if (message.type === 'mobile:create') {
         let requestId = String(message.requestId || '').slice(0, 100);
@@ -3411,12 +3503,12 @@ async function stopMobileServer({ persist = true } = {}) {
   const socketServer = mobileSocketServer;
   mobileServer = null;
   mobileSocketServer = null;
+  for (const timer of mobileTerminalFrameTimers.values()) clearTimeout(timer);
+  mobileTerminalFrameTimers.clear();
   if (socketServer) {
     for (const client of socketServer.clients) client.close(1001, 'Mobile access disabled');
     socketServer.close();
   }
-  for (const timer of mobileTerminalFrameTimers.values()) clearTimeout(timer);
-  mobileTerminalFrameTimers.clear();
   if (server) await new Promise((resolve) => server.close(resolve));
   return mobileInfo();
 }
@@ -3469,6 +3561,7 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     lastGithubPushFingerprint: '',
     lastGithubCommitFingerprint: ''
   };
+  mobileExitedSessions.delete(id);
   sessions.set(id, session);
   const forwardOutput = (data) => {
     if (!data || sessions.get(id) !== session) return;
@@ -3477,9 +3570,9 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     send('terminal:data', { id, data, byteLength });
     if (terminalRendererCanAcknowledge()) session.rendererFlow.accept(byteLength);
     session.mobileRevision += 1;
-    session.mobileOutputBuffer = `${session.mobileOutputBuffer}${data}`.slice(-300_000);
-    broadcastMobile({ type: 'terminal:activity', id, revision: session.mobileRevision });
-    scheduleMobileTerminalFrame(id);
+    session.mobileOutputBuffer += data;
+    if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
+    broadcastMobileTerminalOutput(id, data, session.mobileRevision);
   };
   const outputNormalizer = createWindowsVtOutputNormalizer({ onOutput: forwardOutput });
   session.outputNormalizer = outputNormalizer;
@@ -3494,10 +3587,11 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
     }
     forwardOutput(outputNormalizer.flush());
     clearMobileTerminalFrame(id);
+    const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
+    retainMobileExitedSession(id, session, finalScreen, exitCode);
     if (mobileSocketServer) {
-      const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
       for (const client of mobileSocketServer.clients) {
-        if (client.sideTermSessionId === id) sendMobile(client, { type: 'terminal:frame', id, data: finalScreen, revision: session.mobileRevision + 1, cols: session.cols || 100, rows: session.rows || 30, source: session.tmux && session.tmuxSession ? 'capture' : 'raw' });
+        if (client.sideTermSessionId === id) sendMobileTerminalFrame(client, id);
       }
     }
     sessions.delete(id);
@@ -3521,7 +3615,11 @@ function createSession({ id, cwd, cols = 100, rows = 30 }) {
 
 function closeSession(id) {
   const session = sessions.get(id);
-  if (!session) return;
+  const removedExitedSession = mobileExitedSessions.delete(id);
+  if (!session) {
+    if (removedExitedSession) broadcastMobileSnapshot();
+    return;
+  }
   clearMobileTerminalFrame(id);
   session.outputNormalizer?.dispose();
   session.rendererFlow.dispose();
@@ -3670,6 +3768,10 @@ function registerIpc() {
   ipcMain.handle('mobile:enable-tailscale-https', () => enableTailscaleHttps());
   ipcMain.on('mobile:update-workspace', (_event, workspace) => {
     mobileWorkspace = sanitizeMobileWorkspace(workspace);
+    const workspaceSessionIds = new Set(mobileWorkspace.sessions.map((session) => session.id));
+    for (const id of mobileExitedSessions.keys()) {
+      if (!workspaceSessionIds.has(id)) mobileExitedSessions.delete(id);
+    }
     reconcileWorkspaceAttention();
     broadcastMobileSnapshot();
     broadcastAgentState();

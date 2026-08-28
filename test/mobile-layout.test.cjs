@@ -80,4 +80,3 @@ test('new-group creation asks only for a group name', () => {
   assert.match(script, /mobileCreateCwd\.value = creatingGroup \? '' : \(activeSession\?\.cwd \|\| ''\);/);
   assert.match(script, /mobileCreateName\.value = '';/);
 });
-

@@ -74,3 +74,56 @@ test('live frames preserve a reader position while selected sessions start at th
   assert.equal(captures, 1);
   assert.equal(scrolls, 1);
 });
+
+test('incremental terminal data waits for the initial frame and does not reset xterm', () => {
+  const writes = [];
+  const callbacks = [];
+  let resets = 0;
+  const writer = new TerminalFrameWriter({
+    reset() { resets += 1; },
+    write(value, callback) { writes.push(value); callbacks.push(callback); },
+    scrollToBottom() {}
+  });
+
+  writer.select('one', 'connecting');
+  writer.render('one', 'current frame');
+  writer.append('one', '\rspinner 1');
+  writer.append('one', '\rspinner 2');
+  callbacks.shift()();
+  callbacks.shift()();
+  callbacks.shift()();
+
+  assert.deepEqual(writes, ['connecting', 'current frame', '\rspinner 1\rspinner 2']);
+  assert.equal(resets, 2);
+});
+
+test('incremental queue overflow drops pending data and requests an authoritative frame', () => {
+  const overflows = [];
+  const writer = new TerminalFrameWriter({
+    reset() {},
+    write() {},
+    scrollToBottom() {},
+    maxAppendBytes: 64,
+    onOverflow: (sessionId) => overflows.push(sessionId)
+  });
+
+  writer.select('one', 'connecting');
+  writer.append('one', 'x'.repeat(100));
+  assert.deepEqual(overflows, ['one']);
+  assert.equal(writer.pendingAppend, '');
+  assert.equal(writer.append('one', 'more'), true);
+  assert.equal(writer.pendingAppend, 'more');
+  assert.deepEqual(overflows, ['one']);
+});
+
+test('append overflow is disabled when no handler is configured', () => {
+  const writer = new TerminalFrameWriter({
+    reset() {},
+    write() {},
+    scrollToBottom() {},
+    maxAppendBytes: 16
+  });
+  writer.select('one');
+  writer.append('one', 'x'.repeat(64));
+  assert.equal(writer.pendingAppend, '');
+});

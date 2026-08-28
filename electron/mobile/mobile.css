@@ -79,15 +79,15 @@ main { display: grid; grid-template-rows: calc(52px + var(--safe-top)) minmax(0,
 #agent-dashboard.voice-mode .agent-mobile-chat, #agent-dashboard.voice-mode #mobile-agent-form { display: none; }
 @keyframes wave { from { transform: scaleY(.35); opacity: .55; } to { transform: scaleY(1.2); opacity: 1; } }
 @keyframes mobile-pulse { 50% { opacity: .45; transform: scale(.8); } }
-#drawer { position: fixed; inset: 0 auto 0 0; z-index: 20; display: grid; grid-template-rows: calc(62px + var(--safe-top)) minmax(0, 1fr) calc(54px + var(--safe-bottom)); width: min(86vw, 340px); background: #202020; border-right: 1px solid rgba(255,255,255,.1); box-shadow: 18px 0 60px rgba(0,0,0,.55); transform: translateX(-105%); transition: transform 180ms ease; }
-#drawer.open { transform: translateX(0); }
+#drawer { position: fixed; inset: 0 auto 0 0; z-index: 20; display: grid; grid-template-rows: calc(62px + var(--safe-top)) minmax(0, 1fr) calc(54px + var(--safe-bottom)); contain: layout paint; width: min(86vw, 340px); background: #202020; border-right: 1px solid rgba(255,255,255,.1); box-shadow: 18px 0 60px rgba(0,0,0,.55); transform: translate3d(-105%,0,0); backface-visibility: hidden; transition: transform 180ms ease; will-change: transform; }
+#drawer.open { transform: translate3d(0,0,0); }
 #drawer > header { display: grid; grid-template-columns: 38px minmax(0, 1fr) 40px; align-items: center; gap: 9px; padding: var(--safe-top) 10px 0 14px; border-bottom: 1px solid rgba(255,255,255,.07); }
 #drawer img { width: 34px; height: 34px; border-radius: 7px; }
 #drawer header > div { display: flex; flex-direction: column; gap: 2px; }
 #drawer header strong { font-size: 14px; }
 #drawer header span, #drawer footer span { color: #929292; font-size: 10px; }
 #drawer-close { font-size: 24px; font-weight: 300; }
-#drawer nav { padding: 10px 8px 18px; overflow-y: auto; }
+#drawer nav { padding: 10px 8px 18px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 #mobile-workspace-actions { position: sticky; top: -10px; z-index: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: -2px 0 10px; padding: 2px 0 8px; background: #202020; }
 #mobile-workspace-actions button { height: 36px; color: #ddd; background: #303030; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; font-size: 12px; font-weight: 600; }
 #mobile-workspace-actions button:last-child { color: #071319; background: #60cdff; border-color: #60cdff; }
