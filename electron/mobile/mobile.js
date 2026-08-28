@@ -131,6 +131,13 @@ const terminal = new Terminal({
   }
 });
 terminal.open(terminalElement);
+const fitAddon = new FitAddon.FitAddon();
+terminal.loadAddon(fitAddon);
+// Frames are captured on the desktop grid, so replay them through a hidden
+// terminal of the same size and re-serialize readable text for the phone grid.
+const terminalReflow = new SideTermTerminalReflow.TerminalReflow({ Terminal, maxLines: 400 });
+let reflowGeneration = 0;
+let reflowChain = Promise.resolve();
 const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
   reset: () => terminal.reset(),
   write: (data, callback) => terminal.write(data, callback),
@@ -145,10 +152,25 @@ const terminalFrames = new SideTermTerminalFrames.TerminalFrameWriter({
   }
 });
 
+function renderMobileFrame(sessionId, data, cols, rows, source) {
+  const generation = ++reflowGeneration;
+  reflowChain = reflowChain.then(() => {
+    if (generation !== reflowGeneration) return;
+    terminalReflow.reset();
+    terminalReflow.resize(cols, rows);
+    // Capture text is LF-delimited and needs CRLF, but a raw PTY stream must
+    // keep VT line-feed semantics, so only captures are normalized.
+    const payload = source === 'raw' ? String(data || '') : SideTermTerminalFrames.terminalFrameText(data);
+    return new Promise((resolve) => terminalReflow.write(payload, resolve)).then(() => {
+      if (generation !== reflowGeneration || sessionId !== terminalFrames.sessionId) return;
+      terminalFrames.render(sessionId, terminalReflow.serialize());
+    });
+  }).catch(() => { /* a failed frame is retried by the next capture */ });
+}
+
 function resizeTerminal() {
-  const width = Math.max(200, terminalElement.clientWidth - 14);
-  const height = Math.max(120, terminalElement.clientHeight - 10);
-  terminal.resize(Math.max(24, Math.floor(width / 7.9)), Math.max(8, Math.floor(height / 16.8)));
+  if (!terminalElement.clientWidth || !terminalElement.clientHeight) return;
+  try { fitAddon.fit(); } catch { /* the terminal may not be open yet */ }
 }
 
 function setDrawer(open) {
@@ -174,13 +196,15 @@ function openMobileCreate(kind) {
   const activeSession = sessions.find((session) => session.id === activeId);
   const activeGroup = groups.find((group) => group.sessionIds.includes(activeId));
   mobileCreateGroup.value = activeGroup?.id || groups[0]?.id || '';
-  mobileCreateCwd.value = activeSession?.cwd || '';
   const creatingGroup = mobileCreateKind === 'group';
+  mobileCreateName.value = '';
+  mobileCreateCwd.value = creatingGroup ? '' : (activeSession?.cwd || '');
   document.querySelector('#mobile-create-title').textContent = creatingGroup ? 'New group' : 'New session';
   document.querySelector('#mobile-create-subtitle').textContent = creatingGroup ? 'Start a group with its first terminal' : 'Create a terminal in an existing group';
   document.querySelector('#mobile-create-group-name-row').hidden = !creatingGroup;
   document.querySelector('#mobile-create-group-row').hidden = creatingGroup;
-  document.querySelector('#mobile-create-name-label').textContent = creatingGroup ? 'First session name (optional)' : 'Session name (optional)';
+  document.querySelector('#mobile-create-name-row').hidden = creatingGroup;
+  document.querySelector('#mobile-create-cwd-row').hidden = creatingGroup;
   document.querySelector('#mobile-create-status').textContent = '';
   mobileCreateSubmit.disabled = false;
   mobileCreateBackdrop.hidden = false;
@@ -387,7 +411,7 @@ function connect() {
       else if (activeId && shouldRestoreSelection) selectSession(activeId);
     }
     if ((message.type === 'terminal:frame' || message.type === 'reset') && message.id === activeId) {
-      terminalFrames.render(message.id, message.data);
+      renderMobileFrame(message.id, message.data, message.cols, message.rows, message.source);
     }
     if (message.type === 'terminal:activity' && message.id !== activeId) {
       unread.add(message.id);
