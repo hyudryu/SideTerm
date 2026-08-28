@@ -132,6 +132,7 @@ let voiceReplyUntil = 0;
 let voiceReplyInteractionId = '';
 let voiceShortcutBypassUntil = 0;
 let agentSpeechQueue = Promise.resolve(true);
+let agentSpeechGeneration = 0;
 let providerValidationInFlight = false;
 let aiSummaryGlobalInFlight = false;
 let aiSummaryCooldownUntil = 0;
@@ -1977,16 +1978,29 @@ function interruptVoicePlayback() {
   return true;
 }
 
-async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}) {
+function supersedeAgentSpeech() {
+  agentSpeechGeneration += 1;
+  interruptVoicePlayback();
+  // Resetting the queue alone leaves the stale synthesis occupying the serial
+  // speech worker, so the next acknowledgement stays queued behind it.
+  api.cancelSpeechSynthesis?.('desktop-voice').catch(() => {});
+  agentSpeechQueue = Promise.resolve(true);
+  return agentSpeechGeneration;
+}
+
+async function speakAgentResponse(text, { openReplyWindow = true, interactionId = '' } = {}, generation = agentSpeechGeneration) {
   if (!desktopVoiceMode) return true;
   try {
-    const completed = await playSpeechAudio(await api.synthesizeSpeech(text));
+    const audio = await api.synthesizeSpeech(text, undefined, 'desktop-voice');
+    if (generation !== agentSpeechGeneration || !desktopVoiceMode) return false;
+    const completed = await playSpeechAudio(audio);
     if (completed && openReplyWindow) {
       voiceReplyInteractionId = String(interactionId || '');
       voiceReplyUntil = Date.now() + VOICE_REPLY_WINDOW_MS;
     }
     return completed;
   } catch (error) {
+    if (generation !== agentSpeechGeneration || !desktopVoiceMode) return false;
     showToast(`Voice: ${error.message}`);
     return false;
   }
@@ -1995,10 +2009,14 @@ async function speakAgentResponse(text, { openReplyWindow = true, interactionId 
 function queueAgentSpeech(text, options = {}) {
   const spokenText = String(text || '').trim();
   if (!spokenText) return Promise.resolve(true);
-  agentSpeechQueue = agentSpeechQueue
+  const generation = agentSpeechGeneration;
+  const queued = agentSpeechQueue
     .catch(() => false)
-    .then(() => desktopVoiceMode ? speakAgentResponse(spokenText, options) : true);
-  return agentSpeechQueue;
+    .then(() => generation === agentSpeechGeneration && desktopVoiceMode
+      ? speakAgentResponse(spokenText, options, generation)
+      : false);
+  agentSpeechQueue = queued;
+  return queued;
 }
 
 async function activateVoiceByShortcut() {
@@ -2037,6 +2055,7 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
     }
     if (transcript.clarification) {
       label.textContent = 'Waiting for clarification';
+      supersedeAgentSpeech();
       voiceReplyInteractionId = transcript.clarification.interactionId || '';
       await queueAgentSpeech(transcript.clarification.prompt, {
         openReplyWindow: true,
@@ -2045,6 +2064,7 @@ async function processVoiceUtterance(blob, durationMs, { shortcutBypass = false 
       return;
     }
     voiceReplyUntil = 0;
+    supersedeAgentSpeech();
     const interactionId = replyWindowActive ? voiceReplyInteractionId : '';
     voiceReplyInteractionId = '';
     document.querySelector('#agent-chat-input').value = transcript.text;
@@ -2104,7 +2124,7 @@ async function startDesktopVoiceMode() {
       if (rms > 0.075) {
         voiceBargeInStartedAt ||= now;
         if (now - voiceBargeInStartedAt >= 280) {
-          interruptVoicePlayback();
+          supersedeAgentSpeech();
           speaking = true;
           startedAt = now;
           silenceAt = 0;
@@ -2118,6 +2138,10 @@ async function startDesktopVoiceMode() {
       }
     } else if (rms > 0.035) {
       if (!speaking) {
+        // Queued speech stays valid until transcription accepts the utterance:
+        // ambient noise must not invalidate a pending presentation. Accepted
+        // requests supersede via submitAgentChat; clarifications supersede
+        // before their reply is queued.
         speaking = true;
         startedAt = now;
         utterance = [...preRoll];
@@ -2151,7 +2175,7 @@ async function startDesktopVoiceMode() {
 }
 
 function stopDesktopVoiceMode() {
-  interruptVoicePlayback();
+  supersedeAgentSpeech();
   desktopVoiceMode = false;
   voiceTranscriptionInFlight = false;
   voiceReplyUntil = 0;
@@ -3515,7 +3539,8 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element) || !event.target.closest('.group-sort-wrap')) closeGroupSortMenus();
 });
 api.onAgentState(renderAgentState);
-api.onAgentVoicePing(async ({ text, acknowledgement, interactionId, presentationId } = {}) => {
+api.onAgentVoicePing(async ({ text, acknowledgement, interactionId, presentationId, userRequest } = {}) => {
+  if (userRequest) supersedeAgentSpeech();
   const delivered = desktopVoiceMode
     ? await queueAgentSpeech(String(text || ''), {
       openReplyWindow: !acknowledgement,

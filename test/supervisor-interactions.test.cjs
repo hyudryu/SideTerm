@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { interpretApprovalAnswer, PendingInteractionManager, shouldConsumeInteractionAnswer } = require('../electron/supervisor/interactions.cjs');
+const { interpretApprovalAnswer, interpretConfirmationApprovalAnswer, PendingInteractionManager, shouldConsumeInteractionAnswer } = require('../electron/supervisor/interactions.cjs');
 
 test('new events do not steal an answer from the active interaction', () => {
   const interactions = [];
@@ -22,6 +22,22 @@ test('approval answers are explicit and colloquial without guessing ambiguous sp
   assert.equal(interpretApprovalAnswer('maybe after the tests'), null);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'maybe after the tests'), false);
   assert.equal(shouldConsumeInteractionAnswer({ kind: 'approval' }, 'yeah'), true);
+});
+
+test('a merge confirmation accepts natural explicit speech without guessing', () => {
+  const merge = { kind: 'merge-pull-request' };
+  assert.equal(interpretConfirmationApprovalAnswer('Then yeah, go ahead and merge it.', merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer('Please merge the pull request.', merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer('No, do not merge it.', merge), false);
+  assert.equal(interpretConfirmationApprovalAnswer("Yes, but let's not merge it.", merge), false);
+  assert.equal(interpretConfirmationApprovalAnswer('Okay, not merge it yet.', merge), false);
+  assert.equal(interpretConfirmationApprovalAnswer('Yes, merge it.', merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer("Don't wait for anything else; please merge it now.", merge), true);
+  assert.equal(interpretConfirmationApprovalAnswer('Cancel the merge.', merge), false);
+  assert.equal(interpretConfirmationApprovalAnswer('Maybe after the deployment finishes.', merge), null);
+  assert.equal(interpretConfirmationApprovalAnswer('Is it safe to merge?', merge), null);
+  assert.equal(interpretConfirmationApprovalAnswer('Yes, approve the terminal input.', merge), null);
+  assert.equal(interpretConfirmationApprovalAnswer('Merge it.', { kind: 'terminal-input' }), null);
 });
 
 test('failed approval execution restores the same interaction for retry', () => {

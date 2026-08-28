@@ -23,7 +23,23 @@ test('higher-priority work cancels interruptible automatic work', async () => {
   const automatic = actor.enqueue(() => blocker, { priority: 2, interruptible: true, cancel: () => { cancelled = true; release(); } });
   const user = actor.enqueue(() => 'ok', { priority: 0 });
   assert.equal(cancelled, true);
-  await Promise.all([automatic, user]);
+  await assert.rejects(automatic, { name: 'AbortError' });
+  assert.equal(await user, 'ok');
+});
+
+test('an interrupted task can suppress its result before committing it', async () => {
+  const actor = new SupervisorActor();
+  let release;
+  let committed = false;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  const automatic = actor.enqueue(async ({ isCancelled }) => {
+    await blocker;
+    if (!isCancelled()) committed = true;
+  }, { priority: 2, interruptible: true, cancel: () => release() });
+  const user = actor.enqueue(async () => 'user', { priority: 0 });
+  await assert.rejects(automatic, { name: 'AbortError' });
+  await user;
+  assert.equal(committed, false);
 });
 
 test('an activation task can be cancelled by identity', async () => {
