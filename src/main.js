@@ -8,6 +8,7 @@ import { aiSummaryRetryDelay, isAiSessionStale, MAX_AI_SUMMARY_FAILURES, shouldB
 import { renderMarkdown } from './markdown.js';
 import { compactLastResponseAge, sessionDisplayLabels } from './session-labels.js';
 import { createTerminalLinkProvider, openTerminalLink } from './terminal-links.js';
+import { shouldRefitTerminal } from './terminal-resize.js';
 import { releaseStaleMouseDrag } from './pointer-release.js';
 import { isVoiceShortcutBypassActive } from './voice-shortcut.js';
 import {
@@ -2520,6 +2521,9 @@ function fitSession(session) {
   if (shellElement.classList.contains('supervisor-active') || terminalStack.getClientRects().length === 0) return;
   try {
     session.fit.fit();
+    const { width, height } = terminalStack.getBoundingClientRect();
+    session.lastFitSize = { width, height };
+    session.lastObservedTerminalSize = { width, height };
   } catch {
     // A hidden or closing terminal can briefly have no measurable size.
   }
@@ -2527,6 +2531,16 @@ function fitSession(session) {
 
 function fitActive() {
   fitSession(sessions.get(activeId));
+}
+
+function fitActiveForResize(entry) {
+  const session = sessions.get(activeId);
+  if (!session) return;
+  const { width, height } = entry?.contentRect || terminalStack.getBoundingClientRect();
+  const nextSize = { width, height };
+  const shouldFit = shouldRefitTerminal(session.lastFitSize, session.lastObservedTerminalSize, nextSize);
+  session.lastObservedTerminalSize = nextSize;
+  if (shouldFit) fitSession(session);
 }
 
 async function copySelection() {
@@ -3243,7 +3257,7 @@ api.onExit(({ id, exitCode }) => {
   schedulePersist();
 });
 
-new ResizeObserver(fitActive).observe(terminalStack);
+new ResizeObserver((entries) => fitActiveForResize(entries[0])).observe(terminalStack);
 window.addEventListener('resize', fitActive);
 window.addEventListener('blur', releaseTerminalSelectionDrag);
 window.addEventListener('focus', handleWindowFocus);
