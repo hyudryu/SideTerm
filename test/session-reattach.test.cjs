@@ -170,4 +170,9 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(renderer, /if \(restoringWorkspace && !options\.id\) await workspaceRestoreComplete;/);
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}/);
   assert.match(renderer, /persistWorkspaceCopies\(serializedWorkspace, \{[\s\S]*?required,[\s\S]*?return durableSave;/);
+  assert.match(renderer, /function acknowledgeTerminalDataAfterCheckpoint\(acknowledge\) \{\s*pendingTerminalCheckpointAcknowledgements\.push\(acknowledge\);\s*if \(!restoringWorkspace\) void flushTerminalCheckpointAcknowledgements\(\);/);
+  assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}[\s\S]*?if \(pendingTerminalCheckpointAcknowledgements\.length > 0\) \{\s*await flushTerminalCheckpointAcknowledgements\(\{ forceSave: true \}\);/);
+  assert.match(renderer, /cursorBlink: false,\s*disableStdin: true,/);
+  assert.match(renderer, /terminal\.onData\(\(data\) => \{\s*if \(session\.exited \|\| session\.connecting\) return;/);
+  assert.match(renderer, /await api\.markRendererReady\(id\);[\s\S]*?if \(!details\.exited\) \{\s*session\.connecting = false;\s*terminal\.options\.disableStdin = false;\s*api\.resize\(id, terminal\.cols, terminal\.rows\);/);
 });

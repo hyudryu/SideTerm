@@ -70,6 +70,10 @@ let resolveWorkspaceRestore;
 const workspaceRestoreComplete = new Promise((resolve) => { resolveWorkspaceRestore = resolve; });
 let persistTimer = null;
 let persistInFlight = false;
+const pendingTerminalCheckpointAcknowledgements = [];
+let terminalCheckpointPromise = null;
+let terminalCheckpointRetryTimer = null;
+let terminalCheckpointRetryDelayMs = 1_000;
 let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
@@ -1222,6 +1226,52 @@ function schedulePersist() {
   if (restoringWorkspace) return;
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(persistWorkspaceNow, 250);
+}
+
+function scheduleTerminalCheckpointRetry() {
+  if (restoringWorkspace || terminalCheckpointRetryTimer
+    || pendingTerminalCheckpointAcknowledgements.length === 0) return;
+  const delay = terminalCheckpointRetryDelayMs;
+  terminalCheckpointRetryDelayMs = Math.min(30_000, terminalCheckpointRetryDelayMs * 2);
+  terminalCheckpointRetryTimer = window.setTimeout(() => {
+    terminalCheckpointRetryTimer = null;
+    void flushTerminalCheckpointAcknowledgements();
+  }, delay);
+}
+
+function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
+  if (restoringWorkspace) return Promise.resolve(false);
+  if (terminalCheckpointPromise) return terminalCheckpointPromise;
+  if (!forceSave && pendingTerminalCheckpointAcknowledgements.length === 0) return Promise.resolve(true);
+  window.clearTimeout(terminalCheckpointRetryTimer);
+  terminalCheckpointRetryTimer = null;
+  const acknowledgements = pendingTerminalCheckpointAcknowledgements.splice(0);
+  let checkpointSucceeded = false;
+  terminalCheckpointPromise = (async () => {
+    try {
+      await persistWorkspaceNow({ required: true });
+      checkpointSucceeded = true;
+      terminalCheckpointRetryDelayMs = 1_000;
+      for (const acknowledge of acknowledgements) acknowledge();
+      return true;
+    } catch {
+      pendingTerminalCheckpointAcknowledgements.unshift(...acknowledgements);
+      return false;
+    } finally {
+      terminalCheckpointPromise = null;
+      if (checkpointSucceeded && pendingTerminalCheckpointAcknowledgements.length > 0 && !restoringWorkspace) {
+        void flushTerminalCheckpointAcknowledgements();
+      } else if (!checkpointSucceeded) {
+        scheduleTerminalCheckpointRetry();
+      }
+    }
+  })();
+  return terminalCheckpointPromise;
+}
+
+function acknowledgeTerminalDataAfterCheckpoint(acknowledge) {
+  pendingTerminalCheckpointAcknowledgements.push(acknowledge);
+  if (!restoringWorkspace) void flushTerminalCheckpointAcknowledgements();
 }
 
 async function refreshRuntimeStateAndPersist() {
@@ -2842,6 +2892,7 @@ async function addSession(cwd, options = {}) {
     allowProposedApi: false,
     convertEol: true,
     cursorBlink: false,
+    disableStdin: true,
     cursorStyle: 'bar',
     cursorWidth: 2,
     fontFamily: "'Cascadia Code', 'CaskaydiaCove Nerd Font', 'Ubuntu Mono', monospace",
@@ -2925,6 +2976,7 @@ async function addSession(cwd, options = {}) {
     contextRevision: restoredContext.contextRevision,
     lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
+    connecting: true,
     activityCycleId: '',
     activityScanBuffer: '',
     lastWorkingAt: 0,
@@ -2953,7 +3005,7 @@ async function addSession(cwd, options = {}) {
   }
 
   terminal.onData((data) => {
-    if (session.exited) return;
+    if (session.exited || session.connecting) return;
     const userInput = stripTerminalControlInput(data);
     if (terminalCaptureRestore && userInput) return;
     if (userInput) trackTerminalInput(session, data);
@@ -3012,6 +3064,11 @@ async function addSession(cwd, options = {}) {
     updateSessionItem(session);
     await api.markRendererReady(id);
     if (sessions.get(id) !== session) return session;
+    if (!details.exited) {
+      session.connecting = false;
+      terminal.options.disableStdin = false;
+      api.resize(id, terminal.cols, terminal.rows);
+    }
   } catch (error) {
     if (sessions.get(id) !== session) return session;
     session.exited = true;
@@ -3251,16 +3308,24 @@ api.onData(({
 }) => {
   const session = sessions.get(id);
   if (!session) {
-    api.acknowledgeData(id, byteLength);
+    api.acknowledgeData(
+      id, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+      exitClaimToken, exitDeliveryToken
+    );
     return;
   }
   session.terminal.write(data, () => {
     noteSessionBusy(session, data);
     noteBackgroundActivity(session, data);
-    api.acknowledgeData(
+    const acknowledge = () => api.acknowledgeData(
       id, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
       exitClaimToken, exitDeliveryToken
     );
+    if (replayClaimToken || exitClaimToken) {
+      acknowledgeTerminalDataAfterCheckpoint(acknowledge);
+    } else {
+      acknowledge();
+    }
   });
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
@@ -3273,7 +3338,10 @@ api.onRemoteInput(({ id, data }) => {
 
 api.onExit(({ id, exitCode, exitClaimToken, exitDeliveryToken }) => {
   const session = sessions.get(id);
-  if (!session) return;
+  if (!session) {
+    api.acknowledgeExit(id, exitClaimToken, exitDeliveryToken);
+    return;
+  }
   session.exited = true;
   session.busy = false;
   setSessionInputRequired(session, false);
@@ -3667,7 +3735,11 @@ async function restoreSavedWorkspace() {
     const restoredActive = restoredWorkspace?.activeId;
     activateSession(sessions.has(restoredActive) ? restoredActive : orderedSessionIds()[0]);
   }
-  persistWorkspaceNow();
+  if (pendingTerminalCheckpointAcknowledgements.length > 0) {
+    await flushTerminalCheckpointAcknowledgements({ forceSave: true });
+  } else {
+    persistWorkspaceNow();
+  }
 }
 
 async function initializeApp() {

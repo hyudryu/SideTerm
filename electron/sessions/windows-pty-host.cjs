@@ -29,10 +29,6 @@ function response(socket, requestId, result, error = '') {
   send(socket, { type: 'response', requestId, result, error });
 }
 
-function broadcast(payload) {
-  for (const socket of clients) send(socket, payload);
-}
-
 function safeDimensions(cols, rows) {
   const width = Math.max(2, Math.floor(Number(cols) || 100));
   const height = Math.max(1, Math.floor(Number(rows) || 30));
@@ -53,6 +49,22 @@ function leaseSessionReplay(session) {
   session.detachedOutput = '';
   session.replayLease = { token, data: replay };
   return session.replayLease;
+}
+
+function deliverAttachedReplay(id, session) {
+  if (session.replayLease || !session.detachedOutput) return false;
+  const recipients = [...session.attachedClients]
+    .filter((socket) => socket.sideTermReplayAcknowledgements);
+  if (recipients.length === 0) return false;
+  const replayLease = leaseSessionReplay(session);
+  for (const socket of recipients) {
+    send(socket, {
+      type: 'replay', id, generation: session.generation,
+      data: Buffer.from(replayLease.data, 'utf8').toString('base64'),
+      replayClaimToken: replayLease.token
+    });
+  }
+  return true;
 }
 
 function sessionResult(id, session, reattached, socket) {
@@ -179,16 +191,16 @@ function createSession(input, socket) {
   };
   sessions.set(id, session);
   processHandle.onData((data) => {
-    if (session.attachedClients.size === 0) {
-      session.detachedOutput = `${session.detachedOutput}${data}`.slice(-300_000);
-    } else {
-      for (const socket of session.attachedClients) {
+    session.detachedOutput = `${session.detachedOutput}${data}`.slice(-300_000);
+    for (const socket of session.attachedClients) {
+      if (!socket.sideTermReplayAcknowledgements) {
         send(socket, {
           type: 'data', id, generation: session.generation,
           data: Buffer.from(data, 'utf8').toString('base64')
         });
       }
     }
+    deliverAttachedReplay(id, session);
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) return;
@@ -198,12 +210,16 @@ function createSession(input, socket) {
     const tail = session.detachedOutput;
     retainExitedSession(id, session, normalizedExitCode, normalizedSignal);
     const exited = exitedSessions.get(id);
-    broadcast({
-      type: 'exit', id, generation: session.generation,
-      replay: tail ? Buffer.from(tail, 'utf8').toString('base64') : '',
-      exitCode: normalizedExitCode, signal: normalizedSignal,
-      exitClaimToken: exited.claimToken
-    });
+    for (const socket of clients) {
+      send(socket, {
+        type: 'exit', id, generation: session.generation,
+        replay: socket.sideTermReplayAcknowledgements && tail
+          ? Buffer.from(tail, 'utf8').toString('base64')
+          : '',
+        exitCode: normalizedExitCode, signal: normalizedSignal,
+        exitClaimToken: exited.claimToken
+      });
+    }
     scheduleIdleExit();
   });
   return sessionResult(id, session, false, socket);
@@ -226,16 +242,8 @@ function handleCommand(socket, message) {
   if (message.action === 'ack-replay') {
     if (session.replayLease?.token !== String(message.claimToken || '')) return;
     session.replayLease = null;
-    if (session.detachedOutput) {
-      const replayLease = leaseSessionReplay(session);
-      send(socket, {
-        type: 'replay', id, generation: session.generation,
-        data: replayLease.data ? Buffer.from(replayLease.data, 'utf8').toString('base64') : '',
-        replayClaimToken: replayLease.token
-      });
-    } else {
-      session.attachedClients.add(socket);
-    }
+    session.attachedClients.add(socket);
+    deliverAttachedReplay(id, session);
     return;
   }
   if (message.action === 'write') {
@@ -272,7 +280,7 @@ function handleRequest(socket, message) {
       pruneExitedSessions();
       const idle = sessions.size === 0 && exitedSessions.size === 0;
       response(socket, requestId, { idle });
-      if (idle) setTimeout(cleanExit, 10).unref();
+      if (idle) setTimeout(shutdownIfStillIdle, 10).unref();
       return;
     }
     throw new Error('Unsupported PTY host request.');
@@ -291,12 +299,33 @@ function handleMessage(socket, message) {
     }
     socket.sideTermAuthenticated = true;
     socket.sideTermReplayAcknowledgements = message?.capabilities?.replayAcknowledgements === true;
+    cancelIdleExit();
     clients.add(socket);
     send(socket, { type: 'authenticated', protocol: 1, pid: process.pid });
     return;
   }
   if (message?.type === 'request') handleRequest(socket, message);
   if (message?.type === 'command') dispatchPtyCommand(handleCommand, socket, message);
+}
+
+function cancelIdleExit() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+function exitIfStillIdle() {
+  idleTimer = null;
+  pruneExitedSessions();
+  if (sessions.size > 0 || clients.size > 0 || exitedSessions.size > 0) {
+    scheduleIdleExit();
+    return;
+  }
+  cleanExit();
+}
+
+function shutdownIfStillIdle() {
+  pruneExitedSessions();
+  if (sessions.size === 0 && exitedSessions.size === 0) cleanExit();
 }
 
 function releasePausedSessions(socket) {
@@ -312,8 +341,7 @@ function releasePausedSessions(socket) {
 }
 
 function scheduleIdleExit() {
-  if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = null;
+  cancelIdleExit();
   pruneExitedSessions();
   if (sessions.size > 0 || clients.size > 0) return;
   if (exitedSessions.size > 0) {
@@ -323,7 +351,7 @@ function scheduleIdleExit() {
     idleTimer.unref();
     return;
   }
-  idleTimer = setTimeout(cleanExit, 5_000);
+  idleTimer = setTimeout(exitIfStillIdle, 5_000);
   idleTimer.unref();
 }
 

@@ -57,6 +57,24 @@ function waitForOutput(handle, pattern, timeoutMs = 5_000) {
   });
 }
 
+function waitForUnacknowledgedOutput(handle, pattern, timeoutMs = 5_000) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let subscription = null;
+    const timer = setTimeout(() => {
+      subscription?.dispose();
+      reject(new Error(`Timed out waiting for unacknowledged PTY output matching ${pattern}. Received: ${output}`));
+    }, timeoutMs);
+    subscription = handle.onData((data) => {
+      output += data;
+      if (!pattern.test(output)) return;
+      clearTimeout(timer);
+      subscription?.dispose();
+      resolve(output);
+    });
+  });
+}
+
 function waitForExit(handle, timeoutMs = 5_000) {
   return new Promise((resolve, reject) => {
     let subscription = null;
@@ -104,6 +122,32 @@ test('hosted PTY handles satisfy output flow control with remote pause and resum
     { action: 'pause', id: 'flow-session', generation: 'flow-generation' },
     { action: 'resume', id: 'flow-session', generation: 'flow-generation' }
   ]);
+});
+
+test('killing a hosted PTY releases only its own client handle immediately', () => {
+  const commands = [];
+  const client = { command: (payload) => commands.push(payload), handles: new Map() };
+  const handle = new WindowsPtyHandle(client, {
+    id: 'closed-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'closed-generation'
+  });
+  client.handles.set(handle.id, handle);
+  handle.onData(() => {});
+  handle.onExit(() => {});
+
+  handle.kill();
+
+  assert.deepEqual(commands, [{ action: 'kill', id: 'closed-session', generation: 'closed-generation' }]);
+  assert.equal(client.handles.has(handle.id), false);
+  assert.equal(handle.dataListeners.size, 0);
+  assert.equal(handle.exitListeners.size, 0);
+
+  const replacement = new WindowsPtyHandle(client, {
+    id: handle.id, pid: 43, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'new-generation'
+  });
+  client.handles.set(handle.id, replacement);
+  handle.detach();
+  handle.emitExit({ exitCode: 0, signal: 0 });
+  assert.equal(client.handles.get(handle.id), replacement);
 });
 
 test('exit events received before handle registration are delivered after creation', async () => {
@@ -279,9 +323,13 @@ test('Windows shell overrides are resolved before they cross the PTY host bounda
   assert.match(host, /exitClaimToken: exited\.claimToken/);
   assert.match(host, /generation: session\.generation/);
   assert.match(host, /message\.action === 'ack-replay'[\s\S]*?session\.replayLease = null/);
-  assert.match(host, /retainExitedSession\(id, session, normalizedExitCode, normalizedSignal\);[\s\S]*?broadcast\(\{[\s\S]*?type: 'exit'/);
+  assert.match(host, /session\.detachedOutput = `\$\{session\.detachedOutput\}\$\{data\}`\.slice\(-300_000\);[\s\S]*?deliverAttachedReplay\(id, session\)/);
+  assert.match(host, /retainExitedSession\(id, session, normalizedExitCode, normalizedSignal\);[\s\S]*?type: 'exit'/);
   assert.match(host, /if \(message\?\.type === 'command'\) dispatchPtyCommand\(handleCommand, socket, message\);/);
   assert.match(host, /sideTermReplayAcknowledgements = message\?\.capabilities\?\.replayAcknowledgements === true/);
+  assert.match(host, /cancelIdleExit\(\);\s*clients\.add\(socket\)/);
+  assert.match(host, /function exitIfStillIdle\(\)[\s\S]*?sessions\.size > 0 \|\| clients\.size > 0 \|\| exitedSessions\.size > 0/);
+  assert.match(host, /setTimeout\(shutdownIfStillIdle, 10\)/);
 });
 
 test('a missing pipe is replaced even when stale metadata points to a reused live PID', {
@@ -353,6 +401,52 @@ test('an authenticating live endpoint timeout preserves its metadata', {
   }), /Timed out authenticating/);
 
   assert.deepEqual(JSON.parse(fs.readFileSync(metadataPath, 'utf8')), metadata);
+});
+
+test('an authenticated reconnect cancels the host idle-exit timer', {
+  timeout: 15_000,
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-idle-reconnect-test-'));
+  const metadataPath = path.join(temporaryDirectory, 'host.json');
+  const hostScript = path.join(__dirname, '..', 'electron', 'sessions', 'windows-pty-host.cjs');
+  let client = null;
+  let handle = null;
+  t.after(async () => {
+    try {
+      handle?.kill();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await client?.shutdownIfIdle();
+    } catch {
+      // Best-effort cleanup for a failed integration assertion.
+    }
+    client?.disconnect();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  client.disconnect();
+  client = null;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  handle = await client.createSession({
+    id: 'idle-reconnect-session',
+    executable: process.execPath,
+    args: ['-e', "process.stdin.setEncoding('utf8'); process.stdout.write('READY\\n'); process.stdin.on('data', data => process.stdout.write('ECHO:' + data)); setInterval(() => {}, 1000)"],
+    name: 'xterm-256color',
+    cols: 100,
+    rows: 30,
+    cwd: temporaryDirectory,
+    env: {}
+  });
+  await waitForOutput(handle, /READY/);
+  const hostPid = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).pid;
+  await new Promise((resolve) => setTimeout(resolve, 5_250));
+  const echoed = waitForOutput(handle, /ECHO:still-alive/);
+  handle.write(`still-alive${os.EOL}`);
+  await echoed;
+  assert.equal(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).pid, hostPid);
 });
 
 test('detached PTY host preserves a live session across client restarts', {
@@ -433,6 +527,18 @@ test('detached PTY host preserves a live session across client restarts', {
   const afterPausedDisconnect = waitForOutput(handle, /HOST_ECHO:after-pause/);
   handle.write(`after-pause${os.EOL}`);
   await afterPausedDisconnect;
+
+  const unacknowledged = waitForUnacknowledgedOutput(handle, /HOST_ECHO:checkpoint-me/);
+  handle.write(`checkpoint-me${os.EOL}`);
+  await unacknowledged;
+  client.disconnect();
+  client = null;
+  handle = null;
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  handle = await client.createSession(options);
+  assert.equal(handle.pid, originalPid);
+  assert.match(await waitForOutput(handle, /HOST_ECHO:checkpoint-me/), /HOST_ECHO:checkpoint-me/);
 
   const exitScheduled = waitForOutput(handle, /EXIT_SCHEDULED/);
   handle.write(`EXIT_WHILE_DETACHED${os.EOL}`);

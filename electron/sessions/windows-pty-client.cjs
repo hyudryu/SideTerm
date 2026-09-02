@@ -154,6 +154,7 @@ class WindowsPtyHandle {
 
   kill() {
     this.client.command({ action: 'kill', id: this.id, generation: this.generation });
+    this.detach();
   }
 
   pause() {
@@ -165,9 +166,14 @@ class WindowsPtyHandle {
   }
 
   detach() {
-    this.client.handles.delete(this.id);
+    if (this.client.handles.get(this.id) === this) this.client.handles.delete(this.id);
     this.dataListeners.clear();
     this.exitListeners.clear();
+    this.pendingData = '';
+    this.pendingReplayClaimToken = '';
+    this.pendingExit = null;
+    this.replayClaimToken = '';
+    this.exitClaimToken = '';
   }
 
   acknowledgeExitedSession(claimToken) {
@@ -201,7 +207,7 @@ class WindowsPtyHandle {
     if (this.exitListeners.size > 0) {
       this.exitDelivered = true;
     }
-    this.client.handles.delete(this.id);
+    if (this.client.handles.get(this.id) === this) this.client.handles.delete(this.id);
   }
 }
 

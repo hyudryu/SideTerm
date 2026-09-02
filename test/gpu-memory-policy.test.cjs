@@ -20,6 +20,10 @@ test('terminal output is acknowledged after xterm finishes parsing it', () => {
   assert.match(electronMain, /ipcMain\.on\('terminal:data-ack'/);
   assert.match(preload, /acknowledgeData: \(id, byteLength, replayClaimToken = '', replayDeliveryToken = '', rendererDataDeliveryToken = '', exitClaimToken = '', exitDeliveryToken = ''\)/);
   assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\([\s\S]*?exitClaimToken, exitDeliveryToken/);
+  assert.match(renderer, /if \(replayClaimToken \|\| exitClaimToken\) \{\s*acknowledgeTerminalDataAfterCheckpoint\(acknowledge\)/);
+  assert.match(renderer, /function flushTerminalCheckpointAcknowledgements[\s\S]*?await persistWorkspaceNow\(\{ required: true \}\);[\s\S]*?for \(const acknowledge of acknowledgements\) acknowledge\(\)/);
+  assert.match(renderer, /function scheduleTerminalCheckpointRetry[\s\S]*?Math\.min\(30_000, terminalCheckpointRetryDelayMs \* 2\)[\s\S]*?flushTerminalCheckpointAcknowledgements\(\)/);
+  assert.match(renderer, /else if \(!checkpointSucceeded\) \{\s*scheduleTerminalCheckpointRetry\(\);/);
 });
 
 test('background compositor work is throttled except while desktop voice is listening', () => {
