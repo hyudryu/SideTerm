@@ -4,6 +4,30 @@ export const WORKSPACE_VERSION = 1;
 export const DEFAULT_GROUP_COLOR = '#60cdff';
 export const GROUP_SORTS = ['default', 'created', 'response', 'name'];
 
+export async function persistWorkspaceCopies(serializedWorkspace, {
+  saveBrowser,
+  saveBackup,
+  required = false,
+  onTotalFailure = () => {}
+}) {
+  let browserSaved = false;
+  try {
+    saveBrowser(serializedWorkspace);
+    browserSaved = true;
+  } catch {
+    // The native file remains an independent durable copy.
+  }
+  try {
+    await saveBackup(serializedWorkspace);
+    return true;
+  } catch (error) {
+    if (browserSaved) return true;
+    onTotalFailure(error);
+    if (required) throw error;
+    return false;
+  }
+}
+
 export function normalizeGroupSort(value) {
   return GROUP_SORTS.includes(value) ? value : 'default';
 }

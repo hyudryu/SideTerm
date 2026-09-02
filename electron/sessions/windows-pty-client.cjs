@@ -42,6 +42,10 @@ function processIsRunning(pid) {
   }
 }
 
+function sessionKey(id, generation = '') {
+  return `${String(id || '')}\0${String(generation || '')}`;
+}
+
 function send(socket, payload) {
   if (socket.destroyed) throw new Error('The Windows PTY host connection is closed.');
   socket.write(`${JSON.stringify(payload)}\n`);
@@ -51,9 +55,14 @@ function connectSocket(metadata, timeoutMs = 1_000) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(metadata.pipeName);
     socket.setEncoding('utf8');
+    let connected = false;
     const timer = setTimeout(() => {
+      const error = new Error(connected
+        ? 'Timed out authenticating with the Windows PTY host.'
+        : 'Timed out connecting to the Windows PTY host.');
+      error.code = connected ? 'SIDETERM_PTY_AUTH_TIMEOUT' : 'SIDETERM_PTY_CONNECT_TIMEOUT';
       socket.destroy();
-      reject(new Error('Timed out connecting to the Windows PTY host.'));
+      reject(error);
     }, timeoutMs);
     let buffered = '';
     const fail = (error) => {
@@ -82,7 +91,13 @@ function connectSocket(metadata, timeoutMs = 1_000) {
       socket.off('data', authenticate);
       resolve({ socket, remainder: buffered.slice(newline + 1) });
     });
-    socket.once('connect', () => send(socket, { type: 'auth', token: metadata.token }));
+    socket.once('connect', () => {
+      connected = true;
+      send(socket, {
+        type: 'auth', token: metadata.token,
+        capabilities: { replayAcknowledgements: true }
+      });
+    });
   });
 }
 
@@ -94,6 +109,9 @@ class WindowsPtyHandle {
     this.process = details.shell;
     this.cwd = details.cwd;
     this.reattached = Boolean(details.reattached);
+    this.generation = String(details.generation || '');
+    this.replayClaimToken = String(details.replayClaimToken || '');
+    this.pendingReplayClaimToken = '';
     this.exitClaimToken = String(details.exitClaimToken || '');
     this.exitDelivered = false;
     this.dataListeners = new Set();
@@ -104,12 +122,14 @@ class WindowsPtyHandle {
 
   onData(listener) {
     this.dataListeners.add(listener);
-    if (this.pendingData) {
+    if (this.pendingData || this.pendingReplayClaimToken) {
       const data = this.pendingData;
+      const replayClaimToken = this.pendingReplayClaimToken;
       this.pendingData = '';
-      listener(data);
-      this.acknowledgeExitedSession();
+      this.pendingReplayClaimToken = '';
+      listener(data, replayClaimToken);
     }
+    this.acknowledgeExitedSession();
     return { dispose: () => this.dataListeners.delete(listener) };
   }
 
@@ -118,29 +138,32 @@ class WindowsPtyHandle {
     if (this.pendingExit) {
       listener(this.pendingExit);
       this.exitDelivered = true;
-      this.acknowledgeExitedSession();
     }
+    this.acknowledgeExitedSession();
     return { dispose: () => this.exitListeners.delete(listener) };
   }
 
   write(data) {
-    this.client.command({ action: 'write', id: this.id, data: Buffer.from(String(data), 'utf8').toString('base64') });
+    this.client.command({
+      action: 'write', id: this.id, generation: this.generation,
+      data: Buffer.from(String(data), 'utf8').toString('base64')
+    });
   }
 
   resize(cols, rows) {
-    this.client.command({ action: 'resize', id: this.id, cols, rows });
+    this.client.command({ action: 'resize', id: this.id, generation: this.generation, cols, rows });
   }
 
   kill() {
-    this.client.command({ action: 'kill', id: this.id });
+    this.client.command({ action: 'kill', id: this.id, generation: this.generation });
   }
 
   pause() {
-    this.client.command({ action: 'pause', id: this.id });
+    this.client.command({ action: 'pause', id: this.id, generation: this.generation });
   }
 
   resume() {
-    this.client.command({ action: 'resume', id: this.id });
+    this.client.command({ action: 'resume', id: this.id, generation: this.generation });
   }
 
   detach() {
@@ -153,15 +176,27 @@ class WindowsPtyHandle {
     if (!this.exitClaimToken || !this.exitDelivered || this.pendingData) return;
     const claimToken = this.exitClaimToken;
     this.exitClaimToken = '';
-    this.client.command({ action: 'ack-exited', id: this.id, claimToken });
+    this.client.command({
+      action: 'ack-exited', id: this.id, generation: this.generation, claimToken
+    });
   }
 
-  emitData(data) {
+  acknowledgeReplay(claimToken) {
+    if (!claimToken || claimToken !== this.replayClaimToken) return;
+    this.replayClaimToken = '';
+    this.client.command({
+      action: 'ack-replay', id: this.id, generation: this.generation, claimToken
+    });
+  }
+
+  emitData(data, replayClaimToken = '') {
     if (this.dataListeners.size === 0) {
       this.pendingData = `${this.pendingData}${data}`.slice(-300_000);
+      if (replayClaimToken) this.pendingReplayClaimToken = replayClaimToken;
       return;
     }
-    for (const listener of this.dataListeners) listener(data);
+    for (const listener of this.dataListeners) listener(data, replayClaimToken);
+    this.acknowledgeExitedSession();
   }
 
   emitExit(event) {
@@ -219,23 +254,41 @@ class WindowsPtyHostClient {
       else pending.resolve(message.result);
       return;
     }
-    if (message.type === 'data') {
+    if (message.type === 'data' || message.type === 'replay') {
       const id = String(message.id || '');
+      const generation = String(message.generation || '');
+      const key = sessionKey(id, generation);
       const data = Buffer.from(String(message.data || ''), 'base64').toString('utf8');
       const handle = this.handles.get(id);
-      if (handle) handle.emitData(data);
-      else this.orphanData.set(id, `${this.orphanData.get(id) || ''}${data}`.slice(-300_000));
+      if (handle && (!generation || handle.generation === generation)) {
+        if (message.type === 'replay') {
+          handle.replayClaimToken = String(message.replayClaimToken || '');
+        }
+        handle.emitData(data, message.type === 'replay' ? handle.replayClaimToken : '');
+      } else {
+        this.orphanData.set(key, `${this.orphanData.get(key) || ''}${data}`.slice(-300_000));
+      }
       return;
     }
     if (message.type === 'exit') {
       const id = String(message.id || '');
+      const generation = String(message.generation || '');
+      const key = sessionKey(id, generation);
       const event = {
         exitCode: Number(message.exitCode),
-        signal: Number(message.signal)
+        signal: Number(message.signal),
+        exitClaimToken: String(message.exitClaimToken || '')
       };
       const handle = this.handles.get(id);
-      if (handle) handle.emitExit(event);
-      else this.orphanExits.set(id, event);
+      const replay = Buffer.from(String(message.replay || ''), 'base64').toString('utf8');
+      if (handle && (!generation || handle.generation === generation)) {
+        handle.exitClaimToken = event.exitClaimToken;
+        if (replay) handle.emitData(replay);
+        handle.emitExit({ exitCode: event.exitCode, signal: event.signal });
+      } else {
+        if (replay) this.orphanData.set(key, `${this.orphanData.get(key) || ''}${replay}`.slice(-300_000));
+        this.orphanExits.set(key, event);
+      }
     }
   }
 
@@ -295,21 +348,29 @@ class WindowsPtyHostClient {
     const details = await this.request('create', { session: options });
     const handle = new WindowsPtyHandle(this, details);
     this.handles.set(details.id, handle);
+    const key = sessionKey(details.id, details.generation);
     const replay = details.replay
       ? Buffer.from(String(details.replay), 'base64').toString('utf8')
       : '';
-    const pending = `${replay}${this.orphanData.get(details.id) || ''}`;
+    const pending = details.exited
+      ? replay
+      : `${replay}${this.orphanData.get(key) || ''}`;
     if (pending) {
-      this.orphanData.delete(details.id);
-      handle.emitData(pending);
+      this.orphanData.delete(key);
+      handle.emitData(pending, handle.replayClaimToken);
+    } else if (handle.replayClaimToken) {
+      handle.emitData('', handle.replayClaimToken);
     }
-    const pendingExit = this.orphanExits.get(details.id) || (details.exited ? {
+    const orphanExit = this.orphanExits.get(key);
+    const pendingExit = orphanExit || (details.exited ? {
       exitCode: Number(details.exitCode),
-      signal: Number(details.signal)
+      signal: Number(details.signal),
+      exitClaimToken: String(details.exitClaimToken || '')
     } : null);
     if (pendingExit) {
-      this.orphanExits.delete(details.id);
-      handle.emitExit(pendingExit);
+      this.orphanExits.delete(key);
+      handle.exitClaimToken = pendingExit.exitClaimToken;
+      handle.emitExit({ exitCode: pendingExit.exitCode, signal: pendingExit.signal });
     }
     return handle;
   }
@@ -364,6 +425,9 @@ async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath 
   const existing = readMetadata(metadataPath);
   if (existing) {
     let lastError = null;
+    let sawFailure = false;
+    let onlyMissingEndpointFailures = true;
+    let missingEndpointFailures = 0;
     while (Date.now() < deadline) {
       try {
         const remaining = Math.max(50, Math.min(1_000, deadline - Date.now()));
@@ -371,11 +435,15 @@ async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath 
         return new WindowsPtyHostClient(connected.socket, connected.remainder);
       } catch (error) {
         lastError = error;
+        sawFailure = true;
+        if (error?.code === 'ENOENT') missingEndpointFailures += 1;
+        else onlyMissingEndpointFailures = false;
         if (!processIsRunning(existing.pid)) break;
+        if (missingEndpointFailures >= 3 && onlyMissingEndpointFailures) break;
         await delay(50);
       }
     }
-    if (processIsRunning(existing.pid)) {
+    if (processIsRunning(existing.pid) && !(sawFailure && onlyMissingEndpointFailures)) {
       throw lastError || new Error('Could not reconnect to the live Windows PTY host.');
     }
   }

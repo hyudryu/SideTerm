@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -10,6 +11,7 @@ const {
   WindowsPtyHostClient
 } = require('../electron/sessions/windows-pty-client.cjs');
 const { createOutputFlowControl } = require('../electron/sessions/output-flow-control.cjs');
+const { dispatchPtyCommand } = require('../electron/sessions/pty-command-dispatch.cjs');
 
 function fakeSocket() {
   const listeners = new Map();
@@ -44,8 +46,9 @@ function waitForOutput(handle, pattern, timeoutMs = 5_000) {
       subscription?.dispose();
       reject(new Error(`Timed out waiting for PTY output matching ${pattern}. Received: ${output}`));
     }, timeoutMs);
-    subscription = handle.onData((data) => {
+    subscription = handle.onData((data, replayClaimToken) => {
       output += data;
+      if (replayClaimToken) handle.acknowledgeReplay(replayClaimToken);
       if (!pattern.test(output)) return;
       clearTimeout(timer);
       subscription?.dispose();
@@ -88,7 +91,7 @@ test('hosted PTY handles satisfy output flow control with remote pause and resum
   const commands = [];
   const client = { command: (payload) => commands.push(payload), handles: new Map() };
   const handle = new WindowsPtyHandle(client, {
-    id: 'flow-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace'
+    id: 'flow-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'flow-generation'
   });
   const flow = createOutputFlowControl(handle, { highWaterBytes: 100, lowWaterBytes: 25 });
 
@@ -97,8 +100,8 @@ test('hosted PTY handles satisfy output flow control with remote pause and resum
   flow.acknowledge(175);
 
   assert.deepEqual(commands, [
-    { action: 'pause', id: 'flow-session' },
-    { action: 'resume', id: 'flow-session' }
+    { action: 'pause', id: 'flow-session', generation: 'flow-generation' },
+    { action: 'resume', id: 'flow-session', generation: 'flow-generation' }
   ]);
 });
 
@@ -109,10 +112,10 @@ test('exit events received before handle registration are delivered after creati
   const requestId = socket.writes[0].requestId;
   socket.emit('data', [
     { type: 'response', requestId, result: {
-      id: 'instant-exit', pid: 43, shell: 'powershell.exe', cwd: 'C:\\workspace'
+      id: 'instant-exit', pid: 43, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'instant-generation'
     } },
-    { type: 'data', id: 'instant-exit', data: Buffer.from('last output').toString('base64') },
-    { type: 'exit', id: 'instant-exit', exitCode: 7, signal: 0 }
+    { type: 'data', id: 'instant-exit', generation: 'instant-generation', data: Buffer.from('last output').toString('base64') },
+    { type: 'exit', id: 'instant-exit', generation: 'instant-generation', exitCode: 7, signal: 0 }
   ].map((message) => JSON.stringify(message)).join('\n') + '\n');
 
   const handle = await handlePromise;
@@ -124,7 +127,7 @@ test('exit events received before handle registration are delivered after creati
   assert.equal(data, 'last output');
   assert.deepEqual(exit, { exitCode: 7, signal: 0 });
   assert.equal(client.handles.has('instant-exit'), false);
-  assert.equal(client.orphanExits.has('instant-exit'), false);
+  assert.equal(client.orphanExits.size, 0);
 });
 
 test('collected exit tombstones are acknowledged only after replay and exit delivery', async () => {
@@ -139,6 +142,7 @@ test('collected exit tombstones are acknowledged only after replay and exit deli
       pid: 44,
       shell: 'powershell.exe',
       cwd: 'C:\\workspace',
+      generation: 'exited-generation',
       replay: Buffer.from('final output').toString('base64'),
       exited: true,
       exitCode: 9,
@@ -157,8 +161,77 @@ test('collected exit tombstones are acknowledged only after replay and exit deli
   assert.equal(output, 'final output');
   assert.deepEqual(exit, { exitCode: 9, signal: 0 });
   assert.deepEqual(commands, [{
-    action: 'ack-exited', id: 'exited-session', claimToken: 'claim-token'
+    action: 'ack-exited', id: 'exited-session', generation: 'exited-generation', claimToken: 'claim-token'
   }]);
+});
+
+test('live replay is acknowledged only after its data listener receives the leased output', async () => {
+  const commands = [];
+  const client = {
+    command: (payload) => commands.push(payload),
+    handles: new Map(),
+    orphanData: new Map(),
+    orphanExits: new Map(),
+    request: async () => ({
+      id: 'replay-session',
+      pid: 45,
+      shell: 'powershell.exe',
+      cwd: 'C:\\workspace',
+      generation: 'replay-generation',
+      replay: Buffer.from('leased output').toString('base64'),
+      replayClaimToken: 'replay-token'
+    })
+  };
+
+  const handle = await WindowsPtyHostClient.prototype.createSession.call(client, {});
+  assert.deepEqual(commands, []);
+  let output = '';
+  let deliveredClaimToken = '';
+  handle.onData((data, replayClaimToken) => {
+    output += data;
+    deliveredClaimToken = replayClaimToken;
+  });
+
+  assert.equal(output, 'leased output');
+  assert.deepEqual(commands, []);
+  handle.acknowledgeReplay(deliveredClaimToken);
+  assert.deepEqual(commands, [{
+    action: 'ack-replay', id: 'replay-session', generation: 'replay-generation', claimToken: 'replay-token'
+  }]);
+});
+
+test('an exit from an older generation cannot terminate a replacement handle with the same id', () => {
+  const socket = fakeSocket();
+  const client = new WindowsPtyHostClient(socket);
+  const handle = new WindowsPtyHandle(client, {
+    id: 'reused-session', pid: 46, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'new-generation'
+  });
+  client.handles.set(handle.id, handle);
+  let exit = null;
+  handle.onExit((event) => { exit = event; });
+
+  client.handleMessage({
+    type: 'exit', id: 'reused-session', generation: 'old-generation', exitCode: 3, signal: 0,
+    exitClaimToken: 'old-claim'
+  });
+
+  assert.equal(exit, null);
+  assert.equal(client.handles.get('reused-session'), handle);
+  assert.equal(client.orphanExits.size, 1);
+});
+
+test('a throwing PTY command is contained and later commands remain usable', () => {
+  const socket = { destroyed: false };
+  const completed = [];
+  const handleCommand = (_socket, message) => {
+    if (message.id === 'exiting-session') throw new Error('resize raced with exit');
+    completed.push(message.id);
+  };
+
+  assert.equal(dispatchPtyCommand(handleCommand, socket, { action: 'resize', id: 'exiting-session' }), false);
+  assert.equal(socket.destroyed, false);
+  assert.equal(dispatchPtyCommand(handleCommand, socket, { action: 'write', id: 'live-session' }), true);
+  assert.deepEqual(completed, ['live-session']);
 });
 
 test('PTY client close notifications are idempotent and support late subscribers', () => {
@@ -189,11 +262,20 @@ test('Windows shell overrides are resolved before they cross the PTY host bounda
   assert.match(host, /releasePausedSessions\(socket\)/);
   assert.match(host, /const MAX_EXITED_SESSIONS = 20/);
   assert.match(host, /exitClaimToken: exited\.claimToken/);
+  assert.match(host, /generation: session\.generation/);
+  assert.match(host, /message\.action === 'ack-replay'[\s\S]*?session\.replayLease = null/);
+  assert.match(host, /retainExitedSession\(id, session, normalizedExitCode, normalizedSignal\);[\s\S]*?broadcast\(\{[\s\S]*?type: 'exit'/);
+  assert.match(host, /if \(message\?\.type === 'command'\) dispatchPtyCommand\(handleCommand, socket, message\);/);
+  assert.match(host, /sideTermReplayAcknowledgements = message\?\.capabilities\?\.replayAcknowledgements === true/);
 });
 
-test('a failed connection to live host metadata does not replace it', async (t) => {
+test('a missing pipe is replaced even when stale metadata points to a reused live PID', {
+  timeout: 15_000,
+  skip: process.platform !== 'win32'
+}, async (t) => {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-live-host-test-'));
   const metadataPath = path.join(temporaryDirectory, 'host.json');
+  const hostScript = path.join(__dirname, '..', 'electron', 'sessions', 'windows-pty-host.cjs');
   const metadata = {
     protocol: 1,
     pid: process.pid,
@@ -201,14 +283,59 @@ test('a failed connection to live host metadata does not replace it', async (t) 
     token: 'b'.repeat(64)
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata));
-  t.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
+  let client = null;
+  t.after(async () => {
+    try {
+      await client?.shutdownIfIdle();
+    } catch {
+      // Best-effort cleanup for a failed integration assertion.
+    }
+    client?.disconnect();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  client = await connectWindowsPtyHost({
+    metadataPath,
+    hostScript,
+    executablePath: process.execPath,
+    timeoutMs: 5_000
+  });
+
+  const replacement = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  assert.notEqual(replacement.pipeName, metadata.pipeName);
+  assert.notEqual(replacement.token, metadata.token);
+});
+
+test('an authenticating live endpoint timeout preserves its metadata', {
+  timeout: 5_000,
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-auth-timeout-test-'));
+  const metadataPath = path.join(temporaryDirectory, 'host.json');
+  const pipeName = `\\\\.\\pipe\\sideterm-pty-auth-timeout-${process.pid}-${Date.now()}`;
+  const metadata = { protocol: 1, pid: process.pid, pipeName, token: 'c'.repeat(64) };
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(pipeName, resolve);
+  });
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
 
   await assert.rejects(connectWindowsPtyHost({
     metadataPath,
     hostScript: path.join(temporaryDirectory, 'must-not-launch.cjs'),
     executablePath: process.execPath,
-    timeoutMs: 150
-  }));
+    timeoutMs: 200
+  }), /Timed out authenticating/);
 
   assert.deepEqual(JSON.parse(fs.readFileSync(metadataPath, 'utf8')), metadata);
 });

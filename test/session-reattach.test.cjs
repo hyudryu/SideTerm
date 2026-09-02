@@ -135,10 +135,13 @@ test('main buffers output per session until the renderer-ready handshake flushes
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
 
-  assert.match(main, /if \(session\.rendererAttached && terminalRendererCanAcknowledge\(\)\) \{[\s\S]*?sendTerminalData\(id, data, session\.rendererFlow\);[\s\S]*?\} else \{\s*bufferRendererOutput\(session, data\);/);
+  assert.match(main, /if \(session\.rendererAttached && terminalRendererCanAcknowledge\(\)\) \{[\s\S]*?sendTerminalData\(id, data, session\.rendererFlow, replayClaimToken\);[\s\S]*?\} else \{\s*bufferRendererOutput\(session, data\);/);
   assert.match(main, /ipcMain\.handle\('terminal:renderer-ready'[\s\S]*?markTerminalRendererReady/);
   assert.match(preload, /markRendererReady: \(id\) => ipcRenderer\.invoke\('terminal:renderer-ready', id\)/);
   assert.match(renderer, /const details = await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
+  assert.match(main, /rendererReplayInFlight = \{[\s\S]*?claimToken: replayClaimToken,[\s\S]*?deliveryToken: replayDeliveryToken/);
+  assert.match(main, /terminal:data-ack'[\s\S]*?rendererReplayInFlight\?\.claimToken === String\(replayClaimToken[\s\S]*?rendererReplayInFlight\.deliveryToken === String\(replayDeliveryToken[\s\S]*?processHandle\.acknowledgeReplay/);
+  assert.match(renderer, /terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\(id, byteLength, replayClaimToken, replayDeliveryToken\);/);
 });
 
 test('session creation shares pending work and a close cancels before registration', () => {
@@ -149,4 +152,17 @@ test('session creation shares pending work and a close cancels before registrati
   assert.match(main, /if \(pendingCreation\.cancelled\) \{[\s\S]*?processHandle\.kill\(\);[\s\S]*?closed before creation completed/);
   assert.match(main, /const pendingCreation = pendingSessionCreations\.get\(id\);\s*if \(pendingCreation\) pendingCreation\.cancelled = true;/);
   assert.match(renderer, /const details = await api\.createSession[\s\S]*?if \(sessions\.get\(id\) !== session\) return session;[\s\S]*?await api\.markRendererReady\(id\);\s*if \(sessions\.get\(id\) !== session\) return session;/);
+});
+
+test('renderer durably saves a new session id before asking the PTY host to spawn it', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const persist = renderer.indexOf('await persistWorkspaceNow({ required: true });', renderer.indexOf('async function addSession('));
+  const spawn = renderer.indexOf('const details = await api.createSession', persist);
+
+  assert.ok(persist >= 0);
+  assert.ok(spawn > persist);
+  assert.match(renderer, /if \(restoringWorkspace && !required\) return Promise\.resolve\(\);/);
+  assert.match(renderer, /if \(restoringWorkspace && !options\.id\) await workspaceRestoreComplete;/);
+  assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}/);
+  assert.match(renderer, /persistWorkspaceCopies\(serializedWorkspace, \{[\s\S]*?required,[\s\S]*?return durableSave;/);
 });

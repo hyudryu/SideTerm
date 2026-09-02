@@ -18,8 +18,8 @@ test('terminal output is acknowledged after xterm finishes parsing it', () => {
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
   assert.match(electronMain, /rendererFlow: createOutputFlowControl\(processHandle\)/);
   assert.match(electronMain, /ipcMain\.on\('terminal:data-ack'/);
-  assert.match(preload, /acknowledgeData: \(id, byteLength\)/);
-  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\(id, byteLength\)/);
+  assert.match(preload, /acknowledgeData: \(id, byteLength, replayClaimToken = '', replayDeliveryToken = ''\)/);
+  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\(id, byteLength, replayClaimToken, replayDeliveryToken\)/);
 });
 
 test('background compositor work is throttled except while desktop voice is listening', () => {

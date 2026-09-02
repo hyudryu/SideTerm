@@ -18,7 +18,9 @@ contextBridge.exposeInMainWorld('sideTerm', {
   close: (id) => ipcRenderer.send('terminal:close', id),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
-  acknowledgeData: (id, byteLength) => ipcRenderer.send('terminal:data-ack', { id, byteLength }),
+  acknowledgeData: (id, byteLength, replayClaimToken = '', replayDeliveryToken = '') => ipcRenderer.send('terminal:data-ack', {
+    id, byteLength, replayClaimToken, replayDeliveryToken
+  }),
   onRemoteInput: (callback) => subscribe('terminal:remote-input', callback),
   onExit: (callback) => subscribe('terminal:exit', callback),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),

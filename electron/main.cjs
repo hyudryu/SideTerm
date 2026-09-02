@@ -2875,15 +2875,32 @@ function resetTerminalOutputFlow() {
 }
 
 function detachTerminalRenderers() {
-  for (const session of sessions.values()) session.rendererAttached = false;
+  for (const session of sessions.values()) {
+    session.rendererAttached = false;
+    if (session.rendererReplayInFlight) {
+      session.rendererReplay = `${session.rendererReplayInFlight.data}${session.rendererReplay || ''}`.slice(-300_000);
+      session.rendererReplayClaimToken = session.rendererReplayInFlight.claimToken;
+      session.rendererReplayInFlight = null;
+    }
+  }
   resetTerminalOutputFlow();
 }
 
-function sendTerminalData(id, data, rendererFlow = null) {
-  if (!data) return;
+function sendTerminalData(id, data, rendererFlow = null, replayClaimToken = '') {
+  if (!data) return false;
   const byteLength = Buffer.byteLength(data);
-  send('terminal:data', { id, data, byteLength });
+  const session = sessions.get(id);
+  const replayDeliveryToken = replayClaimToken ? crypto.randomUUID() : '';
+  if (replayClaimToken && session) {
+    session.rendererReplayInFlight = {
+      claimToken: replayClaimToken,
+      deliveryToken: replayDeliveryToken,
+      data
+    };
+  }
+  send('terminal:data', { id, data, byteLength, replayClaimToken, replayDeliveryToken });
   rendererFlow?.accept(byteLength);
+  return true;
 }
 
 function markTerminalRendererReady(id) {
@@ -2897,7 +2914,11 @@ function markTerminalRendererReady(id) {
   const session = sessions.get(id);
   if (!session) return false;
   const replay = takeRendererOutput(session);
-  sendTerminalData(id, replay, session.rendererFlow);
+  const replayClaimToken = session.rendererReplayClaimToken;
+  session.rendererReplayClaimToken = '';
+  if (!sendTerminalData(id, replay, session.rendererFlow, replayClaimToken) && replayClaimToken) {
+    session.processHandle.acknowledgeReplay?.(replayClaimToken);
+  }
   session.rendererAttached = true;
   return true;
 }
@@ -3654,6 +3675,8 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
     cols: Math.max(2, Math.floor(cols)),
     rendererAttached: false,
     rendererReplay: '',
+    rendererReplayClaimToken: '',
+    rendererReplayInFlight: null,
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3665,23 +3688,47 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
   };
   mobileExitedSessions.delete(id);
   sessions.set(id, session);
-  const forwardOutput = (data) => {
-    if (!data || sessions.get(id) !== session) return;
+  const forwardOutput = (data, replayClaimToken = '') => {
+    if ((!data && !replayClaimToken) || sessions.get(id) !== session) return;
+    if (!data) {
+      if (session.rendererAttached && terminalRendererCanAcknowledge()) {
+        processHandle.acknowledgeReplay?.(replayClaimToken);
+      } else {
+        session.rendererReplayClaimToken = replayClaimToken;
+      }
+      return;
+    }
     observePotentialGitPush(id, data);
     if (session.rendererAttached && terminalRendererCanAcknowledge()) {
-      sendTerminalData(id, data, session.rendererFlow);
+      sendTerminalData(id, data, session.rendererFlow, replayClaimToken);
     } else {
       bufferRendererOutput(session, data);
+      if (replayClaimToken) session.rendererReplayClaimToken = replayClaimToken;
     }
     session.mobileRevision += 1;
     session.mobileOutputBuffer += data;
     if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
     broadcastMobileTerminalOutput(id, data, session.mobileRevision);
   };
-  const outputNormalizer = createWindowsVtOutputNormalizer({ onOutput: forwardOutput });
+  let pendingReplayClaimToken = '';
+  const outputNormalizer = createWindowsVtOutputNormalizer({
+    onOutput: (data) => {
+      const replayClaimToken = pendingReplayClaimToken;
+      pendingReplayClaimToken = '';
+      forwardOutput(data, replayClaimToken);
+    }
+  });
   session.outputNormalizer = outputNormalizer;
-  processHandle.onData((data) => {
-    forwardOutput(outputNormalizer.push(data));
+  processHandle.onData((data, replayClaimToken = '') => {
+    const carriedClaimToken = replayClaimToken || pendingReplayClaimToken;
+    const output = outputNormalizer.push(data);
+    if (carriedClaimToken && outputNormalizer.hasPending) {
+      pendingReplayClaimToken = carriedClaimToken;
+      forwardOutput(output);
+    } else {
+      pendingReplayClaimToken = '';
+      forwardOutput(output, carriedClaimToken);
+    }
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) {
@@ -3689,7 +3736,9 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
       outputNormalizer.dispose();
       return;
     }
-    forwardOutput(outputNormalizer.flush());
+    const replayClaimToken = pendingReplayClaimToken;
+    pendingReplayClaimToken = '';
+    forwardOutput(outputNormalizer.flush(), replayClaimToken);
     clearMobileTerminalFrame(id);
     const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
     retainMobileExitedSession(id, session, finalScreen, exitCode);
@@ -3799,8 +3848,16 @@ function registerIpc() {
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
   });
-  ipcMain.on('terminal:data-ack', (_event, { id, byteLength }) => {
-    sessions.get(String(id || ''))?.rendererFlow.acknowledge(byteLength);
+  ipcMain.on('terminal:data-ack', (_event, {
+    id, byteLength, replayClaimToken, replayDeliveryToken
+  }) => {
+    const session = sessions.get(String(id || ''));
+    session?.rendererFlow.acknowledge(byteLength);
+    if (session?.rendererReplayInFlight?.claimToken === String(replayClaimToken || '')
+      && session.rendererReplayInFlight.deliveryToken === String(replayDeliveryToken || '')) {
+      session.rendererReplayInFlight = null;
+      session.processHandle.acknowledgeReplay?.(String(replayClaimToken || ''));
+    }
   });
   ipcMain.on('terminal:resize', (_event, { id, cols, rows }) => {
     const session = sessions.get(id);

@@ -8,10 +8,28 @@ import {
   nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
+  persistWorkspaceCopies,
   removeSessionFromGroups,
   reorderGroup,
   sortedSessionIds
 } from '../src/workspace.js';
+
+test('required workspace persistence rejects before spawn when both durable copies fail', async () => {
+  let failures = 0;
+  await assert.rejects(persistWorkspaceCopies('{}', {
+    saveBrowser: () => { throw new Error('browser full'); },
+    saveBackup: async () => { throw new Error('backup unavailable'); },
+    required: true,
+    onTotalFailure: () => { failures += 1; }
+  }), /backup unavailable/);
+  assert.equal(failures, 1);
+
+  assert.equal(await persistWorkspaceCopies('{}', {
+    saveBrowser: () => {},
+    saveBackup: async () => { throw new Error('backup unavailable'); },
+    required: true
+  }), true);
+});
 
 function fixture() {
   const first = createGroup('first', 'First');

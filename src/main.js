@@ -24,6 +24,7 @@ import {
   nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
+  persistWorkspaceCopies,
   removeSessionFromGroups,
   reorderGroup,
   sortedSessionIds
@@ -65,6 +66,8 @@ let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
 let activeId = null;
 let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
 let restoringWorkspace = true;
+let resolveWorkspaceRestore;
+const workspaceRestoreComplete = new Promise((resolve) => { resolveWorkspaceRestore = resolve; });
 let persistTimer = null;
 let persistInFlight = false;
 let dragState = null;
@@ -1129,8 +1132,8 @@ function showLinkPopover(session, trigger) {
   requestAnimationFrame(() => linkPopover.classList.add('visible'));
 }
 
-function persistWorkspaceNow() {
-  if (restoringWorkspace) return;
+function persistWorkspaceNow({ required = false } = {}) {
+  if (restoringWorkspace && !required) return Promise.resolve();
   const savedSessions = [];
   for (const group of groups) {
     for (const id of group.sessionIds) {
@@ -1187,15 +1190,11 @@ function persistWorkspaceNow() {
     activeId,
     activeGroupId
   });
-  let localStorageSaved = false;
-  try {
-    localStorage.setItem(WORKSPACE_KEY, serializedWorkspace);
-    localStorageSaved = true;
-  } catch {
-    // The main-process file backup remains available when Chromium storage is full.
-  }
-  void api.saveWorkspace(serializedWorkspace).catch(() => {
-    if (!localStorageSaved) showToast('Workspace could not be saved to browser storage or the file backup');
+  const durableSave = persistWorkspaceCopies(serializedWorkspace, {
+    saveBrowser: (raw) => localStorage.setItem(WORKSPACE_KEY, raw),
+    saveBackup: (raw) => api.saveWorkspace(raw),
+    required,
+    onTotalFailure: () => showToast('Workspace could not be saved to browser storage or the file backup')
   });
   api.updateMobileWorkspace({
     groups: mobileGroups,
@@ -1216,6 +1215,7 @@ function persistWorkspaceNow() {
       busy: sessions.get(session.id)?.busy
     }))
   });
+  return durableSave;
 }
 
 function schedulePersist() {
@@ -2826,6 +2826,7 @@ function noteBackgroundActivity(session, data) {
 }
 
 async function addSession(cwd, options = {}) {
+  if (restoringWorkspace && !options.id) await workspaceRestoreComplete;
   const group = getGroup(options.groupId) || getGroup(activeGroupId) || groups[0];
   const id = options.id || makeSessionId();
   if (sessions.has(id)) return sessions.get(id);
@@ -3000,6 +3001,8 @@ async function addSession(cwd, options = {}) {
 
   try {
     fit.fit();
+    if (!restoringWorkspace || !options.id) await persistWorkspaceNow({ required: true });
+    if (sessions.get(id) !== session) return session;
     const details = await api.createSession({ id, cwd, cols: terminal.cols, rows: terminal.rows });
     if (sessions.get(id) !== session) return session;
     session.shell = details.shell;
@@ -3242,7 +3245,7 @@ sessionList.addEventListener('drop', (event) => {
 
 sessionList.addEventListener('dragend', cleanupDrag);
 
-api.onData(({ id, data, byteLength }) => {
+api.onData(({ id, data, byteLength, replayClaimToken, replayDeliveryToken }) => {
   const session = sessions.get(id);
   if (!session) {
     api.acknowledgeData(id, byteLength);
@@ -3251,7 +3254,7 @@ api.onData(({ id, data, byteLength }) => {
   session.terminal.write(data, () => {
     noteSessionBusy(session, data);
     noteBackgroundActivity(session, data);
-    api.acknowledgeData(id, byteLength);
+    api.acknowledgeData(id, byteLength, replayClaimToken, replayDeliveryToken);
   });
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
@@ -3615,38 +3618,42 @@ api.onWindowWillHide(() => {
 window.setInterval(() => void refreshRuntimeStateAndPersist(), 2_000);
 
 async function restoreSavedWorkspace() {
-  renderGroups();
-  const descriptors = new Map((restoredWorkspace?.sessions ?? []).map((session) => [session.id, session]));
-  const restoreOrder = groups.flatMap((group) => group.sessionIds);
-  for (const id of restoreOrder) {
-    const saved = descriptors.get(id);
-    if (!saved) continue;
-    await addSession(saved.cwd, {
-      id: saved.id,
-      groupId: getGroupForSession(saved.id)?.id ?? saved.groupId,
-      title: saved.title,
-      manualTitle: saved.manualTitle,
-      shell: saved.shell,
-      history: saved.history,
-      notified: saved.notified,
-      inputRequired: saved.inputRequired,
-      attentionCycleId: saved.attentionCycleId,
-      activityArmed: saved.activityArmed,
-      displayName: saved.displayName,
-      summary: saved.summary,
-      agent: saved.agent,
-      hasUserActivity: saved.hasUserActivity,
-      aiInitialSummaryDone: saved.aiInitialSummaryDone,
-      lastAiSummaryAt: saved.lastAiSummaryAt,
-      lastAiContextActivityAt: saved.lastAiContextActivityAt,
-      staleAiSummaryDone: saved.staleAiSummaryDone,
-      createdAt: saved.createdAt,
-      lastResponseAt: saved.lastResponseAt,
-      links: saved.links,
-      activate: false
-    });
+  try {
+    renderGroups();
+    const descriptors = new Map((restoredWorkspace?.sessions ?? []).map((session) => [session.id, session]));
+    const restoreOrder = groups.flatMap((group) => group.sessionIds);
+    for (const id of restoreOrder) {
+      const saved = descriptors.get(id);
+      if (!saved) continue;
+      await addSession(saved.cwd, {
+        id: saved.id,
+        groupId: getGroupForSession(saved.id)?.id ?? saved.groupId,
+        title: saved.title,
+        manualTitle: saved.manualTitle,
+        shell: saved.shell,
+        history: saved.history,
+        notified: saved.notified,
+        inputRequired: saved.inputRequired,
+        attentionCycleId: saved.attentionCycleId,
+        activityArmed: saved.activityArmed,
+        displayName: saved.displayName,
+        summary: saved.summary,
+        agent: saved.agent,
+        hasUserActivity: saved.hasUserActivity,
+        aiInitialSummaryDone: saved.aiInitialSummaryDone,
+        lastAiSummaryAt: saved.lastAiSummaryAt,
+        lastAiContextActivityAt: saved.lastAiContextActivityAt,
+        staleAiSummaryDone: saved.staleAiSummaryDone,
+        createdAt: saved.createdAt,
+        lastResponseAt: saved.lastResponseAt,
+        links: saved.links,
+        activate: false
+      });
+    }
+  } finally {
+    restoringWorkspace = false;
+    resolveWorkspaceRestore();
   }
-  restoringWorkspace = false;
   if (sessions.size === 0) {
     await addSession(undefined, { groupId: activeGroupId });
   } else {

@@ -90,6 +90,10 @@ function createWindowsVtOutputNormalizer({
 
     get repairing() {
       return repairing;
+    },
+
+    get hasPending() {
+      return Boolean(pending);
     }
   };
 }

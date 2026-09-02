@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const pty = require('node-pty');
+const { dispatchPtyCommand } = require('./pty-command-dispatch.cjs');
 
 const metadataPath = process.env.SIDETERM_PTY_HOST_METADATA;
 const pipeName = process.env.SIDETERM_PTY_HOST_PIPE;
@@ -46,16 +47,40 @@ function validExecutable(executable) {
     && executable !== '..';
 }
 
-function sessionResult(id, session, reattached) {
-  const replay = session.detachedOutput || '';
+function leaseSessionReplay(session) {
+  const replay = `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000);
+  const token = crypto.randomUUID();
   session.detachedOutput = '';
+  session.replayLease = { token, data: replay };
+  return session.replayLease;
+}
+
+function sessionResult(id, session, reattached, socket) {
+  if (!socket?.sideTermReplayAcknowledgements) {
+    const replay = `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000);
+    session.replayLease = null;
+    session.detachedOutput = '';
+    session.attachedClients.add(socket);
+    return {
+      id,
+      pid: session.processHandle.pid,
+      cwd: session.cwd,
+      shell: session.shell,
+      generation: session.generation,
+      reattached: Boolean(reattached),
+      replay: replay ? Buffer.from(replay, 'utf8').toString('base64') : ''
+    };
+  }
+  const replayLease = leaseSessionReplay(session);
   return {
     id,
     pid: session.processHandle.pid,
     cwd: session.cwd,
     shell: session.shell,
+    generation: session.generation,
     reattached: Boolean(reattached),
-    replay: replay ? Buffer.from(replay, 'utf8').toString('base64') : ''
+    replay: replayLease.data ? Buffer.from(replayLease.data, 'utf8').toString('base64') : '',
+    replayClaimToken: replayLease.token
   };
 }
 
@@ -75,7 +100,8 @@ function retainExitedSession(id, session, exitCode, signal) {
     pid: session.processHandle.pid,
     cwd: session.cwd,
     shell: session.shell,
-    replay: session.detachedOutput,
+    generation: session.generation,
+    replay: `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000),
     exitCode,
     signal,
     exitedAt: Date.now(),
@@ -90,6 +116,7 @@ function exitedSessionResult(exited) {
     pid: exited.pid,
     cwd: exited.cwd,
     shell: exited.shell,
+    generation: exited.generation,
     reattached: true,
     replay: exited.replay ? Buffer.from(exited.replay, 'utf8').toString('base64') : '',
     exited: true,
@@ -99,7 +126,7 @@ function exitedSessionResult(exited) {
   };
 }
 
-function createSession(input) {
+function createSession(input, socket) {
   const id = String(input?.id || '');
   if (!id || id.length > 100) throw new Error('A valid session id is required.');
   const dimensions = safeDimensions(input.cols, input.rows);
@@ -112,7 +139,7 @@ function createSession(input) {
       // An exit may already be queued; return the handle so the client can
       // observe that exit instead of spawning a replacement process.
     }
-    return sessionResult(id, existing, true);
+    return sessionResult(id, existing, true, socket);
   }
   const exited = exitedSessions.get(id);
   if (exited) return exitedSessionResult(exited);
@@ -144,15 +171,23 @@ function createSession(input) {
     processHandle,
     cwd,
     shell: path.basename(executable),
+    generation: crypto.randomUUID(),
     detachedOutput: '',
+    replayLease: null,
+    attachedClients: new Set(),
     pausedClients: new Set()
   };
   sessions.set(id, session);
   processHandle.onData((data) => {
-    if (clients.size === 0) {
+    if (session.attachedClients.size === 0) {
       session.detachedOutput = `${session.detachedOutput}${data}`.slice(-300_000);
     } else {
-      broadcast({ type: 'data', id, data: Buffer.from(data, 'utf8').toString('base64') });
+      for (const socket of session.attachedClients) {
+        send(socket, {
+          type: 'data', id, generation: session.generation,
+          data: Buffer.from(data, 'utf8').toString('base64')
+        });
+      }
     }
   });
   processHandle.onExit(({ exitCode, signal }) => {
@@ -160,18 +195,26 @@ function createSession(input) {
     const normalizedExitCode = Number(exitCode);
     const normalizedSignal = Number(signal) || 0;
     sessions.delete(id);
-    if (clients.size === 0) retainExitedSession(id, session, normalizedExitCode, normalizedSignal);
-    else broadcast({ type: 'exit', id, exitCode: normalizedExitCode, signal: normalizedSignal });
+    const tail = session.detachedOutput;
+    retainExitedSession(id, session, normalizedExitCode, normalizedSignal);
+    const exited = exitedSessions.get(id);
+    broadcast({
+      type: 'exit', id, generation: session.generation,
+      replay: tail ? Buffer.from(tail, 'utf8').toString('base64') : '',
+      exitCode: normalizedExitCode, signal: normalizedSignal,
+      exitClaimToken: exited.claimToken
+    });
     scheduleIdleExit();
   });
-  return sessionResult(id, session, false);
+  return sessionResult(id, session, false, socket);
 }
 
 function handleCommand(socket, message) {
   const id = String(message?.id || '');
   if (message.action === 'ack-exited') {
     const exited = exitedSessions.get(id);
-    if (exited?.claimToken === String(message.claimToken || '')) {
+    if (exited?.generation === String(message.generation || '')
+      && exited.claimToken === String(message.claimToken || '')) {
       exitedSessions.delete(id);
       scheduleIdleExit();
     }
@@ -179,6 +222,22 @@ function handleCommand(socket, message) {
   }
   const session = sessions.get(id);
   if (!session) return;
+  if (message.generation && message.generation !== session.generation) return;
+  if (message.action === 'ack-replay') {
+    if (session.replayLease?.token !== String(message.claimToken || '')) return;
+    session.replayLease = null;
+    if (session.detachedOutput) {
+      const replayLease = leaseSessionReplay(session);
+      send(socket, {
+        type: 'replay', id, generation: session.generation,
+        data: replayLease.data ? Buffer.from(replayLease.data, 'utf8').toString('base64') : '',
+        replayClaimToken: replayLease.token
+      });
+    } else {
+      session.attachedClients.add(socket);
+    }
+    return;
+  }
   if (message.action === 'write') {
     session.processHandle.write(Buffer.from(String(message.data || ''), 'base64').toString('utf8'));
   } else if (message.action === 'resize') {
@@ -206,7 +265,7 @@ function handleRequest(socket, message) {
   if (!requestId) return;
   try {
     if (message.action === 'create') {
-      response(socket, requestId, createSession(message.session));
+      response(socket, requestId, createSession(message.session, socket));
       return;
     }
     if (message.action === 'shutdown-if-idle') {
@@ -231,16 +290,18 @@ function handleMessage(socket, message) {
       return;
     }
     socket.sideTermAuthenticated = true;
+    socket.sideTermReplayAcknowledgements = message?.capabilities?.replayAcknowledgements === true;
     clients.add(socket);
     send(socket, { type: 'authenticated', protocol: 1, pid: process.pid });
     return;
   }
   if (message?.type === 'request') handleRequest(socket, message);
-  if (message?.type === 'command') handleCommand(socket, message);
+  if (message?.type === 'command') dispatchPtyCommand(handleCommand, socket, message);
 }
 
 function releasePausedSessions(socket) {
   for (const session of sessions.values()) {
+    session.attachedClients.delete(socket);
     if (!session.pausedClients.delete(socket) || session.pausedClients.size > 0) continue;
     try {
       session.processHandle.resume();
