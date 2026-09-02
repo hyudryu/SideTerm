@@ -49,7 +49,7 @@ const { audioFileExtension, canonicalCloudAudioFormat, convertToSpeechPcm, conve
 const { transcriptClarification } = require('./voice/transcript-clarification.cjs');
 const { providerConfigurationError, providerDescriptor, providerScopedSetting, STT_PROVIDERS, sttEndpointConfigurationError, transcribeCloud } = require('./voice/stt-providers.cjs');
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
-const { reattachSession, sessionDetails } = require('./sessions/reattach.cjs');
+const { bufferRendererOutput, reattachSession, sessionDetails, takeRendererOutput } = require('./sessions/reattach.cjs');
 const { connectWindowsPtyHost } = require('./sessions/windows-pty-client.cjs');
 const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
@@ -98,6 +98,7 @@ process.on('unhandledRejection', (reason) => appLog.error('unhandledRejection', 
 
 const isDev = !app.isPackaged;
 const sessions = new Map();
+const desktopExitedSessions = new Map();
 let windowsPtyHostClient = null;
 let windowsPtyHostConnection = null;
 let mainWindow;
@@ -2778,7 +2779,7 @@ function resolveShell() {
     // On Windows the inherited SHELL (e.g. Git Bash from the launching
     // terminal) is incidental; PowerShell is the native default.
     const override = process.env.SIDETERM_SHELL;
-    if (override && fs.existsSync(override)) return override;
+    if (override && fs.existsSync(override)) return path.resolve(override);
     const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     return fs.existsSync(powershell) ? powershell : 'powershell.exe';
   }
@@ -2870,6 +2871,34 @@ function terminalRendererCanAcknowledge() {
 
 function resetTerminalOutputFlow() {
   for (const session of sessions.values()) session.rendererFlow?.reset();
+}
+
+function detachTerminalRenderers() {
+  for (const session of sessions.values()) session.rendererAttached = false;
+  resetTerminalOutputFlow();
+}
+
+function sendTerminalData(id, data, rendererFlow = null) {
+  if (!data) return;
+  const byteLength = Buffer.byteLength(data);
+  send('terminal:data', { id, data, byteLength });
+  rendererFlow?.accept(byteLength);
+}
+
+function markTerminalRendererReady(id) {
+  const exited = desktopExitedSessions.get(id);
+  if (exited) {
+    desktopExitedSessions.delete(id);
+    sendTerminalData(id, exited.rendererReplay);
+    send('terminal:exit', { id, exitCode: exited.exitCode, signal: exited.signal });
+    return true;
+  }
+  const session = sessions.get(id);
+  if (!session) return false;
+  const replay = takeRendererOutput(session);
+  sendTerminalData(id, replay, session.rendererFlow);
+  session.rendererAttached = true;
+  return true;
 }
 
 presentationCoordinator.registerSurface('desktop', async (text, options) => {
@@ -3520,16 +3549,21 @@ async function stopMobileServer({ persist = true } = {}) {
 async function getWindowsPtyHostClient() {
   if (windowsPtyHostClient) return windowsPtyHostClient;
   if (!windowsPtyHostConnection) {
-    windowsPtyHostConnection = connectWindowsPtyHost({
+    const connection = connectWindowsPtyHost({
       metadataPath: path.join(app.getPath('userData'), 'windows-pty-host.json'),
       hostScript: path.join(__dirname, 'sessions', 'windows-pty-host.cjs')
     }).then((client) => {
       windowsPtyHostClient = client;
+      client.onClose(() => {
+        if (windowsPtyHostClient === client) windowsPtyHostClient = null;
+        if (windowsPtyHostConnection === connection) windowsPtyHostConnection = null;
+      });
       return client;
     }).catch((error) => {
-      windowsPtyHostConnection = null;
+      if (windowsPtyHostConnection === connection) windowsPtyHostConnection = null;
       throw error;
     });
+    windowsPtyHostConnection = connection;
   }
   return windowsPtyHostConnection;
 }
@@ -3543,6 +3577,8 @@ function disconnectWindowsPtyHost() {
 async function createSession({ id, cwd, cols = 100, rows = 30 }) {
   if (!id) throw new Error('A session id is required.');
 
+  const exitedSession = desktopExitedSessions.get(id);
+  if (exitedSession) return { ...exitedSession.details, reattached: true, exited: true };
   const existingSession = sessions.get(id);
   if (existingSession) return reattachSession(id, existingSession, { cols, rows });
 
@@ -3596,6 +3632,8 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
     cwd: processHandle.cwd || workingDirectory,
     rows: Math.max(1, Math.floor(rows)),
     cols: Math.max(2, Math.floor(cols)),
+    rendererAttached: false,
+    rendererReplay: '',
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3610,9 +3648,11 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
   const forwardOutput = (data) => {
     if (!data || sessions.get(id) !== session) return;
     observePotentialGitPush(id, data);
-    const byteLength = Buffer.byteLength(data);
-    send('terminal:data', { id, data, byteLength });
-    if (terminalRendererCanAcknowledge()) session.rendererFlow.accept(byteLength);
+    if (session.rendererAttached && terminalRendererCanAcknowledge()) {
+      sendTerminalData(id, data, session.rendererFlow);
+    } else {
+      bufferRendererOutput(session, data);
+    }
     session.mobileRevision += 1;
     session.mobileOutputBuffer += data;
     if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
@@ -3638,9 +3678,17 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
         if (client.sideTermSessionId === id) sendMobileTerminalFrame(client, id);
       }
     }
+    if (!session.rendererAttached || !terminalRendererCanAcknowledge()) {
+      desktopExitedSessions.set(id, {
+        details: sessionDetails(id, session, { resumed, reattached: true }),
+        rendererReplay: takeRendererOutput(session),
+        exitCode,
+        signal
+      });
+    }
     sessions.delete(id);
     session.rendererFlow.dispose();
-    send('terminal:exit', { id, exitCode, signal });
+    if (!desktopExitedSessions.has(id)) send('terminal:exit', { id, exitCode, signal });
     broadcastMobile({ type: 'exit', id, exitCode, signal });
     broadcastMobileSnapshot();
   });
@@ -3724,6 +3772,7 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('terminal:create', (_event, options) => createSession(options));
+  ipcMain.handle('terminal:renderer-ready', (_event, id) => markTerminalRendererReady(String(id || '')));
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
   });
@@ -4020,12 +4069,12 @@ function createWindow() {
     if (!allowed) event.preventDefault();
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
-  mainWindow.webContents.on('did-start-loading', resetTerminalOutputFlow);
+  mainWindow.webContents.on('did-start-loading', detachTerminalRenderers);
   mainWindow.webContents.on('did-finish-load', resetTerminalOutputFlow);
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appLog.error('renderer process gone', details);
     resetDesktopVoiceActivation();
-    resetTerminalOutputFlow();
+    detachTerminalRenderers();
   });
   mainWindow.webContents.on('unresponsive', () => appLog.error('renderer became unresponsive'));
   mainWindow.webContents.on('responsive', () => appLog.info('renderer responsive again'));

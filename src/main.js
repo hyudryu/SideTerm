@@ -3006,6 +3006,7 @@ async function addSession(cwd, options = {}) {
     session.persistent = Boolean(details.persistent);
     session.serverScrollback = Boolean(details.serverScrollback);
     updateSessionItem(session);
+    await api.markRendererReady(id);
   } catch (error) {
     session.exited = true;
     terminal.options.disableStdin = true;

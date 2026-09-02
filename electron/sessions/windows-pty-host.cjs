@@ -35,6 +35,14 @@ function safeDimensions(cols, rows) {
   return { cols: width, rows: height };
 }
 
+function validExecutable(executable) {
+  if (path.isAbsolute(executable)) return true;
+  return Boolean(executable)
+    && path.win32.basename(executable) === executable
+    && executable !== '.'
+    && executable !== '..';
+}
+
 function sessionResult(id, session, reattached) {
   const replay = session.detachedOutput || '';
   session.detachedOutput = '';
@@ -60,8 +68,8 @@ function createSession(input) {
 
   const executable = String(input.executable || '');
   const cwd = String(input.cwd || '');
-  if (!path.isAbsolute(executable) || !path.isAbsolute(cwd)) {
-    throw new Error('PTY executable and working directory must be absolute paths.');
+  if (!validExecutable(executable) || !path.isAbsolute(cwd)) {
+    throw new Error('PTY executable must be absolute or PATH-resolvable, and the working directory must be absolute.');
   }
   const args = Array.isArray(input.args) ? input.args.map(String).slice(0, 100) : [];
   const envOverrides = input.env && typeof input.env === 'object'
@@ -85,7 +93,8 @@ function createSession(input) {
     processHandle,
     cwd,
     shell: path.basename(executable),
-    detachedOutput: ''
+    detachedOutput: '',
+    pausedClients: new Set()
   };
   sessions.set(id, session);
   processHandle.onData((data) => {
@@ -104,7 +113,7 @@ function createSession(input) {
   return sessionResult(id, session, false);
 }
 
-function handleCommand(message) {
+function handleCommand(socket, message) {
   const id = String(message?.id || '');
   const session = sessions.get(id);
   if (!session) return;
@@ -121,6 +130,12 @@ function handleCommand(message) {
       // The process may already be exiting.
     }
     scheduleIdleExit();
+  } else if (message.action === 'pause') {
+    if (session.pausedClients.size === 0) session.processHandle.pause();
+    session.pausedClients.add(socket);
+  } else if (message.action === 'resume') {
+    const released = session.pausedClients.delete(socket);
+    if (released && session.pausedClients.size === 0) session.processHandle.resume();
   }
 }
 
@@ -157,7 +172,18 @@ function handleMessage(socket, message) {
     return;
   }
   if (message?.type === 'request') handleRequest(socket, message);
-  if (message?.type === 'command') handleCommand(message);
+  if (message?.type === 'command') handleCommand(socket, message);
+}
+
+function releasePausedSessions(socket) {
+  for (const session of sessions.values()) {
+    if (!session.pausedClients.delete(socket) || session.pausedClients.size > 0) continue;
+    try {
+      session.processHandle.resume();
+    } catch {
+      // The process may already have exited.
+    }
+  }
 }
 
 function scheduleIdleExit() {
@@ -204,6 +230,7 @@ const server = net.createServer((socket) => {
   });
   socket.on('close', () => {
     clients.delete(socket);
+    releasePausedSessions(socket);
     scheduleIdleExit();
   });
   socket.on('error', () => {});

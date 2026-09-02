@@ -157,7 +157,7 @@ test('mobile client normalizes only capture frames, not raw streams', () => {
 
 test('mobile server tracks the session grid and serves the new assets', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(main, /cols: Math\.max\(2, Math\.floor\(cols\)\),\r?\n\s*mobileRevision: 0/);
+  assert.match(main, /cols: Math\.max\(2, Math\.floor\(cols\)\),\r?\n\s*rendererAttached: false,\r?\n\s*rendererReplay: '',\r?\n\s*mobileRevision: 0/);
   assert.match(main, /session\.cols = Math\.max\(2, Math\.floor\(cols\)\);/);
   assert.match(main, /cols: session\.cols \|\| 100,\r?\n\s*rows: session\.rows \|\| 30/);
   assert.match(main, /require\.resolve\('@xterm\/addon-fit'\)/);

@@ -16,6 +16,17 @@ function sessionDetails(id, session, { resumed = Boolean(session.resumed), reatt
   };
 }
 
+function bufferRendererOutput(session, data, maximumCharacters = 300_000) {
+  if (!session || !data) return;
+  session.rendererReplay = `${session.rendererReplay || ''}${data}`.slice(-maximumCharacters);
+}
+
+function takeRendererOutput(session) {
+  const replay = String(session?.rendererReplay || '');
+  if (session) session.rendererReplay = '';
+  return replay;
+}
+
 function reattachSession(id, session, { cols = 100, rows = 30 } = {}) {
   const nextCols = positiveInteger(cols, 100);
   const nextRows = positiveInteger(rows, 30);
@@ -24,4 +35,4 @@ function reattachSession(id, session, { cols = 100, rows = 30 } = {}) {
   return sessionDetails(id, session, { reattached: true });
 }
 
-module.exports = { reattachSession, sessionDetails };
+module.exports = { bufferRendererOutput, reattachSession, sessionDetails, takeRendererOutput };

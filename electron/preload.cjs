@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('sideTerm', {
   getWorkspaceSync: () => ipcRenderer.sendSync('workspace:get-sync'),
   saveWorkspace: (raw) => ipcRenderer.invoke('workspace:save', raw),
   createSession: (options) => ipcRenderer.invoke('terminal:create', options),
+  markRendererReady: (id) => ipcRenderer.invoke('terminal:renderer-ready', id),
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
   scroll: (id, amount) => ipcRenderer.send('terminal:scroll', { id, amount }),

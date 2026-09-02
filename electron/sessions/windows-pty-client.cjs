@@ -112,6 +112,14 @@ class WindowsPtyHandle {
     this.client.command({ action: 'kill', id: this.id });
   }
 
+  pause() {
+    this.client.command({ action: 'pause', id: this.id });
+  }
+
+  resume() {
+    this.client.command({ action: 'resume', id: this.id });
+  }
+
   detach() {
     this.client.handles.delete(this.id);
     this.dataListeners.clear();
@@ -139,7 +147,10 @@ class WindowsPtyHostClient {
     this.buffered = remainder;
     this.handles = new Map();
     this.orphanData = new Map();
+    this.orphanExits = new Map();
     this.pendingRequests = new Map();
+    this.closeListeners = new Set();
+    this.closed = false;
     this.closedIntentionally = false;
     socket.on('data', (chunk) => this.consume(chunk));
     socket.on('close', () => this.handleClose());
@@ -183,14 +194,20 @@ class WindowsPtyHostClient {
       return;
     }
     if (message.type === 'exit') {
-      this.handles.get(String(message.id || ''))?.emitExit({
+      const id = String(message.id || '');
+      const event = {
         exitCode: Number(message.exitCode),
         signal: Number(message.signal)
-      });
+      };
+      const handle = this.handles.get(id);
+      if (handle) handle.emitExit(event);
+      else this.orphanExits.set(id, event);
     }
   }
 
   handleClose() {
+    if (this.closed) return;
+    this.closed = true;
     const error = new Error('The Windows PTY host connection closed.');
     for (const pending of this.pendingRequests.values()) pending.reject(error);
     this.pendingRequests.clear();
@@ -198,6 +215,25 @@ class WindowsPtyHostClient {
       for (const handle of this.handles.values()) handle.emitExit({ exitCode: -1, signal: 0 });
     }
     this.handles.clear();
+    this.orphanData.clear();
+    this.orphanExits.clear();
+    for (const listener of this.closeListeners) {
+      try {
+        listener();
+      } catch {
+        // A cache invalidation callback must not disrupt socket cleanup.
+      }
+    }
+    this.closeListeners.clear();
+  }
+
+  onClose(listener) {
+    if (this.closed) {
+      listener();
+      return { dispose() {} };
+    }
+    this.closeListeners.add(listener);
+    return { dispose: () => this.closeListeners.delete(listener) };
   }
 
   request(action, payload = {}) {
@@ -233,6 +269,11 @@ class WindowsPtyHostClient {
       this.orphanData.delete(details.id);
       handle.emitData(pending);
     }
+    const pendingExit = this.orphanExits.get(details.id);
+    if (pendingExit) {
+      this.orphanExits.delete(details.id);
+      handle.emitExit(pendingExit);
+    }
     return handle;
   }
 
@@ -244,6 +285,8 @@ class WindowsPtyHostClient {
     this.closedIntentionally = true;
     for (const handle of this.handles.values()) handle.detach();
     this.handles.clear();
+    this.orphanData.clear();
+    this.orphanExits.clear();
     this.socket.end();
     this.socket.destroy();
   }

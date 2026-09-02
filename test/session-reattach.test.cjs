@@ -2,7 +2,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { reattachSession, sessionDetails } = require('../electron/sessions/reattach.cjs');
+const {
+  bufferRendererOutput,
+  reattachSession,
+  sessionDetails,
+  takeRendererOutput
+} = require('../electron/sessions/reattach.cjs');
 
 test('renderer reload reattaches to the existing PTY without replacing it', () => {
   const resizeCalls = [];
@@ -33,6 +38,31 @@ test('renderer reload reattaches to the existing PTY without replacing it', () =
     persistent: false,
     serverScrollback: false
   });
+});
+
+test('renderer output emitted during reload is retained until the renderer-ready handshake', () => {
+  const session = {
+    processHandle: { pid: 4173, resize() {} },
+    cwd: 'C:\\Users\\markx',
+    shell: 'powershell.exe',
+    rows: 24,
+    tmux: null
+  };
+
+  bufferRendererOutput(session, 'before-');
+  bufferRendererOutput(session, 'after');
+  reattachSession('session-live', session);
+  const first = takeRendererOutput(session);
+  const second = takeRendererOutput(session);
+
+  assert.equal(first, 'before-after');
+  assert.equal(second, '');
+});
+
+test('renderer reload replay buffer remains bounded', () => {
+  const session = {};
+  bufferRendererOutput(session, 'abcdef', 4);
+  assert.equal(session.rendererReplay, 'cdef');
 });
 
 test('new session details are not marked as a renderer reattachment', () => {
@@ -96,4 +126,15 @@ test('session creation reattaches a live ID before spawning another shell', () =
   assert.ok(lookup >= 0);
   assert.ok(reattach > lookup);
   assert.ok(spawn > reattach);
+});
+
+test('main buffers output per session until the renderer-ready handshake flushes it', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+
+  assert.match(main, /if \(session\.rendererAttached && terminalRendererCanAcknowledge\(\)\) \{[\s\S]*?sendTerminalData\(id, data, session\.rendererFlow\);[\s\S]*?\} else \{\s*bufferRendererOutput\(session, data\);/);
+  assert.match(main, /ipcMain\.handle\('terminal:renderer-ready'[\s\S]*?markTerminalRendererReady/);
+  assert.match(preload, /markRendererReady: \(id\) => ipcRenderer\.invoke\('terminal:renderer-ready', id\)/);
+  assert.match(renderer, /const details = await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
 });
