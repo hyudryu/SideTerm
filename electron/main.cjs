@@ -3950,12 +3950,14 @@ function registerIpc() {
     exitClaimToken, exitDeliveryToken
   }) => {
     const session = sessions.get(String(id || ''));
-    session?.rendererFlow.acknowledge(byteLength);
     if (session) {
       const deliveryIndex = session.rendererOutputInFlight.findIndex(
         (entry) => entry.deliveryToken === String(rendererDataDeliveryToken || '')
       );
-      if (deliveryIndex >= 0) session.rendererOutputInFlight.splice(deliveryIndex, 1);
+      if (deliveryIndex >= 0) {
+        const [delivery] = session.rendererOutputInFlight.splice(deliveryIndex, 1);
+        session.rendererFlow.acknowledge(Buffer.byteLength(delivery.data));
+      }
     }
     if (session?.rendererReplayInFlight?.claimToken === String(replayClaimToken || '')
       && session.rendererReplayInFlight.deliveryToken === String(replayDeliveryToken || '')) {

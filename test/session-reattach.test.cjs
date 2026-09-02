@@ -147,6 +147,7 @@ test('main buffers output per session until the renderer-ready handshake flushes
   assert.match(renderer, /api\.acknowledgeExit\(id, exitClaimToken, exitDeliveryToken\);/);
   assert.match(main, /function requeueRendererOutput[\s\S]*?rendererOutputInFlight[\s\S]*?unacknowledged[\s\S]*?rendererReplay/);
   assert.match(main, /rendererOutputInFlight\.findIndex[\s\S]*?rendererDataDeliveryToken/);
+  assert.match(main, /if \(deliveryIndex >= 0\) \{\s*const \[delivery\] = session\.rendererOutputInFlight\.splice\(deliveryIndex, 1\);\s*session\.rendererFlow\.acknowledge\(Buffer\.byteLength\(delivery\.data\)\);/);
 });
 
 test('session creation shares pending work and a close cancels before registration', () => {

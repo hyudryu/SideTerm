@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const MAX_PTY_WRITE_BYTES = 512 * 1024;
 
 function validMetadata(value) {
   return value
@@ -142,10 +143,16 @@ class WindowsPtyHandle {
   }
 
   write(data) {
-    this.client.command({
-      action: 'write', id: this.id, generation: this.generation,
-      data: Buffer.from(String(data), 'utf8').toString('base64')
-    });
+    const bytes = Buffer.from(String(data), 'utf8');
+    for (let offset = 0; offset < bytes.length;) {
+      let end = Math.min(bytes.length, offset + MAX_PTY_WRITE_BYTES);
+      while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
+      this.client.command({
+        action: 'write', id: this.id, generation: this.generation,
+        data: bytes.subarray(offset, end).toString('base64')
+      });
+      offset = end;
+    }
   }
 
   resize(cols, rows) {

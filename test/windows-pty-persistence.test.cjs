@@ -124,6 +124,25 @@ test('hosted PTY handles satisfy output flow control with remote pause and resum
   ]);
 });
 
+test('hosted PTY writes are chunked below the shared pipe frame limit', () => {
+  const commands = [];
+  const client = { command: (payload) => commands.push(payload), handles: new Map() };
+  const handle = new WindowsPtyHandle(client, {
+    id: 'paste-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'paste-generation'
+  });
+  const pasted = `${'x'.repeat((512 * 1024) - 1)}🙂${'y'.repeat(1_600_000)}`;
+
+  handle.write(pasted);
+
+  assert.ok(commands.length > 1);
+  assert.ok(commands.every((command) => Buffer.byteLength(`${JSON.stringify({ type: 'command', ...command })}\n`) < 2 * 1024 * 1024));
+  const decodedChunks = commands.map((command) => Buffer.from(command.data, 'base64').toString('utf8'));
+  assert.ok(decodedChunks.every((chunk) => !chunk.includes('\uFFFD')));
+  assert.equal(decodedChunks.join(''), pasted);
+  assert.ok(commands.every((command) => command.action === 'write'
+    && command.id === 'paste-session' && command.generation === 'paste-generation'));
+});
+
 test('killing a hosted PTY releases only its own client handle immediately', () => {
   const commands = [];
   const client = { command: (payload) => commands.push(payload), handles: new Map() };
