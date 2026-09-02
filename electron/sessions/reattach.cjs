@@ -30,8 +30,9 @@ function takeRendererOutput(session) {
 function reattachSession(id, session, { cols = 100, rows = 30 } = {}) {
   const nextCols = positiveInteger(cols, 100);
   const nextRows = positiveInteger(rows, 30);
-  session.processHandle.resize(Math.max(2, nextCols), nextRows);
+  session.cols = Math.max(2, nextCols);
   session.rows = nextRows;
+  session.processHandle.resize(session.cols, session.rows);
   return sessionDetails(id, session, { reattached: true });
 }
 

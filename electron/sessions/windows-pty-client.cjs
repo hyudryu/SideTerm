@@ -26,6 +26,22 @@ function readMetadata(metadataPath) {
   }
 }
 
+function sameMetadata(left, right) {
+  return Boolean(left && right
+    && left.pid === right.pid
+    && left.pipeName === right.pipeName
+    && left.token === right.token);
+}
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
+}
+
 function send(socket, payload) {
   if (socket.destroyed) throw new Error('The Windows PTY host connection is closed.');
   socket.write(`${JSON.stringify(payload)}\n`);
@@ -57,7 +73,7 @@ function connectSocket(metadata, timeoutMs = 1_000) {
         fail(error);
         return;
       }
-      if (message.type !== 'authenticated' || message.protocol !== 1) {
+      if (message.type !== 'authenticated' || message.protocol !== 1 || Number(message.pid) !== metadata.pid) {
         fail(new Error('The Windows PTY host rejected the connection.'));
         return;
       }
@@ -78,6 +94,8 @@ class WindowsPtyHandle {
     this.process = details.shell;
     this.cwd = details.cwd;
     this.reattached = Boolean(details.reattached);
+    this.exitClaimToken = String(details.exitClaimToken || '');
+    this.exitDelivered = false;
     this.dataListeners = new Set();
     this.exitListeners = new Set();
     this.pendingData = '';
@@ -90,13 +108,18 @@ class WindowsPtyHandle {
       const data = this.pendingData;
       this.pendingData = '';
       listener(data);
+      this.acknowledgeExitedSession();
     }
     return { dispose: () => this.dataListeners.delete(listener) };
   }
 
   onExit(listener) {
     this.exitListeners.add(listener);
-    if (this.pendingExit) listener(this.pendingExit);
+    if (this.pendingExit) {
+      listener(this.pendingExit);
+      this.exitDelivered = true;
+      this.acknowledgeExitedSession();
+    }
     return { dispose: () => this.exitListeners.delete(listener) };
   }
 
@@ -126,6 +149,13 @@ class WindowsPtyHandle {
     this.exitListeners.clear();
   }
 
+  acknowledgeExitedSession() {
+    if (!this.exitClaimToken || !this.exitDelivered || this.pendingData) return;
+    const claimToken = this.exitClaimToken;
+    this.exitClaimToken = '';
+    this.client.command({ action: 'ack-exited', id: this.id, claimToken });
+  }
+
   emitData(data) {
     if (this.dataListeners.size === 0) {
       this.pendingData = `${this.pendingData}${data}`.slice(-300_000);
@@ -137,6 +167,10 @@ class WindowsPtyHandle {
   emitExit(event) {
     this.pendingExit = event;
     for (const listener of this.exitListeners) listener(event);
+    if (this.exitListeners.size > 0) {
+      this.exitDelivered = true;
+      this.acknowledgeExitedSession();
+    }
     this.client.handles.delete(this.id);
   }
 }
@@ -269,7 +303,10 @@ class WindowsPtyHostClient {
       this.orphanData.delete(details.id);
       handle.emitData(pending);
     }
-    const pendingExit = this.orphanExits.get(details.id);
+    const pendingExit = this.orphanExits.get(details.id) || (details.exited ? {
+      exitCode: Number(details.exitCode),
+      signal: Number(details.signal)
+    } : null);
     if (pendingExit) {
       this.orphanExits.delete(details.id);
       handle.emitExit(pendingExit);
@@ -292,9 +329,15 @@ class WindowsPtyHostClient {
   }
 }
 
-async function launchHost({ metadataPath, hostScript, executablePath }) {
+async function launchHost({ metadataPath, hostScript, executablePath, staleMetadata = null }) {
   const token = crypto.randomBytes(32).toString('hex');
   const pipeName = `\\\\.\\pipe\\sideterm-pty-${crypto.randomUUID()}`;
+  const currentMetadata = readMetadata(metadataPath);
+  if (currentMetadata && !sameMetadata(currentMetadata, staleMetadata)) {
+    const error = new Error('The Windows PTY host metadata changed while reconnecting.');
+    error.code = 'SIDETERM_PTY_METADATA_CHANGED';
+    throw error;
+  }
   try {
     fs.unlinkSync(metadataPath);
   } catch {
@@ -317,18 +360,35 @@ async function launchHost({ metadataPath, hostScript, executablePath }) {
 }
 
 async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath = process.execPath, timeoutMs = 5_000 }) {
+  const deadline = Date.now() + timeoutMs;
   const existing = readMetadata(metadataPath);
   if (existing) {
-    try {
-      const connected = await connectSocket(existing);
-      return new WindowsPtyHostClient(connected.socket, connected.remainder);
-    } catch {
-      // Replace stale metadata only after the recorded host cannot be reached.
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const remaining = Math.max(50, Math.min(1_000, deadline - Date.now()));
+        const connected = await connectSocket(existing, remaining);
+        return new WindowsPtyHostClient(connected.socket, connected.remainder);
+      } catch (error) {
+        lastError = error;
+        if (!processIsRunning(existing.pid)) break;
+        await delay(50);
+      }
+    }
+    if (processIsRunning(existing.pid)) {
+      throw lastError || new Error('Could not reconnect to the live Windows PTY host.');
     }
   }
 
-  const launched = await launchHost({ metadataPath, hostScript, executablePath });
-  const deadline = Date.now() + timeoutMs;
+  let launched;
+  try {
+    launched = await launchHost({ metadataPath, hostScript, executablePath, staleMetadata: existing });
+  } catch (error) {
+    if (error?.code !== 'SIDETERM_PTY_METADATA_CHANGED') throw error;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw error;
+    return connectWindowsPtyHost({ metadataPath, hostScript, executablePath, timeoutMs: remaining });
+  }
   let lastError = null;
   while (Date.now() < deadline) {
     try {

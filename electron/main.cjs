@@ -99,6 +99,7 @@ process.on('unhandledRejection', (reason) => appLog.error('unhandledRejection', 
 const isDev = !app.isPackaged;
 const sessions = new Map();
 const desktopExitedSessions = new Map();
+const pendingSessionCreations = new Map();
 let windowsPtyHostClient = null;
 let windowsPtyHostConnection = null;
 let mainWindow;
@@ -3574,14 +3575,25 @@ function disconnectWindowsPtyHost() {
   windowsPtyHostConnection = null;
 }
 
-async function createSession({ id, cwd, cols = 100, rows = 30 }) {
+function createSession({ id, cwd, cols = 100, rows = 30 }) {
   if (!id) throw new Error('A session id is required.');
 
   const exitedSession = desktopExitedSessions.get(id);
   if (exitedSession) return { ...exitedSession.details, reattached: true, exited: true };
   const existingSession = sessions.get(id);
   if (existingSession) return reattachSession(id, existingSession, { cols, rows });
+  const pendingSession = pendingSessionCreations.get(id);
+  if (pendingSession) return pendingSession.promise;
 
+  const pendingCreation = { cancelled: false, promise: null };
+  pendingCreation.promise = createNewSession({ id, cwd, cols, rows }, pendingCreation).finally(() => {
+    if (pendingSessionCreations.get(id) === pendingCreation) pendingSessionCreations.delete(id);
+  });
+  pendingSessionCreations.set(id, pendingCreation);
+  return pendingCreation.promise;
+}
+
+async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreation) {
   const shellPath = resolveShell();
   const workingDirectory = safeCwd(cwd);
   const tmux = tmuxRuntime();
@@ -3621,6 +3633,14 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
       cwd: workingDirectory,
       env: sessionEnvironment
     });
+  if (pendingCreation.cancelled) {
+    try {
+      processHandle.kill();
+    } catch {
+      // The process may already have exited before cancellation completed.
+    }
+    throw new Error('The terminal session was closed before creation completed.');
+  }
   const session = {
     processHandle,
     rendererFlow: createOutputFlowControl(processHandle),
@@ -3699,6 +3719,9 @@ async function createSession({ id, cwd, cols = 100, rows = 30 }) {
 }
 
 function closeSession(id) {
+  const pendingCreation = pendingSessionCreations.get(id);
+  if (pendingCreation) pendingCreation.cancelled = true;
+  desktopExitedSessions.delete(id);
   const session = sessions.get(id);
   const removedExitedSession = mobileExitedSessions.delete(id);
   if (!session) {

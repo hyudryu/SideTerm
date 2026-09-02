@@ -26,6 +26,7 @@ test('renderer reload reattaches to the existing PTY without replacing it', () =
   const details = reattachSession('session-live', session, { cols: 132, rows: 41 });
 
   assert.equal(session.processHandle, processHandle);
+  assert.equal(session.cols, 132);
   assert.equal(session.rows, 41);
   assert.deepEqual(resizeCalls, [[132, 41]]);
   assert.deepEqual(details, {
@@ -110,6 +111,7 @@ test('reattachment clamps invalid terminal dimensions', () => {
   reattachSession('session-live', session, { cols: 1, rows: 0 });
 
   assert.deepEqual(resizeCalls, [[2, 30]]);
+  assert.equal(session.cols, 2);
   assert.equal(session.rows, 30);
 });
 
@@ -137,4 +139,14 @@ test('main buffers output per session until the renderer-ready handshake flushes
   assert.match(main, /ipcMain\.handle\('terminal:renderer-ready'[\s\S]*?markTerminalRendererReady/);
   assert.match(preload, /markRendererReady: \(id\) => ipcRenderer\.invoke\('terminal:renderer-ready', id\)/);
   assert.match(renderer, /const details = await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
+});
+
+test('session creation shares pending work and a close cancels before registration', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+
+  assert.match(main, /const pendingSession = pendingSessionCreations\.get\(id\);\s*if \(pendingSession\) return pendingSession\.promise;/);
+  assert.match(main, /if \(pendingCreation\.cancelled\) \{[\s\S]*?processHandle\.kill\(\);[\s\S]*?closed before creation completed/);
+  assert.match(main, /const pendingCreation = pendingSessionCreations\.get\(id\);\s*if \(pendingCreation\) pendingCreation\.cancelled = true;/);
+  assert.match(renderer, /const details = await api\.createSession[\s\S]*?if \(sessions\.get\(id\) !== session\) return session;[\s\S]*?await api\.markRendererReady\(id\);\s*if \(sessions\.get\(id\) !== session\) return session;/);
 });

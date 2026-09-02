@@ -3001,13 +3001,16 @@ async function addSession(cwd, options = {}) {
   try {
     fit.fit();
     const details = await api.createSession({ id, cwd, cols: terminal.cols, rows: terminal.rows });
+    if (sessions.get(id) !== session) return session;
     session.shell = details.shell;
     session.cwd = details.cwd;
     session.persistent = Boolean(details.persistent);
     session.serverScrollback = Boolean(details.serverScrollback);
     updateSessionItem(session);
     await api.markRendererReady(id);
+    if (sessions.get(id) !== session) return session;
   } catch (error) {
+    if (sessions.get(id) !== session) return session;
     session.exited = true;
     terminal.options.disableStdin = true;
     terminal.writeln(`\r\n\x1b[31mCould not start the shell: ${error.message}\x1b[0m`);

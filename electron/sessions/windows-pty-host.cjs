@@ -15,6 +15,9 @@ if (!metadataPath || !pipeName || !authToken) {
 
 const clients = new Set();
 const sessions = new Map();
+const exitedSessions = new Map();
+const MAX_EXITED_SESSIONS = 20;
+const EXITED_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 let idleTimer = null;
 
 function send(socket, payload) {
@@ -56,15 +59,63 @@ function sessionResult(id, session, reattached) {
   };
 }
 
+function pruneExitedSessions(now = Date.now()) {
+  for (const [id, exited] of exitedSessions) {
+    if (now - exited.exitedAt >= EXITED_SESSION_TTL_MS) exitedSessions.delete(id);
+  }
+  while (exitedSessions.size > MAX_EXITED_SESSIONS) {
+    exitedSessions.delete(exitedSessions.keys().next().value);
+  }
+}
+
+function retainExitedSession(id, session, exitCode, signal) {
+  exitedSessions.delete(id);
+  exitedSessions.set(id, {
+    id,
+    pid: session.processHandle.pid,
+    cwd: session.cwd,
+    shell: session.shell,
+    replay: session.detachedOutput,
+    exitCode,
+    signal,
+    exitedAt: Date.now(),
+    claimToken: crypto.randomUUID()
+  });
+  pruneExitedSessions();
+}
+
+function exitedSessionResult(exited) {
+  return {
+    id: exited.id,
+    pid: exited.pid,
+    cwd: exited.cwd,
+    shell: exited.shell,
+    reattached: true,
+    replay: exited.replay ? Buffer.from(exited.replay, 'utf8').toString('base64') : '',
+    exited: true,
+    exitCode: exited.exitCode,
+    signal: exited.signal,
+    exitClaimToken: exited.claimToken
+  };
+}
+
 function createSession(input) {
   const id = String(input?.id || '');
   if (!id || id.length > 100) throw new Error('A valid session id is required.');
   const dimensions = safeDimensions(input.cols, input.rows);
+  pruneExitedSessions();
   const existing = sessions.get(id);
   if (existing) {
-    existing.processHandle.resize(dimensions.cols, dimensions.rows);
+    try {
+      existing.processHandle.resize(dimensions.cols, dimensions.rows);
+    } catch {
+      // An exit may already be queued; return the handle so the client can
+      // observe that exit instead of spawning a replacement process.
+    }
     return sessionResult(id, existing, true);
   }
+  const exited = exitedSessions.get(id);
+  if (exited) return exitedSessionResult(exited);
 
   const executable = String(input.executable || '');
   const cwd = String(input.cwd || '');
@@ -106,8 +157,11 @@ function createSession(input) {
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) return;
+    const normalizedExitCode = Number(exitCode);
+    const normalizedSignal = Number(signal) || 0;
     sessions.delete(id);
-    broadcast({ type: 'exit', id, exitCode, signal });
+    if (clients.size === 0) retainExitedSession(id, session, normalizedExitCode, normalizedSignal);
+    else broadcast({ type: 'exit', id, exitCode: normalizedExitCode, signal: normalizedSignal });
     scheduleIdleExit();
   });
   return sessionResult(id, session, false);
@@ -115,6 +169,14 @@ function createSession(input) {
 
 function handleCommand(socket, message) {
   const id = String(message?.id || '');
+  if (message.action === 'ack-exited') {
+    const exited = exitedSessions.get(id);
+    if (exited?.claimToken === String(message.claimToken || '')) {
+      exitedSessions.delete(id);
+      scheduleIdleExit();
+    }
+    return;
+  }
   const session = sessions.get(id);
   if (!session) return;
   if (message.action === 'write') {
@@ -148,8 +210,10 @@ function handleRequest(socket, message) {
       return;
     }
     if (message.action === 'shutdown-if-idle') {
-      response(socket, requestId, { idle: sessions.size === 0 });
-      if (sessions.size === 0) setTimeout(cleanExit, 10).unref();
+      pruneExitedSessions();
+      const idle = sessions.size === 0 && exitedSessions.size === 0;
+      response(socket, requestId, { idle });
+      if (idle) setTimeout(cleanExit, 10).unref();
       return;
     }
     throw new Error('Unsupported PTY host request.');
@@ -189,7 +253,15 @@ function releasePausedSessions(socket) {
 function scheduleIdleExit() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = null;
+  pruneExitedSessions();
   if (sessions.size > 0 || clients.size > 0) return;
+  if (exitedSessions.size > 0) {
+    const oldest = exitedSessions.values().next().value;
+    const remaining = Math.max(1, EXITED_SESSION_TTL_MS - (Date.now() - oldest.exitedAt));
+    idleTimer = setTimeout(scheduleIdleExit, remaining);
+    idleTimer.unref();
+    return;
+  }
   idleTimer = setTimeout(cleanExit, 5_000);
   idleTimer.unref();
 }

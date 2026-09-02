@@ -54,6 +54,21 @@ function waitForOutput(handle, pattern, timeoutMs = 5_000) {
   });
 }
 
+function waitForExit(handle, timeoutMs = 5_000) {
+  return new Promise((resolve, reject) => {
+    let subscription = null;
+    const timer = setTimeout(() => {
+      subscription?.dispose();
+      reject(new Error('Timed out waiting for the PTY to exit.'));
+    }, timeoutMs);
+    subscription = handle.onExit((event) => {
+      clearTimeout(timer);
+      subscription?.dispose();
+      resolve(event);
+    });
+  });
+}
+
 test('PTY host metadata accepts only authenticated SideTerm named pipes', () => {
   assert.equal(validMetadata({
     protocol: 1,
@@ -112,6 +127,40 @@ test('exit events received before handle registration are delivered after creati
   assert.equal(client.orphanExits.has('instant-exit'), false);
 });
 
+test('collected exit tombstones are acknowledged only after replay and exit delivery', async () => {
+  const commands = [];
+  const client = {
+    command: (payload) => commands.push(payload),
+    handles: new Map(),
+    orphanData: new Map(),
+    orphanExits: new Map(),
+    request: async () => ({
+      id: 'exited-session',
+      pid: 44,
+      shell: 'powershell.exe',
+      cwd: 'C:\\workspace',
+      replay: Buffer.from('final output').toString('base64'),
+      exited: true,
+      exitCode: 9,
+      signal: 0,
+      exitClaimToken: 'claim-token'
+    })
+  };
+
+  const handle = await WindowsPtyHostClient.prototype.createSession.call(client, {});
+  let exit = null;
+  handle.onExit((event) => { exit = event; });
+  assert.deepEqual(commands, []);
+  let output = '';
+  handle.onData((data) => { output += data; });
+
+  assert.equal(output, 'final output');
+  assert.deepEqual(exit, { exitCode: 9, signal: 0 });
+  assert.deepEqual(commands, [{
+    action: 'ack-exited', id: 'exited-session', claimToken: 'claim-token'
+  }]);
+});
+
 test('PTY client close notifications are idempotent and support late subscribers', () => {
   const socket = fakeSocket();
   const client = new WindowsPtyHostClient(socket);
@@ -138,9 +187,36 @@ test('Windows shell overrides are resolved before they cross the PTY host bounda
   assert.match(host, /path\.win32\.basename\(executable\) === executable/);
   assert.match(host, /message\.action === 'pause'[\s\S]*?processHandle\.pause\(\)[\s\S]*?message\.action === 'resume'[\s\S]*?processHandle\.resume\(\)/);
   assert.match(host, /releasePausedSessions\(socket\)/);
+  assert.match(host, /const MAX_EXITED_SESSIONS = 20/);
+  assert.match(host, /exitClaimToken: exited\.claimToken/);
 });
 
-test('detached PTY host preserves a live session across client restarts', { timeout: 20_000 }, async (t) => {
+test('a failed connection to live host metadata does not replace it', async (t) => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-live-host-test-'));
+  const metadataPath = path.join(temporaryDirectory, 'host.json');
+  const metadata = {
+    protocol: 1,
+    pid: process.pid,
+    pipeName: `\\\\.\\pipe\\sideterm-pty-unresponsive-${process.pid}`,
+    token: 'b'.repeat(64)
+  };
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+  t.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
+
+  await assert.rejects(connectWindowsPtyHost({
+    metadataPath,
+    hostScript: path.join(temporaryDirectory, 'must-not-launch.cjs'),
+    executablePath: process.execPath,
+    timeoutMs: 150
+  }));
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(metadataPath, 'utf8')), metadata);
+});
+
+test('detached PTY host preserves a live session across client restarts', {
+  timeout: 20_000,
+  skip: process.platform !== 'win32'
+}, async (t) => {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-pty-test-'));
   const metadataPath = path.join(temporaryDirectory, 'host.json');
   const hostScript = path.join(__dirname, '..', 'electron', 'sessions', 'windows-pty-host.cjs');
@@ -163,7 +239,7 @@ test('detached PTY host preserves a live session across client restarts', { time
     "process.stdin.setEncoding('utf8')",
     "process.stdout.write('HOST_READY\\n')",
     "setTimeout(() => process.stdout.write('WHILE_DETACHED\\n'), 500)",
-    "process.stdin.on('data', (data) => process.stdout.write('HOST_ECHO:' + data))",
+    "process.stdin.on('data', (data) => { if (data.includes('EXIT_WHILE_DETACHED')) { process.stdout.write('EXIT_SCHEDULED\\n'); setTimeout(() => { process.stdout.write('FINAL_DETACHED\\n'); process.exit(9); }, 200); } else { process.stdout.write('HOST_ECHO:' + data); } })",
     'setInterval(() => {}, 1000)'
   ].join(';');
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'Path';
@@ -215,4 +291,18 @@ test('detached PTY host preserves a live session across client restarts', { time
   const afterPausedDisconnect = waitForOutput(handle, /HOST_ECHO:after-pause/);
   handle.write(`after-pause${os.EOL}`);
   await afterPausedDisconnect;
+
+  const exitScheduled = waitForOutput(handle, /EXIT_SCHEDULED/);
+  handle.write(`EXIT_WHILE_DETACHED${os.EOL}`);
+  await exitScheduled;
+  client.disconnect();
+  client = null;
+  handle = null;
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  handle = await client.createSession(options);
+  assert.equal(handle.pid, originalPid);
+  assert.match(await waitForOutput(handle, /FINAL_DETACHED/), /FINAL_DETACHED/);
+  assert.deepEqual(await waitForExit(handle), { exitCode: 9, signal: 0 });
 });
