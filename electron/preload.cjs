@@ -18,11 +18,15 @@ contextBridge.exposeInMainWorld('sideTerm', {
   close: (id) => ipcRenderer.send('terminal:close', id),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
-  acknowledgeData: (id, byteLength, replayClaimToken = '', replayDeliveryToken = '') => ipcRenderer.send('terminal:data-ack', {
-    id, byteLength, replayClaimToken, replayDeliveryToken
+  acknowledgeData: (id, byteLength, replayClaimToken = '', replayDeliveryToken = '', rendererDataDeliveryToken = '', exitClaimToken = '', exitDeliveryToken = '') => ipcRenderer.send('terminal:data-ack', {
+    id, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+    exitClaimToken, exitDeliveryToken
   }),
   onRemoteInput: (callback) => subscribe('terminal:remote-input', callback),
   onExit: (callback) => subscribe('terminal:exit', callback),
+  acknowledgeExit: (id, exitClaimToken = '', exitDeliveryToken = '') => ipcRenderer.send('terminal:exit-ack', {
+    id, exitClaimToken, exitDeliveryToken
+  }),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
   openPath: (targetPath) => ipcRenderer.invoke('shell:open-path', targetPath),

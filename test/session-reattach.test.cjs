@@ -141,7 +141,12 @@ test('main buffers output per session until the renderer-ready handshake flushes
   assert.match(renderer, /const details = await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
   assert.match(main, /rendererReplayInFlight = \{[\s\S]*?claimToken: replayClaimToken,[\s\S]*?deliveryToken: replayDeliveryToken/);
   assert.match(main, /terminal:data-ack'[\s\S]*?rendererReplayInFlight\?\.claimToken === String\(replayClaimToken[\s\S]*?rendererReplayInFlight\.deliveryToken === String\(replayDeliveryToken[\s\S]*?processHandle\.acknowledgeReplay/);
-  assert.match(renderer, /terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\(id, byteLength, replayClaimToken, replayDeliveryToken\);/);
+  assert.match(renderer, /terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\([\s\S]*?replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,[\s\S]*?exitClaimToken, exitDeliveryToken/);
+  assert.match(main, /function deliverDesktopExitedSession[\s\S]*?exitClaimToken: exited\.exitClaimToken[\s\S]*?exitDeliveryToken/);
+  assert.match(main, /terminal:exit-ack'[\s\S]*?acknowledgeDesktopExitedSession/);
+  assert.match(renderer, /api\.acknowledgeExit\(id, exitClaimToken, exitDeliveryToken\);/);
+  assert.match(main, /function requeueRendererOutput[\s\S]*?rendererOutputInFlight[\s\S]*?unacknowledged[\s\S]*?rendererReplay/);
+  assert.match(main, /rendererOutputInFlight\.findIndex[\s\S]*?rendererDataDeliveryToken/);
 });
 
 test('session creation shares pending work and a close cancels before registration', () => {

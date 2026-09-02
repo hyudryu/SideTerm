@@ -2874,14 +2874,36 @@ function resetTerminalOutputFlow() {
   for (const session of sessions.values()) session.rendererFlow?.reset();
 }
 
+function requeueRendererOutput(session) {
+  const inFlight = session?.rendererOutputInFlight || [];
+  if (inFlight.length > 0) {
+    const unacknowledged = inFlight.map((entry) => entry.data).join('');
+    session.rendererReplay = `${unacknowledged}${session.rendererReplay || ''}`.slice(-300_000);
+    session.rendererOutputInFlight = [];
+  }
+  if (session?.rendererReplayInFlight) {
+    session.rendererReplayClaimToken = session.rendererReplayInFlight.claimToken;
+    session.rendererReplayInFlight = null;
+  }
+}
+
 function detachTerminalRenderers() {
   for (const session of sessions.values()) {
     session.rendererAttached = false;
-    if (session.rendererReplayInFlight) {
-      session.rendererReplay = `${session.rendererReplayInFlight.data}${session.rendererReplay || ''}`.slice(-300_000);
-      session.rendererReplayClaimToken = session.rendererReplayInFlight.claimToken;
-      session.rendererReplayInFlight = null;
+    requeueRendererOutput(session);
+  }
+  for (const exited of desktopExitedSessions.values()) {
+    if (!exited.exitClaimToken) continue;
+    const unacknowledged = (exited.rendererOutputInFlight || []).map((entry) => entry.data).join('');
+    if (unacknowledged) {
+      exited.rendererReplay = `${unacknowledged}${exited.rendererReplay || ''}`.slice(-300_000);
+      exited.rendererOutputInFlight = [];
     }
+    exited.replayAcknowledged = !exited.rendererReplay;
+    exited.dataAcknowledged = exited.replayAcknowledged;
+    exited.exitAcknowledged = false;
+    exited.dataDeliveryToken = '';
+    exited.exitDeliveryToken = '';
   }
   resetTerminalOutputFlow();
 }
@@ -2890,7 +2912,9 @@ function sendTerminalData(id, data, rendererFlow = null, replayClaimToken = '') 
   if (!data) return false;
   const byteLength = Buffer.byteLength(data);
   const session = sessions.get(id);
-  const replayDeliveryToken = replayClaimToken ? crypto.randomUUID() : '';
+  const rendererDataDeliveryToken = crypto.randomUUID();
+  const replayDeliveryToken = replayClaimToken ? rendererDataDeliveryToken : '';
+  session?.rendererOutputInFlight.push({ deliveryToken: rendererDataDeliveryToken, data });
   if (replayClaimToken && session) {
     session.rendererReplayInFlight = {
       claimToken: replayClaimToken,
@@ -2898,14 +2922,51 @@ function sendTerminalData(id, data, rendererFlow = null, replayClaimToken = '') 
       data
     };
   }
-  send('terminal:data', { id, data, byteLength, replayClaimToken, replayDeliveryToken });
+  send('terminal:data', {
+    id, data, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken
+  });
   rendererFlow?.accept(byteLength);
+  return true;
+}
+
+function acknowledgeDesktopExitedSession(id, exited) {
+  if (!exited?.dataAcknowledged || !exited.exitAcknowledged) return;
+  exited.processHandle.acknowledgeExitedSession?.(exited.exitClaimToken);
+  if (desktopExitedSessions.get(id) === exited) desktopExitedSessions.delete(id);
+}
+
+function deliverDesktopExitedSession(id, exited) {
+  if (!exited?.exitClaimToken) return false;
+  exited.replayAcknowledged = !exited.rendererReplay;
+  exited.dataAcknowledged = exited.replayAcknowledged
+    && (exited.rendererOutputInFlight || []).length === 0;
+  exited.exitAcknowledged = false;
+  exited.dataDeliveryToken = exited.rendererReplay ? crypto.randomUUID() : '';
+  exited.exitDeliveryToken = crypto.randomUUID();
+  if (exited.rendererReplay) {
+    const byteLength = Buffer.byteLength(exited.rendererReplay);
+    send('terminal:data', {
+      id,
+      data: exited.rendererReplay,
+      byteLength,
+      exitClaimToken: exited.exitClaimToken,
+      exitDeliveryToken: exited.dataDeliveryToken
+    });
+  }
+  send('terminal:exit', {
+    id,
+    exitCode: exited.exitCode,
+    signal: exited.signal,
+    exitClaimToken: exited.exitClaimToken,
+    exitDeliveryToken: exited.exitDeliveryToken
+  });
   return true;
 }
 
 function markTerminalRendererReady(id) {
   const exited = desktopExitedSessions.get(id);
   if (exited) {
+    if (deliverDesktopExitedSession(id, exited)) return true;
     desktopExitedSessions.delete(id);
     sendTerminalData(id, exited.rendererReplay);
     send('terminal:exit', { id, exitCode: exited.exitCode, signal: exited.signal });
@@ -3677,6 +3738,7 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
     rendererReplay: '',
     rendererReplayClaimToken: '',
     rendererReplayInFlight: null,
+    rendererOutputInFlight: [],
     mobileRevision: 0,
     mobileOutputBuffer: '',
     pendingGithubPush: null,
@@ -3730,11 +3792,25 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
       forwardOutput(output, carriedClaimToken);
     }
   });
-  processHandle.onExit(({ exitCode, signal }) => {
+  processHandle.onExit(({ exitCode, signal, replay = '' }, exitClaimToken = '') => {
     if (sessions.get(id) !== session) {
       session.rendererFlow.dispose();
       outputNormalizer.dispose();
       return;
+    }
+    const rendererWasAttached = session.rendererAttached && terminalRendererCanAcknowledge();
+    let rendererOutputInFlight = [];
+    if (exitClaimToken) {
+      session.rendererAttached = false;
+      if (rendererWasAttached) {
+        rendererOutputInFlight = session.rendererOutputInFlight;
+        session.rendererOutputInFlight = [];
+        session.rendererReplayInFlight = null;
+        session.rendererReplayClaimToken = '';
+      } else {
+        requeueRendererOutput(session);
+      }
+      if (replay) forwardOutput(outputNormalizer.push(replay));
     }
     const replayClaimToken = pendingReplayClaimToken;
     pendingReplayClaimToken = '';
@@ -3747,7 +3823,22 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
         if (client.sideTermSessionId === id) sendMobileTerminalFrame(client, id);
       }
     }
-    if (!session.rendererAttached || !terminalRendererCanAcknowledge()) {
+    if (exitClaimToken) {
+      desktopExitedSessions.set(id, {
+        details: sessionDetails(id, session, { resumed, reattached: true }),
+        rendererReplay: takeRendererOutput(session),
+        exitCode,
+        signal,
+        exitClaimToken,
+        processHandle,
+        rendererOutputInFlight,
+        replayAcknowledged: false,
+        dataAcknowledged: false,
+        exitAcknowledged: false,
+        dataDeliveryToken: '',
+        exitDeliveryToken: ''
+      });
+    } else if (!session.rendererAttached || !terminalRendererCanAcknowledge()) {
       desktopExitedSessions.set(id, {
         details: sessionDetails(id, session, { resumed, reattached: true }),
         rendererReplay: takeRendererOutput(session),
@@ -3757,7 +3848,11 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
     }
     sessions.delete(id);
     session.rendererFlow.dispose();
-    if (!desktopExitedSessions.has(id)) send('terminal:exit', { id, exitCode, signal });
+    if (exitClaimToken && rendererWasAttached) {
+      deliverDesktopExitedSession(id, desktopExitedSessions.get(id));
+    } else if (!desktopExitedSessions.has(id)) {
+      send('terminal:exit', { id, exitCode, signal });
+    }
     broadcastMobile({ type: 'exit', id, exitCode, signal });
     broadcastMobileSnapshot();
   });
@@ -3770,6 +3865,8 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
 function closeSession(id) {
   const pendingCreation = pendingSessionCreations.get(id);
   if (pendingCreation) pendingCreation.cancelled = true;
+  const exitedSession = desktopExitedSessions.get(id);
+  exitedSession?.processHandle.acknowledgeExitedSession?.(exitedSession.exitClaimToken);
   desktopExitedSessions.delete(id);
   const session = sessions.get(id);
   const removedExitedSession = mobileExitedSessions.delete(id);
@@ -3849,15 +3946,45 @@ function registerIpc() {
     sessions.get(id)?.processHandle.write(data);
   });
   ipcMain.on('terminal:data-ack', (_event, {
-    id, byteLength, replayClaimToken, replayDeliveryToken
+    id, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+    exitClaimToken, exitDeliveryToken
   }) => {
     const session = sessions.get(String(id || ''));
     session?.rendererFlow.acknowledge(byteLength);
+    if (session) {
+      const deliveryIndex = session.rendererOutputInFlight.findIndex(
+        (entry) => entry.deliveryToken === String(rendererDataDeliveryToken || '')
+      );
+      if (deliveryIndex >= 0) session.rendererOutputInFlight.splice(deliveryIndex, 1);
+    }
     if (session?.rendererReplayInFlight?.claimToken === String(replayClaimToken || '')
       && session.rendererReplayInFlight.deliveryToken === String(replayDeliveryToken || '')) {
       session.rendererReplayInFlight = null;
       session.processHandle.acknowledgeReplay?.(String(replayClaimToken || ''));
     }
+    const exited = desktopExitedSessions.get(String(id || ''));
+    if (exited && rendererDataDeliveryToken) {
+      const deliveryIndex = (exited.rendererOutputInFlight || []).findIndex(
+        (entry) => entry.deliveryToken === String(rendererDataDeliveryToken)
+      );
+      if (deliveryIndex >= 0) exited.rendererOutputInFlight.splice(deliveryIndex, 1);
+    }
+    if (exited?.exitClaimToken === String(exitClaimToken || '')
+      && exited.dataDeliveryToken === String(exitDeliveryToken || '')) {
+      exited.replayAcknowledged = true;
+    }
+    if (exited) {
+      exited.dataAcknowledged = exited.replayAcknowledged
+        && (exited.rendererOutputInFlight || []).length === 0;
+      acknowledgeDesktopExitedSession(String(id || ''), exited);
+    }
+  });
+  ipcMain.on('terminal:exit-ack', (_event, { id, exitClaimToken, exitDeliveryToken }) => {
+    const exited = desktopExitedSessions.get(String(id || ''));
+    if (exited?.exitClaimToken !== String(exitClaimToken || '')
+      || exited.exitDeliveryToken !== String(exitDeliveryToken || '')) return;
+    exited.exitAcknowledged = true;
+    acknowledgeDesktopExitedSession(String(id || ''), exited);
   });
   ipcMain.on('terminal:resize', (_event, { id, cols, rows }) => {
     const session = sessions.get(id);

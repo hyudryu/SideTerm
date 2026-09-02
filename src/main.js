@@ -3245,7 +3245,10 @@ sessionList.addEventListener('drop', (event) => {
 
 sessionList.addEventListener('dragend', cleanupDrag);
 
-api.onData(({ id, data, byteLength, replayClaimToken, replayDeliveryToken }) => {
+api.onData(({
+  id, data, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+  exitClaimToken, exitDeliveryToken
+}) => {
   const session = sessions.get(id);
   if (!session) {
     api.acknowledgeData(id, byteLength);
@@ -3254,7 +3257,10 @@ api.onData(({ id, data, byteLength, replayClaimToken, replayDeliveryToken }) => 
   session.terminal.write(data, () => {
     noteSessionBusy(session, data);
     noteBackgroundActivity(session, data);
-    api.acknowledgeData(id, byteLength, replayClaimToken, replayDeliveryToken);
+    api.acknowledgeData(
+      id, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+      exitClaimToken, exitDeliveryToken
+    );
   });
   recordSessionResponse(session, data);
   appendSessionContext(session, data);
@@ -3265,7 +3271,7 @@ api.onRemoteInput(({ id, data }) => {
   if (session && !session.exited) trackTerminalInput(session, data);
 });
 
-api.onExit(({ id, exitCode }) => {
+api.onExit(({ id, exitCode, exitClaimToken, exitDeliveryToken }) => {
   const session = sessions.get(id);
   if (!session) return;
   session.exited = true;
@@ -3288,6 +3294,7 @@ api.onExit(({ id, exitCode }) => {
   if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
   else updateVisualState();
   schedulePersist();
+  api.acknowledgeExit(id, exitClaimToken, exitDeliveryToken);
 });
 
 new ResizeObserver((entries) => fitActiveForResize(entries[0])).observe(terminalStack);

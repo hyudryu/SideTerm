@@ -64,7 +64,8 @@ function waitForExit(handle, timeoutMs = 5_000) {
       subscription?.dispose();
       reject(new Error('Timed out waiting for the PTY to exit.'));
     }, timeoutMs);
-    subscription = handle.onExit((event) => {
+    subscription = handle.onExit((event, exitClaimToken) => {
+      if (exitClaimToken) handle.acknowledgeExitedSession(exitClaimToken);
       clearTimeout(timer);
       subscription?.dispose();
       resolve(event);
@@ -115,17 +116,25 @@ test('exit events received before handle registration are delivered after creati
       id: 'instant-exit', pid: 43, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'instant-generation'
     } },
     { type: 'data', id: 'instant-exit', generation: 'instant-generation', data: Buffer.from('last output').toString('base64') },
-    { type: 'exit', id: 'instant-exit', generation: 'instant-generation', exitCode: 7, signal: 0 }
+    {
+      type: 'exit', id: 'instant-exit', generation: 'instant-generation', exitCode: 7, signal: 0,
+      replay: Buffer.from('tail output').toString('base64'), exitClaimToken: 'instant-claim'
+    }
   ].map((message) => JSON.stringify(message)).join('\n') + '\n');
 
   const handle = await handlePromise;
   let data = '';
   let exit = null;
+  let exitClaimToken = '';
   handle.onData((chunk) => { data += chunk; });
-  handle.onExit((event) => { exit = event; });
+  handle.onExit((event, claimToken) => {
+    exit = event;
+    exitClaimToken = claimToken;
+  });
 
   assert.equal(data, 'last output');
-  assert.deepEqual(exit, { exitCode: 7, signal: 0 });
+  assert.deepEqual(exit, { exitCode: 7, signal: 0, replay: 'tail output' });
+  assert.equal(exitClaimToken, 'instant-claim');
   assert.equal(client.handles.has('instant-exit'), false);
   assert.equal(client.orphanExits.size, 0);
 });
@@ -153,13 +162,19 @@ test('collected exit tombstones are acknowledged only after replay and exit deli
 
   const handle = await WindowsPtyHostClient.prototype.createSession.call(client, {});
   let exit = null;
-  handle.onExit((event) => { exit = event; });
+  let deliveredExitClaimToken = '';
+  handle.onExit((event, exitClaimToken) => {
+    exit = event;
+    deliveredExitClaimToken = exitClaimToken;
+  });
   assert.deepEqual(commands, []);
   let output = '';
   handle.onData((data) => { output += data; });
 
   assert.equal(output, 'final output');
   assert.deepEqual(exit, { exitCode: 9, signal: 0 });
+  assert.deepEqual(commands, []);
+  handle.acknowledgeExitedSession(deliveredExitClaimToken);
   assert.deepEqual(commands, [{
     action: 'ack-exited', id: 'exited-session', generation: 'exited-generation', claimToken: 'claim-token'
   }]);

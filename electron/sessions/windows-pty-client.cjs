@@ -129,17 +129,15 @@ class WindowsPtyHandle {
       this.pendingReplayClaimToken = '';
       listener(data, replayClaimToken);
     }
-    this.acknowledgeExitedSession();
     return { dispose: () => this.dataListeners.delete(listener) };
   }
 
   onExit(listener) {
     this.exitListeners.add(listener);
     if (this.pendingExit) {
-      listener(this.pendingExit);
+      listener(this.pendingExit, this.exitClaimToken);
       this.exitDelivered = true;
     }
-    this.acknowledgeExitedSession();
     return { dispose: () => this.exitListeners.delete(listener) };
   }
 
@@ -172,9 +170,8 @@ class WindowsPtyHandle {
     this.exitListeners.clear();
   }
 
-  acknowledgeExitedSession() {
-    if (!this.exitClaimToken || !this.exitDelivered || this.pendingData) return;
-    const claimToken = this.exitClaimToken;
+  acknowledgeExitedSession(claimToken) {
+    if (!claimToken || claimToken !== this.exitClaimToken) return;
     this.exitClaimToken = '';
     this.client.command({
       action: 'ack-exited', id: this.id, generation: this.generation, claimToken
@@ -196,15 +193,13 @@ class WindowsPtyHandle {
       return;
     }
     for (const listener of this.dataListeners) listener(data, replayClaimToken);
-    this.acknowledgeExitedSession();
   }
 
   emitExit(event) {
     this.pendingExit = event;
-    for (const listener of this.exitListeners) listener(event);
+    for (const listener of this.exitListeners) listener(event, this.exitClaimToken);
     if (this.exitListeners.size > 0) {
       this.exitDelivered = true;
-      this.acknowledgeExitedSession();
     }
     this.client.handles.delete(this.id);
   }
@@ -283,11 +278,11 @@ class WindowsPtyHostClient {
       const replay = Buffer.from(String(message.replay || ''), 'base64').toString('utf8');
       if (handle && (!generation || handle.generation === generation)) {
         handle.exitClaimToken = event.exitClaimToken;
-        if (replay) handle.emitData(replay);
-        handle.emitExit({ exitCode: event.exitCode, signal: event.signal });
+        const exitEvent = { exitCode: event.exitCode, signal: event.signal };
+        if (replay) exitEvent.replay = replay;
+        handle.emitExit(exitEvent);
       } else {
-        if (replay) this.orphanData.set(key, `${this.orphanData.get(key) || ''}${replay}`.slice(-300_000));
-        this.orphanExits.set(key, event);
+        this.orphanExits.set(key, { ...event, replay });
       }
     }
   }
@@ -362,15 +357,17 @@ class WindowsPtyHostClient {
       handle.emitData('', handle.replayClaimToken);
     }
     const orphanExit = this.orphanExits.get(key);
-    const pendingExit = orphanExit || (details.exited ? {
+    const pendingExit = details.exited ? {
       exitCode: Number(details.exitCode),
       signal: Number(details.signal),
       exitClaimToken: String(details.exitClaimToken || '')
-    } : null);
+    } : orphanExit;
     if (pendingExit) {
       this.orphanExits.delete(key);
       handle.exitClaimToken = pendingExit.exitClaimToken;
-      handle.emitExit({ exitCode: pendingExit.exitCode, signal: pendingExit.signal });
+      const exitEvent = { exitCode: pendingExit.exitCode, signal: pendingExit.signal };
+      if (!details.exited && pendingExit.replay) exitEvent.replay = pendingExit.replay;
+      handle.emitExit(exitEvent);
     }
     return handle;
   }
