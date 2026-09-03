@@ -387,6 +387,7 @@ export function parseSavedWorkspace(raw) {
         shell: typeof session.shell === 'string' ? session.shell : 'shell',
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         exited: Boolean(session.exited),
+        exitCheckpointConfirmed: Boolean(session.exitCheckpointConfirmed),
         history: typeof session.history === 'string' ? session.history : '',
         terminalState,
         mobileTerminalState,

@@ -165,7 +165,7 @@ test('main buffers output per session until the renderer-ready handshake flushes
   assert.match(main, /if \(session\.rendererAttached && terminalRendererCanAcknowledge\(\)\) \{[\s\S]*?sendTerminalData\(\s*id, data, session\.rendererFlow, replayClaimToken, hostGeneration, outputRevision\s*\);[\s\S]*?\} else \{\s*bufferRendererOutput\(session, data\);/);
   assert.match(main, /ipcMain\.handle\('terminal:renderer-ready'[\s\S]*?markTerminalRendererReady/);
   assert.match(preload, /markRendererReady: \(id\) => ipcRenderer\.invoke\('terminal:renderer-ready', id\)/);
-  assert.match(renderer, /const details = await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
+  assert.match(renderer, /details \|\|= await api\.createSession[\s\S]*?await api\.markRendererReady\(id\);/);
   assert.match(main, /rendererReplayInFlight = \{[\s\S]*?claimToken: replayClaimToken,[\s\S]*?deliveryToken: replayDeliveryToken/);
   assert.match(main, /terminal:data-ack'[\s\S]*?rendererReplayInFlight\?\.claimToken === String\(replayClaimToken[\s\S]*?rendererReplayInFlight\.deliveryToken === String\(replayDeliveryToken[\s\S]*?processHandle\.acknowledgeReplay/);
   assert.match(renderer, /terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\([\s\S]*?replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,[\s\S]*?exitClaimToken, exitDeliveryToken/);
@@ -192,7 +192,7 @@ test('session creation shares pending work and a close cancels before registrati
   assert.match(main, /const pendingSession = pendingSessionCreations\.get\(id\);\s*if \(pendingSession\) return pendingSession\.promise;/);
   assert.match(main, /if \(pendingCreation\.cancelled\) \{[\s\S]*?await processHandle\.kill\(\);[\s\S]*?closed before creation completed/);
   assert.match(main, /const pendingCreation = pendingSessionCreations\.get\(id\);\s*if \(pendingCreation\) \{\s*pendingCreation\.cancelled = true;[\s\S]*?await pendingCreation\.promise/);
-  assert.match(renderer, /const details = await api\.createSession[\s\S]*?if \(sessions\.get\(id\) !== session\) return session;[\s\S]*?await api\.markRendererReady\(id\);\s*if \(sessions\.get\(id\) !== session\) return session;/);
+  assert.match(renderer, /details \|\|= await api\.createSession[\s\S]*?if \(sessions\.get\(id\) !== session\) return session;[\s\S]*?await api\.markRendererReady\(id\);\s*if \(sessions\.get\(id\) !== session\) return session;/);
 });
 
 test('renderer durably saves a new session id before asking the PTY host to spawn it', () => {
@@ -200,7 +200,7 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
   const persist = renderer.indexOf('await persistWorkspaceNow({ required: true });', renderer.indexOf('async function addSession('));
-  const spawn = renderer.indexOf('const details = await api.createSession', persist);
+  const spawn = renderer.indexOf('details ||= await api.createSession', persist);
 
   assert.ok(persist >= 0);
   assert.ok(spawn > persist);
@@ -211,23 +211,27 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(renderer, /const enqueueWorkspacePersistence = createSerializedAsyncQueue\(\);[\s\S]*?function persistWorkspaceNow\(options = \{\}\)[\s\S]*?enqueueWorkspacePersistence\(\(\) => persistWorkspaceSnapshot\(options\)\)/);
   assert.match(renderer, /function acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\) \{\s*if \(session\.checkpointRetired \|\| sessions\.get\(session\.id\) !== session\) return;\s*pendingTerminalCheckpointAcknowledgements\.push\(\{[\s\S]*?id: session\.id, session,[\s\S]*?hostGeneration: String\(hostGeneration \|\| ''\), outputRevision, acknowledge/);
   assert.match(renderer, /const acknowledgementGroups = groupTerminalCheckpointAcknowledgements\([\s\S]*?activeTerminalCheckpointAcknowledgements\(acknowledgements, sessions\)[\s\S]*?for \(const \{ id, acknowledgements: sessionAcknowledgements \} of acknowledgementGroups\)[\s\S]*?protectedCheckpointSessionIds: new Set\(\[id\]\)[\s\S]*?activeTerminalCheckpointAcknowledgements\(activeAcknowledgements, sessions\)/);
+  assert.match(renderer, /if \(persistedCheckpointCoversDelivery\(session, entry\)\) \{\s*try \{\s*await entry\.acknowledge\(\);\s*\} catch \{\s*unsatisfied\.push\(entry\);/);
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}[\s\S]*?if \(pendingTerminalCheckpointAcknowledgements\.length > 0\) \{\s*await flushTerminalCheckpointAcknowledgements\(\{ forceSave: true \}\);/);
   assert.match(renderer, /cursorBlink: false,\s*disableStdin: true,/);
   assert.match(renderer, /const serializeAddon = new SerializeAddon\(\);[\s\S]*?terminal\.loadAddon\(serializeAddon\)/);
   assert.match(renderer, /const terminalCheckpoint = serializedTerminalCheckpoint\(session\);[\s\S]*?terminalState: terminalCheckpoint\.state,\s*mobileTerminalState: terminalCheckpoint\.mobileState,\s*terminalStateCols: session\.terminal\.cols,\s*terminalStateRows: session\.terminal\.rows,\s*hostGeneration: terminalCheckpoint\.hostGeneration,\s*durableOutputRevision: terminalCheckpoint\.outputRevision/);
-  assert.match(renderer, /cwd: session\.cwd,\s*exited: Boolean\(session\.exited\),\s*history: terminalHistory\(session\.terminal\)/);
+  assert.match(renderer, /cwd: session\.cwd,\s*exited: Boolean\(session\.exitObserved\),\s*exitCheckpointConfirmed: Boolean\(session\.exitCheckpointConfirmed\),\s*history: terminalHistory\(session\.terminal\)/);
   assert.match(renderer, /const checkpointSidecars = new Map\(\);[\s\S]*?for \(const id of protectedCheckpointSessionIds\)[\s\S]*?await api\.saveTerminalCheckpoint\(checkpoint\);[\s\S]*?serializeWorkspaceWithinBudget\(workspaceRecord\)/);
   assert.match(renderer, /serializeAddon\.serialize\(\{ scrollback: LIVE_TERMINAL_SCROLLBACK_LINES \}\)/);
   assert.match(renderer, /for \(const id of restoreOrder\)[\s\S]*?const saved = applyTerminalCheckpointBackups\(\s*\{ sessions: \[savedDescriptor\] \}, api\.getTerminalCheckpointSync\(id\)\s*\)[\s\S]*?await addSession/);
-  assert.match(renderer, /const restoredTerminalState = decodeTerminalState\(options\.terminalState\);[\s\S]*?const details = await api\.createSession[\s\S]*?const canRestoreTerminalState = Boolean\(restoredTerminalState[\s\S]*?nextHostGeneration === savedHostGeneration[\s\S]*?details\.reattached \|\| details\.exited[\s\S]*?terminal\.write\(restoredTerminalState, resolve\)[\s\S]*?safeHistory/);
-  assert.match(renderer, /if \(options\.exited\) \{[\s\S]*?terminal\.write\(stoppedOutput, resolve\)[\s\S]*?await api\.cleanupStopped\(id, session\.hostGeneration, \{[\s\S]*?terminalState: mobileStoppedOutput,[\s\S]*?\} else \{\s*const details = await api\.createSession/);
-  assert.match(preload, /cleanupStopped: \(id, hostGeneration, snapshot = \{\}\) => ipcRenderer\.invoke\('terminal:cleanup-stopped'/);
-  assert.match(main, /async function cleanupStoppedSession\(id, hostGeneration, snapshot = \{\}\)[\s\S]*?mobileExitedSessions\.set\(sessionId[\s\S]*?liveSession\.processHandle\?\.generation[\s\S]*?await exitedSession\.processHandle\.kill\(\)[\s\S]*?client\.cleanupExitedSession\(sessionId, generation\)/);
+  assert.match(renderer, /exited: saved\.exited,\s*exitCheckpointConfirmed: saved\.exitCheckpointConfirmed,/);
+  assert.match(renderer, /const restoredTerminalState = decodeTerminalState\(options\.terminalState\);[\s\S]*?details \|\|= await api\.createSession[\s\S]*?const canRestoreTerminalState = Boolean\(restoredTerminalState[\s\S]*?nextHostGeneration === savedHostGeneration[\s\S]*?details\.reattached \|\| details\.exited[\s\S]*?terminal\.write\(restoredTerminalState, resolve\)[\s\S]*?safeHistory/);
+  assert.match(renderer, /let details = options\.exited \? await api\.restoreStoppedSession\(\{[\s\S]*?terminalStateCols: restoredStateCols,[\s\S]*?exitCheckpointConfirmed: session\.exitCheckpointConfirmed[\s\S]*?if \(details\?\.stopped\) \{[\s\S]*?terminal\.write\(stoppedOutput, resolve\)/);
+  assert.match(preload, /restoreStoppedSession: \(options\) => ipcRenderer\.invoke\('terminal:restore-stopped'/);
+  assert.match(preload, /cleanupStopped: \(id, hostGeneration, snapshot = \{\}, retainMobile = true\) => ipcRenderer\.invoke\('terminal:cleanup-stopped'/);
+  assert.match(main, /async function restoreStoppedSession[\s\S]*?tmuxSessionExists\(tmux, tmuxSession\)[\s\S]*?return createSession\(options\)[\s\S]*?process\.platform === 'win32' && !confirmedCheckpoint[\s\S]*?return createSession\(options\)[\s\S]*?cleanupStoppedSession/);
+  assert.match(main, /async function cleanupStoppedSession\(id, hostGeneration, snapshot = \{\}, \{ retainMobile = true \} = \{\}\)[\s\S]*?mobileExitedSessions\.set\(sessionId[\s\S]*?liveSession\.processHandle\?\.generation[\s\S]*?await exitedSession\.processHandle\.kill\(\)[\s\S]*?client\.cleanupExitedSession\(sessionId, generation\)/);
   assert.match(renderer, /checkpointGeneration: session\.hostGeneration,\s*checkpointRevision: session\.durableOutputRevision/);
   assert.match(renderer, /checkpointRevision: session\.durableOutputRevision,\s*terminalState: restoredTerminalState/);
   assert.match(renderer, /async function closeSession\(id, \{ ensureSession = true \} = \{\}\)[\s\S]*?await api\.close\(id\)[\s\S]*?sessions\.delete\(id\)/);
   assert.match(renderer, /session\.closing = true;\s*try \{[\s\S]*?await api\.close\(id\);[\s\S]*?session\.checkpointRetired = true;[\s\S]*?pendingTerminalCheckpointAcknowledgements\.splice/);
-  assert.match(renderer, /session\.closing = true;\s*try \{\s*if \(session\.exited && session\.hostGeneration\) \{\s*await api\.cleanupStopped\(id, session\.hostGeneration\);\s*\} else \{\s*await api\.close\(id\);/);
+  assert.match(renderer, /session\.closing = true;\s*try \{\s*if \(session\.exited\) \{\s*await api\.cleanupStopped\(id, session\.hostGeneration, \{\}, false\);\s*\} else \{\s*await api\.close\(id\);/);
   assert.match(main, /await session\.processHandle\.kill\(\);\s*\} catch \(error\) \{\s*if \(session\.windowsHosted\) throw error;/);
   assert.match(main, /if \(exitedSession\?\.exitClaimToken[\s\S]*?await exitedSession\.processHandle\.kill\(\);[\s\S]*?desktopExitedSessions\.delete\(id\)/);
   assert.match(renderer, /function serializedTerminalCheckpoint\(session\) \{\s*if \(!session\.hostGeneration\)[\s\S]*?state: '', mobileState: ''/);
@@ -235,7 +239,13 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(main, /terminalSessionDrainActive = true;[\s\S]*?await Promise\.allSettled\(\[\.\.\.pendingTerminalCloseOperations\]\)[\s\S]*?detachAllSessionsPromise = null/);
   assert.match(main, /ipcMain\.handle\('terminal:close'[\s\S]*?if \(terminalSessionDrainActive\) throw new Error/);
   assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?session\.durableOutputRevision = Math\.max\(session\.durableOutputRevision, outputRevision\);[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\)/);
-  assert.match(renderer, /api\.onExit\(\(\{[\s\S]*?hostGeneration = '', outputRevision = 0[\s\S]*?session\.terminal\.write\([\s\S]*?const acknowledge = \(\) => api\.acknowledgeExit[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\)/);
+  assert.match(renderer, /api\.onExit\(\(\{[\s\S]*?session\.exitObserved = true;[\s\S]*?session\.exitCheckpointConfirmed = false;[\s\S]*?const acknowledge = async \(\) => \{[\s\S]*?session\.exitCheckpointConfirmed = true;[\s\S]*?await persistWorkspaceNow\(\{[\s\S]*?protectedCheckpointSessionIds: new Set\(\[id\]\)[\s\S]*?acknowledgeExit\(\);[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\)/);
+  assert.match(renderer, /catch \(error\) \{\s*if \(sessions\.get\(id\) !== session\) return session;\s*session\.exited = true;[\s\S]*?Could not start the shell/);
+  const startupFailure = renderer.slice(
+    renderer.indexOf('} catch (error) {', renderer.indexOf('async function addSession(')),
+    renderer.indexOf('if (options.activate !== false)', renderer.indexOf('async function addSession('))
+  );
+  assert.doesNotMatch(startupFailure, /exitObserved/);
   assert.match(renderer, /terminal\.onData\(\(data\) => \{\s*if \(session\.exited \|\| session\.connecting\) return;/);
   assert.match(renderer, /await api\.markRendererReady\(id\);[\s\S]*?if \(!details\.exited\) \{\s*session\.connecting = false;\s*terminal\.options\.disableStdin = false;\s*api\.resize\(id, terminal\.cols, terminal\.rows\);/);
 });

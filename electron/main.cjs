@@ -4089,12 +4089,12 @@ async function closeSession(id) {
   }
 }
 
-async function cleanupStoppedSession(id, hostGeneration, snapshot = {}) {
+async function cleanupStoppedSession(id, hostGeneration, snapshot = {}, { retainMobile = true } = {}) {
   const sessionId = String(id || '');
   const generation = String(hostGeneration || '');
-  if (!sessionId || !generation) return false;
+  if (!sessionId) return false;
 
-  if (!mobileExitedSessions.has(sessionId)) {
+  if (retainMobile && !mobileExitedSessions.has(sessionId)) {
     mobileExitedSessions.set(sessionId, {
       data: String(snapshot.terminalState || '').slice(-MOBILE_RESTORED_STATE_MAX_CHARACTERS),
       exitCode: null,
@@ -4107,6 +4107,12 @@ async function cleanupStoppedSession(id, hostGeneration, snapshot = {}) {
       mobileExitedSessions.delete(mobileExitedSessions.keys().next().value);
     }
     broadcastMobileSnapshot();
+  }
+
+  if (!generation) {
+    if (!retainMobile) mobileExitedSessions.delete(sessionId);
+    broadcastMobileSnapshot();
+    return true;
   }
 
   const liveSession = sessions.get(sessionId);
@@ -4136,8 +4142,37 @@ async function cleanupStoppedSession(id, hostGeneration, snapshot = {}) {
       await client.cleanupExitedSession(sessionId, generation);
     }
   }
+  if (!retainMobile) mobileExitedSessions.delete(sessionId);
   broadcastMobileSnapshot();
   return true;
+}
+
+async function restoreStoppedSession(options = {}) {
+  const id = String(options.id || '');
+  if (!id) throw new Error('A session id is required.');
+  const tmux = tmuxRuntime();
+  const tmuxSession = tmux ? tmuxSessionName(id) : '';
+  if (tmux && tmuxSessionExists(tmux, tmuxSession)) {
+    desktopExitedSessions.delete(id);
+    return createSession(options);
+  }
+
+  const confirmedCheckpoint = options.exitCheckpointConfirmed === true;
+  if (process.platform === 'win32' && !confirmedCheckpoint) {
+    return createSession(options);
+  }
+
+  desktopExitedSessions.delete(id);
+  try {
+    await cleanupStoppedSession(id, options.checkpointGeneration, {
+      terminalState: options.mobileTerminalState,
+      cols: options.terminalStateCols,
+      rows: options.terminalStateRows
+    });
+  } catch {
+    // The persisted stopped pane remains usable and closing it retries cleanup.
+  }
+  return { id, stopped: true, exited: true };
 }
 
 function detachAllSessions() {
@@ -4201,6 +4236,7 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('terminal:create', (_event, options) => createSession(options));
+  ipcMain.handle('terminal:restore-stopped', (_event, options) => restoreStoppedSession(options));
   ipcMain.handle('terminal:renderer-ready', (_event, id) => markTerminalRendererReady(String(id || '')));
   ipcMain.on('terminal:write', (_event, { id, data }) => {
     sessions.get(id)?.processHandle.write(data);
@@ -4286,9 +4322,9 @@ function registerIpc() {
     return operation;
   });
   ipcMain.handle('terminal:cleanup-stopped', (_event, {
-    id, hostGeneration, terminalState, cols, rows
+    id, hostGeneration, terminalState, cols, rows, retainMobile = true
   } = {}) => (
-    cleanupStoppedSession(id, hostGeneration, { terminalState, cols, rows })
+    cleanupStoppedSession(id, hostGeneration, { terminalState, cols, rows }, { retainMobile })
   ));
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);
