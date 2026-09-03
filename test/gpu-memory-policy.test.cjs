@@ -18,8 +18,12 @@ test('terminal output is acknowledged after xterm finishes parsing it', () => {
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
   assert.match(electronMain, /rendererFlow: createOutputFlowControl\(processHandle\)/);
   assert.match(electronMain, /ipcMain\.on\('terminal:data-ack'/);
-  assert.match(preload, /acknowledgeData: \(id, byteLength\)/);
-  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\(id, byteLength\)/);
+  assert.match(preload, /acknowledgeData: \(id, byteLength, replayClaimToken = '', replayDeliveryToken = '', rendererDataDeliveryToken = '', exitClaimToken = '', exitDeliveryToken = ''\)/);
+  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?api\.acknowledgeData\([\s\S]*?exitClaimToken, exitDeliveryToken/);
+  assert.match(renderer, /if \(replayClaimToken \|\| exitClaimToken\) \{\s*acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\)/);
+  assert.match(renderer, /function flushTerminalCheckpointAcknowledgements[\s\S]*?await persistWorkspaceNow\(\{[\s\S]*?required: true,[\s\S]*?protectedCheckpointSessionIds:[\s\S]*?persistedCheckpointCoversDelivery\(session, entry\)[\s\S]*?entry\.acknowledge\(\)/);
+  assert.match(renderer, /function scheduleTerminalCheckpointRetry[\s\S]*?Math\.min\(30_000, terminalCheckpointRetryDelayMs \* 2\)[\s\S]*?flushTerminalCheckpointAcknowledgements\(\)/);
+  assert.match(renderer, /else if \(!checkpointSucceeded\) \{\s*scheduleTerminalCheckpointRetry\(\);/);
 });
 
 test('background compositor work is throttled except while desktop voice is listening', () => {

@@ -33,5 +33,5 @@ test('terminal bells cannot notify before their rendered activity frame is evalu
   const bellHandler = renderer.match(/terminal\.onBell\(\(\) => \{[\s\S]*?\n  \}\);/)?.[0] || '';
   assert.ok(bellHandler);
   assert.doesNotMatch(bellHandler, /markSessionNotification/);
-  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{\s*noteSessionBusy\(session, data\);\s*noteBackgroundActivity\(session, data\);/);
+  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?noteSessionBusy\(session, data\);\s*noteBackgroundActivity\(session, data\);/);
 });

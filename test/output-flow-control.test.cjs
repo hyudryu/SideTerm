@@ -47,3 +47,16 @@ test('dispose clears accounting without resuming an exiting process', () => {
   assert.deepEqual(calls, { pause: 1, resume: 0 });
   assert.deepEqual(flow.snapshot(), { pendingBytes: 0, paused: false, disposed: true });
 });
+
+test('accepted byte totals survive replay joins that combine split surrogate pairs', () => {
+  const { calls, flow } = fixture();
+  const chunks = Array.from({ length: 20 }, () => ['\ud83d', '\ude42']).flat();
+  const acceptedBytes = chunks.map((chunk) => Buffer.byteLength(chunk));
+  for (const byteLength of acceptedBytes) flow.accept(byteLength);
+  assert.equal(flow.snapshot().pendingBytes, 120);
+  assert.equal(Buffer.byteLength(chunks.join('')), 80);
+
+  flow.acknowledge(acceptedBytes.reduce((total, byteLength) => total + byteLength, 0));
+  assert.deepEqual(flow.snapshot(), { pendingBytes: 0, paused: false, disposed: false });
+  assert.deepEqual(calls, { pause: 1, resume: 1 });
+});

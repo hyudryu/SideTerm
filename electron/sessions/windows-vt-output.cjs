@@ -90,11 +90,59 @@ function createWindowsVtOutputNormalizer({
 
     get repairing() {
       return repairing;
+    },
+
+    get hasPending() {
+      return Boolean(pending);
+    }
+  };
+}
+
+function createReplayAwareWindowsVtOutputNormalizer({ onOutput = () => {}, ...options } = {}) {
+  let pendingReplay = null;
+  const replayMetadata = (replay) => replay ? {
+    claimToken: replay.claimToken,
+    hostGeneration: replay.hostGeneration,
+    outputRevision: replay.outputRevision
+  } : {};
+  const normalizer = createWindowsVtOutputNormalizer({
+    ...options,
+    onOutput: (data) => {
+      const replay = pendingReplay;
+      pendingReplay = null;
+      onOutput(`${replay?.data || ''}${data}`, replayMetadata(replay));
+    }
+  });
+
+  return {
+    push(value, replay = null) {
+      const carriedReplay = replay?.claimToken ? replay : pendingReplay;
+      const bufferedReplayData = pendingReplay?.data || '';
+      const output = normalizer.push(value);
+      if (carriedReplay && normalizer.hasPending) {
+        pendingReplay = { ...carriedReplay, data: `${bufferedReplayData}${output}` };
+        return;
+      }
+      pendingReplay = null;
+      onOutput(`${bufferedReplayData}${output}`, replayMetadata(carriedReplay));
+    },
+
+    flush() {
+      const replay = pendingReplay;
+      pendingReplay = null;
+      const output = `${replay?.data || ''}${normalizer.flush()}`;
+      if (output || replay?.claimToken) onOutput(output, replayMetadata(replay));
+    },
+
+    dispose() {
+      pendingReplay = null;
+      normalizer.dispose();
     }
   };
 }
 
 module.exports = {
+  createReplayAwareWindowsVtOutputNormalizer,
   createWindowsVtOutputNormalizer,
   repairWindowsVtOutput,
   sentinelPrefixLength,
