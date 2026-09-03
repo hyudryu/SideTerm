@@ -199,6 +199,35 @@ test('workspace budgeting drops generationless snapshots before usable history',
   assert.equal(result.workspace.sessions[0].history, 'usable history');
 });
 
+test('workspace budgeting drops generation-bound snapshots before fallback history', () => {
+  const workspace = {
+    version: WORKSPACE_VERSION,
+    savedAt: 1,
+    groups: [{ id: 'group', sessionIds: ['windows'] }],
+    sessions: [{
+      id: 'windows', groupId: 'group', history: 'fallback history',
+      terminalState: 'x'.repeat(2_000), mobileTerminalState: 'mobile',
+      hostGeneration: 'windows-host', durableOutputRevision: 12,
+      exitCheckpointConfirmed: true, links: []
+    }],
+    activeId: 'windows',
+    activeGroupId: 'group'
+  };
+  const withoutSnapshot = structuredClone(workspace);
+  Object.assign(withoutSnapshot.sessions[0], {
+    terminalState: '', mobileTerminalState: '', hostGeneration: '', durableOutputRevision: 0
+  });
+  const maximumBytes = new TextEncoder().encode(JSON.stringify(withoutSnapshot)).byteLength;
+
+  const result = serializeWorkspaceWithinBudget(workspace, maximumBytes);
+
+  assert.equal(result.workspace.sessions[0].terminalState, '');
+  assert.equal(result.workspace.sessions[0].hostGeneration, '');
+  assert.equal(result.workspace.sessions[0].durableOutputRevision, 0);
+  assert.equal(result.workspace.sessions[0].exitCheckpointConfirmed, true);
+  assert.equal(result.workspace.sessions[0].history, 'fallback history');
+});
+
 function fixture() {
   const first = createGroup('first', 'First');
   const second = createGroup('second', 'Second');
@@ -278,7 +307,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', terminalState: '\u001b[?1049hfull screen', terminalStateCols: 132, terminalStateRows: 41, hostGeneration: 'generation-a', durableOutputRevision: 17, notified: true, inputRequired: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, lastAiContextActivityAt: 1220, staleAiSummaryDone: true, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', exited: true, exitCheckpointConfirmed: true, history: 'hello', terminalState: '\u001b[?1049hfull screen', terminalStateCols: 132, terminalStateRows: 41, hostGeneration: 'generation-a', durableOutputRevision: 17, notified: true, inputRequired: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, lastAiContextActivityAt: 1220, staleAiSummaryDone: true, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
@@ -294,6 +323,8 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.activeGroupId, 'first');
   assert.equal(saved.sessions[0].displayName, 'API work');
   assert.equal(saved.sessions[0].manualTitle, true);
+  assert.equal(saved.sessions[0].exited, true);
+  assert.equal(saved.sessions[0].exitCheckpointConfirmed, true);
   assert.equal(saved.sessions[0].attentionCycleId, 'cycle-a');
   assert.equal(saved.sessions[0].inputRequired, true);
   assert.equal(saved.sessions[0].activityArmed, true);
@@ -375,7 +406,7 @@ test('per-session checkpoint sidecars overlay workspace sessions without replaci
     version: WORKSPACE_VERSION,
     groups: [],
     sessions: [
-      { id: 'dropped-inline', hostGeneration: '', durableOutputRevision: 0, terminalState: '' },
+      { id: 'dropped-inline', exited: true, exitCheckpointConfirmed: true, hostGeneration: '', durableOutputRevision: 0, terminalState: '' },
       { id: 'new-generation', hostGeneration: 'new', durableOutputRevision: 1, terminalState: '\u001bcnew' }
     ]
   };
@@ -388,6 +419,7 @@ test('per-session checkpoint sidecars overlay workspace sessions without replaci
   assert.equal(restored.sessions[0].mobileTerminalState, '\u001bcmobile');
   assert.equal(restored.sessions[0].hostGeneration, 'host-a');
   assert.equal(restored.sessions[0].durableOutputRevision, 8);
+  assert.equal(restored.sessions[0].exitCheckpointConfirmed, true);
   assert.equal(restored.sessions[1].terminalState, '\u001bcnew');
   assert.equal(restored.sessions[1].hostGeneration, 'new');
 });

@@ -61,7 +61,16 @@ test('server resync waits for WebSocket backpressure to drain', () => {
 
 test('exited mobile sessions retain a selectable final frame', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(main, /const mobileExitedSessions = new Map\(\);/);
   assert.match(main, /retainMobileExitedSession\(id, session, finalScreen, exitCode\);[\s\S]*sessions\.delete\(id\);[\s\S]*broadcastMobileSnapshot\(\);/);
   assert.match(main, /message\.type === 'select' && \(session \|\| mobileExitedSessions\.has/);
+  assert.match(renderer, /mobileTerminalState: restoredStoppedMobileState,[\s\S]*?terminalStateCols: restoredStateCols,[\s\S]*?terminalStateRows: restoredStateRows/);
+  assert.match(main, /cleanupStoppedSession[\s\S]*?mobileExitedSessions\.set\(sessionId,[\s\S]*?terminalState[\s\S]*?MOBILE_RESTORED_STATE_MAX_CHARACTERS/);
+  assert.match(main, /const sessionIds = new Set\(\[\.\.\.sessions\.keys\(\), \.\.\.mobileExitedSessions\.keys\(\)\]\)/);
+  assert.doesNotMatch(main, /persistedExitedSessionIds/);
+  assert.match(main, /async function cleanupStoppedSession[\s\S]*?mobileExitedSessions\.set\(sessionId[\s\S]*?const liveSession = sessions\.get\(sessionId\)/);
+  assert.match(main, /client\.cleanupExitedSession\(sessionId, generation\)[\s\S]*?if \(!retainMobile\) mobileExitedSessions\.delete\(sessionId\)/);
+  assert.match(renderer, /if \(session\.exited\) \{\s*await api\.cleanupStopped\(id, session\.hostGeneration, \{\}, false\)/);
+  assert.match(main, /function sendMobileTerminalFrame[\s\S]*?const exited = mobileExitedSessions\.get\(id\)[\s\S]*?data: exited\?\.data/);
 });

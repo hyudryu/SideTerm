@@ -1204,6 +1204,8 @@ async function persistWorkspaceSnapshot({
         manualTitle: session.manualTitle,
         shell: session.shell,
         cwd: session.cwd,
+        exited: Boolean(session.exitObserved),
+        exitCheckpointConfirmed: Boolean(session.exitCheckpointConfirmed),
         history: terminalHistory(session.terminal),
         terminalState: terminalCheckpoint.state,
         mobileTerminalState: terminalCheckpoint.mobileState,
@@ -1312,7 +1314,8 @@ async function persistWorkspaceSnapshot({
       lastActivityAt: session.lastResponseAt || session.createdAt,
       notified: session.notified,
       inputRequired: session.inputRequired,
-      busy: sessions.get(session.id)?.busy
+      busy: sessions.get(session.id)?.busy,
+      exited: Boolean(session.exited)
     }))
   });
   return durableSave;
@@ -1369,7 +1372,11 @@ function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
         for (const entry of activeTerminalCheckpointAcknowledgements(activeAcknowledgements, sessions)) {
           const session = sessions.get(entry.id);
           if (persistedCheckpointCoversDelivery(session, entry)) {
-            entry.acknowledge();
+            try {
+              await entry.acknowledge();
+            } catch {
+              unsatisfied.push(entry);
+            }
           } else {
             unsatisfied.push(entry);
           }
@@ -3019,6 +3026,8 @@ async function addSession(cwd, options = {}) {
   pane.dataset.sessionId = id;
   terminalStack.append(pane);
 
+  const restoredStateCols = Math.min(1_000, Math.max(2, Math.floor(Number(options.terminalStateCols) || 80)));
+  const restoredStateRows = Math.min(500, Math.max(1, Math.floor(Number(options.terminalStateRows) || 24)));
   const terminal = new Terminal({
     allowProposedApi: false,
     convertEol: true,
@@ -3026,8 +3035,8 @@ async function addSession(cwd, options = {}) {
     disableStdin: true,
     cursorStyle: 'bar',
     cursorWidth: 2,
-    cols: Math.min(1_000, Math.max(2, Math.floor(Number(options.terminalStateCols) || 80))),
-    rows: Math.min(500, Math.max(1, Math.floor(Number(options.terminalStateRows) || 24))),
+    cols: restoredStateCols,
+    rows: restoredStateRows,
     fontFamily: "'Cascadia Code', 'CaskaydiaCove Nerd Font', 'Ubuntu Mono', monospace",
     fontSize: 15,
     fontWeight: '400',
@@ -3070,7 +3079,9 @@ async function addSession(cwd, options = {}) {
     serializeAddon,
     pane,
     item: null,
-    exited: false,
+    exited: Boolean(options.exited),
+    exitObserved: Boolean(options.exited),
+    exitCheckpointConfirmed: Boolean(options.exitCheckpointConfirmed),
     checkpointRetired: false,
     notified: Boolean(options.notified),
     inputRequired: Boolean(options.inputRequired),
@@ -3113,7 +3124,7 @@ async function addSession(cwd, options = {}) {
     contextRevision: restoredContext.contextRevision,
     lastSummarizedRevision: restoredContext.lastSummarizedRevision,
     hasUserActivity: Boolean(options.hasUserActivity),
-    connecting: true,
+    connecting: !options.exited,
     activityCycleId: '',
     activityScanBuffer: '',
     lastWorkingAt: 0,
@@ -3204,7 +3215,11 @@ async function addSession(cwd, options = {}) {
     const savedHostGeneration = session.hostGeneration;
     const restoredTerminalState = decodeTerminalState(options.terminalState);
     const restoredMobileTerminalState = decodeTerminalState(options.mobileTerminalState);
-    const details = await api.createSession({
+    const restoredHistory = String(options.history || '').replace(/\r?\n/g, '\r\n');
+    const restoredStoppedMobileState = restoredMobileTerminalState || (restoredHistory
+      ? `\x1bc\x1b[2m── restored stopped scrollback ──\x1b[0m\r\n${restoredHistory}`
+      : '\x1bc');
+    let details = options.exited ? await api.restoreStoppedSession({
       id,
       cwd,
       cols: terminal.cols,
@@ -3212,43 +3227,69 @@ async function addSession(cwd, options = {}) {
       checkpointGeneration: session.hostGeneration,
       checkpointRevision: session.durableOutputRevision,
       terminalState: restoredTerminalState,
-      mobileTerminalState: restoredMobileTerminalState
-    });
-    if (sessions.get(id) !== session) return session;
-    session.shell = details.shell;
-    session.cwd = details.cwd;
-    session.persistent = Boolean(details.persistent);
-    session.serverScrollback = Boolean(details.serverScrollback);
-    const nextHostGeneration = String(details.hostGeneration || session.hostGeneration || '');
-    const canRestoreTerminalState = Boolean(restoredTerminalState
-      && savedHostGeneration
-      && nextHostGeneration === savedHostGeneration
-      && (details.reattached || details.exited));
-    if (canRestoreTerminalState) {
-      await new Promise((resolve) => terminal.write(restoredTerminalState, resolve));
+      mobileTerminalState: restoredStoppedMobileState,
+      terminalStateCols: restoredStateCols,
+      terminalStateRows: restoredStateRows,
+      exitCheckpointConfirmed: session.exitCheckpointConfirmed
+    }) : null;
+    if (details?.stopped) {
+      const stoppedOutput = restoredTerminalState || (restoredHistory
+        ? `\x1bc\x1b[2m── restored stopped scrollback ──\x1b[0m\r\n${restoredHistory}`
+        : '\x1bc');
+      await new Promise((resolve) => terminal.write(stoppedOutput, resolve));
+      terminal.options.disableStdin = true;
+      fit.fit();
+      updateSessionItem(session);
     } else {
-      const restored = String(options.history || '').replace(/\r?\n/g, '\r\n');
-      const safeHistory = restored
-        ? `\x1bc\x1b[2m── restored scrollback ──\x1b[0m\r\n${restored}\r\n\x1b[2m── new shell ──\x1b[0m\r\n`
-        : '\x1bc';
-      if (options.terminalState || restored) {
-        await new Promise((resolve) => terminal.write(safeHistory, resolve));
+      details ||= await api.createSession({
+        id,
+        cwd,
+        cols: terminal.cols,
+        rows: terminal.rows,
+        checkpointGeneration: session.hostGeneration,
+        checkpointRevision: session.durableOutputRevision,
+        terminalState: restoredTerminalState,
+        mobileTerminalState: restoredMobileTerminalState
+      });
+      if (sessions.get(id) !== session) return session;
+      session.exited = Boolean(details.exited);
+      session.exitObserved = Boolean(details.exited);
+      session.exitCheckpointConfirmed = false;
+      session.shell = details.shell;
+      session.cwd = details.cwd;
+      session.persistent = Boolean(details.persistent);
+      session.serverScrollback = Boolean(details.serverScrollback);
+      const nextHostGeneration = String(details.hostGeneration || session.hostGeneration || '');
+      const canRestoreTerminalState = Boolean(restoredTerminalState
+        && savedHostGeneration
+        && nextHostGeneration === savedHostGeneration
+        && (details.reattached || details.exited));
+      if (canRestoreTerminalState) {
+        await new Promise((resolve) => terminal.write(restoredTerminalState, resolve));
+      } else {
+        const restored = String(options.history || '').replace(/\r?\n/g, '\r\n');
+        const safeHistory = restored
+          ? `\x1bc\x1b[2m── restored scrollback ──\x1b[0m\r\n${restored}\r\n\x1b[2m── new shell ──\x1b[0m\r\n`
+          : '\x1bc';
+        if (options.terminalState || restored) {
+          await new Promise((resolve) => terminal.write(safeHistory, resolve));
+        }
+        session.durableOutputRevision = 0;
+        session.lastSerializedTerminalState = '';
+        session.lastSerializedMobileTerminalState = '';
+        session.lastSerializedHostGeneration = '';
+        session.lastSerializedOutputRevision = 0;
       }
-      session.durableOutputRevision = 0;
-      session.lastSerializedTerminalState = '';
-      session.lastSerializedMobileTerminalState = '';
-      session.lastSerializedHostGeneration = '';
-      session.lastSerializedOutputRevision = 0;
-    }
-    session.hostGeneration = nextHostGeneration;
-    fit.fit();
-    updateSessionItem(session);
-    await api.markRendererReady(id);
-    if (sessions.get(id) !== session) return session;
-    if (!details.exited) {
-      session.connecting = false;
-      terminal.options.disableStdin = false;
-      api.resize(id, terminal.cols, terminal.rows);
+      session.hostGeneration = nextHostGeneration;
+      fit.fit();
+      updateSessionItem(session);
+      await api.markRendererReady(id);
+      if (sessions.get(id) !== session) return session;
+      if (!details.exited) {
+        session.connecting = false;
+        terminal.options.disableStdin = false;
+        api.resize(id, terminal.cols, terminal.rows);
+      }
     }
   } catch (error) {
     if (sessions.get(id) !== session) return session;
@@ -3271,7 +3312,11 @@ async function closeSession(id, { ensureSession = true } = {}) {
   const index = ids.indexOf(id);
   session.closing = true;
   try {
-    await api.close(id);
+    if (session.exited) {
+      await api.cleanupStopped(id, session.hostGeneration, {}, false);
+    } else {
+      await api.close(id);
+    }
   } catch (error) {
     session.closing = false;
     showToast(`Could not close the terminal: ${error.message}`);
@@ -3537,13 +3582,17 @@ api.onRemoteInput(({ id, data }) => {
   if (session && !session.exited) trackTerminalInput(session, data);
 });
 
-api.onExit(({ id, exitCode, exitClaimToken, exitDeliveryToken }) => {
+api.onExit(({
+  id, exitCode, exitClaimToken, exitDeliveryToken, hostGeneration = '', outputRevision = 0
+}) => {
   const session = sessions.get(id);
   if (!session) {
     api.acknowledgeExit(id, exitClaimToken, exitDeliveryToken);
     return;
   }
   session.exited = true;
+  session.exitObserved = true;
+  session.exitCheckpointConfirmed = false;
   session.busy = false;
   setSessionInputRequired(session, false);
   reportSessionCompletion(session);
@@ -3552,7 +3601,28 @@ api.onExit(({ id, exitCode, exitClaimToken, exitDeliveryToken }) => {
   window.clearTimeout(session.busyTimer);
   window.clearTimeout(session.responseSortTimer);
   session.terminal.options.disableStdin = true;
-  session.terminal.writeln(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m`);
+  if (hostGeneration) session.hostGeneration = String(hostGeneration);
+  if (Number.isSafeInteger(outputRevision) && outputRevision >= 0) {
+    session.durableOutputRevision = Math.max(session.durableOutputRevision, outputRevision);
+  }
+  session.terminal.write(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\r\n`, () => {
+    const acknowledgeExit = () => api.acknowledgeExit(id, exitClaimToken, exitDeliveryToken);
+    if (exitClaimToken && hostGeneration) {
+      const acknowledge = async () => {
+        session.exitCheckpointConfirmed = true;
+        await persistWorkspaceNow({
+          required: true,
+          protectedCheckpointSessionIds: new Set([id])
+        });
+        acknowledgeExit();
+      };
+      acknowledgeTerminalDataAfterCheckpoint(session, hostGeneration, outputRevision, acknowledge);
+    } else {
+      session.exitCheckpointConfirmed = true;
+      schedulePersist();
+      acknowledgeExit();
+    }
+  });
   if (isSessionForeground(session)) {
     activeSubtitle.textContent = `${session.shell} · stopped · ${session.cwd}`;
     statusDot.classList.add('stopped');
@@ -3562,8 +3632,6 @@ api.onExit(({ id, exitCode, exitClaimToken, exitDeliveryToken }) => {
   updateSessionItem(session);
   if (getGroupForSession(session.id)?.sortBy === 'response') renderGroups();
   else updateVisualState();
-  schedulePersist();
-  api.acknowledgeExit(id, exitClaimToken, exitDeliveryToken);
 });
 
 new ResizeObserver((entries) => fitActiveForResize(entries[0])).observe(terminalStack);
@@ -3910,6 +3978,8 @@ async function restoreSavedWorkspace() {
         title: saved.title,
         manualTitle: saved.manualTitle,
         shell: saved.shell,
+        exited: saved.exited,
+        exitCheckpointConfirmed: saved.exitCheckpointConfirmed,
         history: saved.history,
         terminalState: saved.terminalState,
         mobileTerminalState: saved.mobileTerminalState,

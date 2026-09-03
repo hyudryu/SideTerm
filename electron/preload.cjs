@@ -13,12 +13,16 @@ contextBridge.exposeInMainWorld('sideTerm', {
   saveTerminalCheckpoint: (checkpoint) => ipcRenderer.invoke('workspace:save-terminal-checkpoint', checkpoint),
   pruneTerminalCheckpoints: (activeIds) => ipcRenderer.invoke('workspace:prune-terminal-checkpoints', activeIds),
   createSession: (options) => ipcRenderer.invoke('terminal:create', options),
+  restoreStoppedSession: (options) => ipcRenderer.invoke('terminal:restore-stopped', options),
   markRendererReady: (id) => ipcRenderer.invoke('terminal:renderer-ready', id),
   write: (id, data) => ipcRenderer.send('terminal:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
   scroll: (id, amount) => ipcRenderer.send('terminal:scroll', { id, amount }),
   armGithubPush: (id, details) => ipcRenderer.send('github:push-armed', { id, details }),
   close: (id) => ipcRenderer.invoke('terminal:close', id),
+  cleanupStopped: (id, hostGeneration, snapshot = {}, retainMobile = true) => ipcRenderer.invoke('terminal:cleanup-stopped', {
+    ...snapshot, id, hostGeneration, retainMobile
+  }),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
   acknowledgeData: (id, byteLength, replayClaimToken = '', replayDeliveryToken = '', rendererDataDeliveryToken = '', exitClaimToken = '', exitDeliveryToken = '') => ipcRenderer.send('terminal:data-ack', {

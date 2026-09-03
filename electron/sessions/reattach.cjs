@@ -34,7 +34,12 @@ function reattachSession(id, session, { cols = 100, rows = 30 } = {}) {
   const nextRows = positiveInteger(rows, 30);
   session.cols = Math.max(2, nextCols);
   session.rows = nextRows;
-  session.processHandle.resize(session.cols, session.rows);
+  try {
+    session.processHandle.resize(session.cols, session.rows);
+  } catch {
+    // A direct node-pty process can exit between lookup and resize. Its queued
+    // exit event remains authoritative and is delivered after renderer-ready.
+  }
   return sessionDetails(id, session, { reattached: true });
 }
 
