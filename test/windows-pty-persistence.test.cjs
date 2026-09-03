@@ -170,9 +170,16 @@ test('hosted PTY writes are chunked below the shared pipe frame limit', () => {
     && command.id === 'paste-session' && command.generation === 'paste-generation'));
 });
 
-test('killing a hosted PTY releases only its own client handle immediately', () => {
-  const commands = [];
-  const client = { command: (payload) => commands.push(payload), handles: new Map() };
+test('killing a hosted PTY waits for the host acknowledgement before releasing its handle', async () => {
+  const requests = [];
+  let resolveKill;
+  const client = {
+    request(action, payload) {
+      requests.push({ action, ...payload });
+      return new Promise((resolve) => { resolveKill = resolve; });
+    },
+    handles: new Map()
+  };
   const handle = new WindowsPtyHandle(client, {
     id: 'closed-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'closed-generation'
   });
@@ -180,9 +187,17 @@ test('killing a hosted PTY releases only its own client handle immediately', () 
   handle.onData(() => {});
   handle.onExit(() => {});
 
-  handle.kill();
+  const firstKill = handle.kill();
+  const duplicateKill = handle.kill();
 
-  assert.deepEqual(commands, [{ action: 'kill', id: 'closed-session', generation: 'closed-generation' }]);
+  assert.deepEqual(requests, [{ action: 'kill', id: 'closed-session', generation: 'closed-generation' }]);
+  assert.equal(client.handles.get(handle.id), handle);
+  assert.equal(handle.dataListeners.size, 1);
+  assert.equal(handle.exitListeners.size, 1);
+
+  resolveKill({ killed: true });
+  await Promise.all([firstKill, duplicateKill]);
+
   assert.equal(client.handles.has(handle.id), false);
   assert.equal(handle.dataListeners.size, 0);
   assert.equal(handle.exitListeners.size, 0);
@@ -194,6 +209,32 @@ test('killing a hosted PTY releases only its own client handle immediately', () 
   handle.detach();
   handle.emitExit({ exitCode: 0, signal: 0 });
   assert.equal(client.handles.get(handle.id), replacement);
+});
+
+test('a rejected hosted PTY kill preserves the handle and can be retried', async () => {
+  let requestCount = 0;
+  const client = {
+    request() {
+      requestCount += 1;
+      return requestCount === 1
+        ? Promise.reject(new Error('host unavailable'))
+        : Promise.resolve({ killed: true });
+    },
+    handles: new Map()
+  };
+  const handle = new WindowsPtyHandle(client, {
+    id: 'retry-close', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'retry-generation'
+  });
+  client.handles.set(handle.id, handle);
+  handle.onData(() => {});
+
+  await assert.rejects(handle.kill(), /host unavailable/);
+  assert.equal(client.handles.get(handle.id), handle);
+  assert.equal(handle.dataListeners.size, 1);
+
+  await handle.kill();
+  assert.equal(requestCount, 2);
+  assert.equal(client.handles.has(handle.id), false);
 });
 
 test('exit events received before handle registration are delivered after creation', async () => {
@@ -422,6 +463,10 @@ test('Windows shell overrides are resolved before they cross the PTY host bounda
   assert.match(host, /cancelIdleExit\(\);\s*clients\.add\(socket\)/);
   assert.match(host, /function exitIfStillIdle\(\)[\s\S]*?sessions\.size > 0 \|\| clients\.size > 0 \|\| exitedSessions\.size > 0/);
   assert.match(host, /setTimeout\(shutdownIfStillIdle, 10\)/);
+  assert.match(host, /if \(message\.action === 'kill'\) \{\s*response\(socket, requestId, killSession\(/);
+  assert.match(host, /if \(generation !== session\.generation\) \{\s*throw new Error\('The terminal generation changed before it could be closed\.'/);
+  assert.match(main, /ipcMain\.handle\('terminal:close'[\s\S]*?pendingTerminalCloseOperations\.add\(operation\)/);
+  assert.match(main, /function detachAllSessions\(\)[\s\S]*?await Promise\.allSettled\(\[\.\.\.pendingTerminalCloseOperations\]\)[\s\S]*?disconnectWindowsPtyHost\(\)/);
 });
 
 test('a missing pipe is replaced even when stale metadata points to a reused live PID', {
@@ -506,7 +551,7 @@ test('an authenticated reconnect cancels the host idle-exit timer', {
   let handle = null;
   t.after(async () => {
     try {
-      handle?.kill();
+      await handle?.kill();
       await new Promise((resolve) => setTimeout(resolve, 100));
       await client?.shutdownIfIdle();
     } catch {
@@ -553,7 +598,7 @@ test('detached PTY host preserves a live session across client restarts', {
 
   t.after(async () => {
     try {
-      handle?.kill();
+      await handle?.kill();
       await new Promise((resolve) => setTimeout(resolve, 100));
       await client?.shutdownIfIdle();
     } catch {

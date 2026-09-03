@@ -51,6 +51,7 @@ const { providerConfigurationError, providerDescriptor, providerScopedSetting, S
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { bufferRendererOutput, reattachSession, sessionDetails, takeRendererOutput } = require('./sessions/reattach.cjs');
 const { connectWindowsPtyHost } = require('./sessions/windows-pty-client.cjs');
+const { createTerminalCheckpointStore } = require('./sessions/terminal-checkpoints.cjs');
 const { createReplayAwareWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
@@ -102,6 +103,10 @@ const desktopExitedSessions = new Map();
 const pendingSessionCreations = new Map();
 let windowsPtyHostClient = null;
 let windowsPtyHostConnection = null;
+const pendingTerminalCloseOperations = new Set();
+let detachAllSessionsPromise = null;
+let terminalSessionDrainActive = false;
+let quitSessionDrainComplete = false;
 let mainWindow;
 let backgroundTray = null;
 let quitRequested = false;
@@ -110,6 +115,9 @@ let mobileSocketServer = null;
 const mobileTerminalFrameTimers = new Map();
 const mobileExitedSessions = new Map();
 const MOBILE_EXITED_SESSION_LIMIT = 20;
+const MOBILE_RESTORED_STATE_MAX_CHARACTERS = 1_000_000;
+const MOBILE_OUTPUT_RETAIN_CHARACTERS = 4 * 1024 * 1024;
+const MOBILE_OUTPUT_TRIM_CHARACTERS = 3 * 1024 * 1024;
 let mobileWorkspace = { groups: [], sessions: [], activeId: '' };
 let workspaceAttentionInitialized = false;
 let supervisorRuntime = null;
@@ -204,6 +212,27 @@ function settingsFile() {
 
 function workspaceFile() {
   return path.join(app.getPath('userData'), 'workspace.json');
+}
+
+function terminalCheckpointStore() {
+  return createTerminalCheckpointStore({
+    directory: path.join(app.getPath('userData'), 'terminal-checkpoints')
+  });
+}
+
+function readTerminalCheckpointBackup(id) {
+  const checkpoint = terminalCheckpointStore().read(String(id || ''));
+  return JSON.stringify(checkpoint ? [checkpoint] : []);
+}
+
+function writeTerminalCheckpointBackup(checkpoint) {
+  terminalCheckpointStore().save(checkpoint);
+  return true;
+}
+
+function pruneTerminalCheckpointBackups(activeIds) {
+  terminalCheckpointStore().prune(activeIds);
+  return true;
 }
 
 function readWorkspaceBackup() {
@@ -2870,15 +2899,15 @@ function terminalRendererCanAcknowledge() {
     && !mainWindow.webContents.isLoadingMainFrame());
 }
 
-function resetTerminalOutputFlow() {
-  for (const session of sessions.values()) session.rendererFlow?.reset();
-}
-
 function requeueRendererOutput(session) {
   const inFlight = session?.rendererOutputInFlight || [];
   if (inFlight.length > 0) {
     const unacknowledged = inFlight.map((entry) => entry.data).join('');
     session.rendererReplay = `${unacknowledged}${session.rendererReplay || ''}`;
+    session.rendererReplayAcceptedBytes = inFlight.reduce(
+      (total, entry) => total + (entry.acceptedBytes ?? Buffer.byteLength(entry.data)),
+      session.rendererReplayAcceptedBytes || 0
+    );
     const checkpointed = [...inFlight].reverse().find((entry) => entry.outputRevision);
     if (checkpointed) {
       session.rendererReplayGeneration = checkpointed.hostGeneration;
@@ -2912,19 +2941,22 @@ function detachTerminalRenderers() {
     exited.dataDeliveryToken = '';
     exited.exitDeliveryToken = '';
   }
-  resetTerminalOutputFlow();
 }
 
 function sendTerminalData(
-  id, data, rendererFlow = null, replayClaimToken = '', hostGeneration = '', outputRevision = 0
+  id, data, rendererFlow = null, replayClaimToken = '', hostGeneration = '', outputRevision = 0,
+  flowAlreadyAccepted = false, acceptedByteLength = 0
 ) {
   if (!data) return false;
   const byteLength = Buffer.byteLength(data);
   const session = sessions.get(id);
   const rendererDataDeliveryToken = crypto.randomUUID();
   const replayDeliveryToken = replayClaimToken ? rendererDataDeliveryToken : '';
+  const acceptedBytes = flowAlreadyAccepted
+    ? Math.max(0, Number(acceptedByteLength) || 0)
+    : byteLength;
   session?.rendererOutputInFlight.push({
-    deliveryToken: rendererDataDeliveryToken, data, hostGeneration, outputRevision
+    deliveryToken: rendererDataDeliveryToken, data, hostGeneration, outputRevision, acceptedBytes
   });
   if (replayClaimToken && session) {
     session.rendererReplayInFlight = {
@@ -2939,7 +2971,7 @@ function sendTerminalData(
     id, data, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
     hostGeneration, outputRevision
   });
-  rendererFlow?.accept(byteLength);
+  if (!flowAlreadyAccepted) rendererFlow?.accept(acceptedBytes);
   return true;
 }
 
@@ -2990,7 +3022,9 @@ function markTerminalRendererReady(id) {
   }
   const session = sessions.get(id);
   if (!session) return false;
+  const replayAcceptedBytes = session.rendererReplayAcceptedBytes || 0;
   const replay = takeRendererOutput(session);
+  session.rendererReplayAcceptedBytes = 0;
   const replayClaimToken = session.rendererReplayClaimToken;
   const hostGeneration = session.rendererReplayGeneration;
   const outputRevision = session.rendererReplayOutputRevision;
@@ -2998,7 +3032,8 @@ function markTerminalRendererReady(id) {
   session.rendererReplayGeneration = '';
   session.rendererReplayOutputRevision = 0;
   if (!sendTerminalData(
-    id, replay, session.rendererFlow, replayClaimToken, hostGeneration, outputRevision
+    id, replay, session.rendererFlow, replayClaimToken, hostGeneration, outputRevision, true,
+    replayAcceptedBytes
   ) && replayClaimToken) {
     session.processHandle.acknowledgeReplay?.(replayClaimToken);
   }
@@ -3148,7 +3183,9 @@ function mobileVoiceSettings(saved = false) {
 }
 
 function captureSessionScreen(session) {
-  if (!session?.tmux || !session.tmuxSession) return String(session?.mobileOutputBuffer || '').slice(-300_000);
+  if (!session?.tmux || !session.tmuxSession) {
+    return String(session?.mobileOutputBuffer || '').slice(-MOBILE_OUTPUT_RETAIN_CHARACTERS);
+  }
   try {
     return runTmux(session.tmux, ['capture-pane', '-p', '-e', '-J', '-S', '-600', '-t', session.tmuxSession], { capture: true }).slice(-300_000);
   } catch {
@@ -3681,7 +3718,8 @@ function disconnectWindowsPtyHost() {
 }
 
 function createSession({
-  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0
+  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0,
+  terminalState = '', mobileTerminalState = ''
 }) {
   if (!id) throw new Error('A session id is required.');
 
@@ -3700,7 +3738,7 @@ function createSession({
 
   const pendingCreation = { cancelled: false, promise: null };
   pendingCreation.promise = createNewSession({
-    id, cwd, cols, rows, checkpointGeneration, checkpointRevision
+    id, cwd, cols, rows, checkpointGeneration, checkpointRevision, terminalState, mobileTerminalState
   }, pendingCreation).finally(() => {
     if (pendingSessionCreations.get(id) === pendingCreation) pendingSessionCreations.delete(id);
   });
@@ -3719,7 +3757,7 @@ function applyPersistedRendererCheckpoint(session, generation, revision) {
   for (const entry of session.rendererOutputInFlight || []) {
     if (entry.hostGeneration === checkpointGeneration
       && entry.outputRevision > 0 && entry.outputRevision <= checkpointRevision) {
-      session.rendererFlow?.acknowledge(Buffer.byteLength(entry.data));
+      session.rendererFlow?.acknowledge(entry.acceptedBytes ?? Buffer.byteLength(entry.data));
     } else {
       retained.push(entry);
     }
@@ -3728,7 +3766,9 @@ function applyPersistedRendererCheckpoint(session, generation, revision) {
   if (session.rendererReplayGeneration === checkpointGeneration
     && session.rendererReplayOutputRevision > 0
     && session.rendererReplayOutputRevision <= checkpointRevision) {
+    session.rendererFlow?.acknowledge(session.rendererReplayAcceptedBytes || 0);
     session.rendererReplay = '';
+    session.rendererReplayAcceptedBytes = 0;
     session.rendererReplayClaimToken = '';
     session.rendererReplayGeneration = '';
     session.rendererReplayOutputRevision = 0;
@@ -3736,7 +3776,16 @@ function applyPersistedRendererCheckpoint(session, generation, revision) {
   }
   if (session.hostGeneration === checkpointGeneration
     && session.outputRevision > 0 && session.outputRevision <= checkpointRevision) {
+    session.rendererFlow?.acknowledge(session.rendererReplayAcceptedBytes || 0);
+    for (const entry of session.rendererOutputInFlight) {
+      session.rendererFlow?.acknowledge(entry.acceptedBytes ?? Buffer.byteLength(entry.data));
+    }
     session.rendererReplay = '';
+    session.rendererReplayAcceptedBytes = 0;
+    session.rendererReplayClaimToken = '';
+    session.rendererReplayGeneration = '';
+    session.rendererReplayOutputRevision = 0;
+    session.rendererReplayInFlight = null;
     session.rendererOutputInFlight = [];
   }
   return true;
@@ -3763,7 +3812,8 @@ function recoverWindowsPtyHostSessions(client) {
 }
 
 async function createNewSession({
-  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0
+  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0,
+  terminalState = '', mobileTerminalState = ''
 }, pendingCreation) {
   const shellPath = resolveShell();
   const workingDirectory = safeCwd(cwd);
@@ -3807,13 +3857,21 @@ async function createNewSession({
       env: sessionEnvironment
     });
   if (pendingCreation.cancelled) {
+    let killSucceeded = false;
     try {
-      processHandle.kill();
-    } catch {
-      // The process may already have exited before cancellation completed.
-    }
-    throw new Error('The terminal session was closed before creation completed.');
+      await processHandle.kill();
+      killSucceeded = true;
+    } catch {}
+    if (killSucceeded) throw new Error('The terminal session was closed before creation completed.');
+    pendingCreation.cancelled = false;
   }
+  const restoredMobileState = windowsHosted && processHandle.reattached
+    && checkpointGeneration === String(processHandle.generation || '')
+    && Number.isSafeInteger(checkpointRevision) && checkpointRevision > 0
+    && typeof mobileTerminalState === 'string'
+    && mobileTerminalState.length <= MOBILE_RESTORED_STATE_MAX_CHARACTERS
+    ? mobileTerminalState
+    : '';
   const session = {
     processHandle,
     rendererFlow: createOutputFlowControl(processHandle),
@@ -3827,13 +3885,14 @@ async function createNewSession({
     cols: Math.max(2, Math.floor(cols)),
     rendererAttached: false,
     rendererReplay: '',
+    rendererReplayAcceptedBytes: 0,
     rendererReplayClaimToken: '',
     rendererReplayGeneration: '',
     rendererReplayOutputRevision: 0,
     rendererReplayInFlight: null,
     rendererOutputInFlight: [],
-    mobileRevision: 0,
-    mobileOutputBuffer: '',
+    mobileRevision: restoredMobileState ? 1 : 0,
+    mobileOutputBuffer: restoredMobileState,
     pendingGithubPush: null,
     githubPushOutput: '',
     githubActivityOutput: '',
@@ -3864,6 +3923,9 @@ async function createNewSession({
       );
     } else {
       bufferRendererOutput(session, data);
+      const acceptedBytes = Buffer.byteLength(data);
+      session.rendererFlow.accept(acceptedBytes);
+      session.rendererReplayAcceptedBytes += acceptedBytes;
       if (replayClaimToken) {
         session.rendererReplayClaimToken = replayClaimToken;
         session.rendererReplayGeneration = hostGeneration;
@@ -3872,7 +3934,9 @@ async function createNewSession({
     }
     session.mobileRevision += 1;
     session.mobileOutputBuffer += data;
-    if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
+    if (session.mobileOutputBuffer.length > MOBILE_OUTPUT_RETAIN_CHARACTERS) {
+      session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-MOBILE_OUTPUT_TRIM_CHARACTERS);
+    }
     broadcastMobileTerminalOutput(id, data, session.mobileRevision);
   };
   const outputNormalizer = createReplayAwareWindowsVtOutputNormalizer({
@@ -3963,9 +4027,14 @@ async function createNewSession({
   return sessionDetails(id, session, { resumed, reattached: Boolean(processHandle.reattached) });
 }
 
-function closeSession(id) {
+async function closeSession(id) {
   const pendingCreation = pendingSessionCreations.get(id);
-  if (pendingCreation) pendingCreation.cancelled = true;
+  if (pendingCreation) {
+    pendingCreation.cancelled = true;
+    try { await pendingCreation.promise; } catch {}
+    if (pendingCreation.cancelled) return true;
+    return closeSession(id);
+  }
   const exitedSession = desktopExitedSessions.get(id);
   exitedSession?.processHandle.acknowledgeExitedSession?.(exitedSession.exitClaimToken);
   desktopExitedSessions.delete(id);
@@ -3975,10 +4044,8 @@ function closeSession(id) {
     if (removedExitedSession) broadcastMobileSnapshot();
     return;
   }
-  clearMobileTerminalFrame(id);
-  session.outputNormalizer?.dispose();
-  session.rendererFlow.dispose();
-  sessions.delete(id);
+  if (session.closePromise) return session.closePromise;
+  session.closePromise = (async () => {
   if (session.tmux && session.tmuxSession) {
     try {
       runTmux(session.tmux, ['kill-session', '-t', session.tmuxSession]);
@@ -3986,31 +4053,55 @@ function closeSession(id) {
       // The shell may already have ended and removed its tmux session.
     }
   }
-  try {
-    session.processHandle.kill();
-  } catch {
-    // The process may already have exited.
-  }
-  broadcastMobileSnapshot();
-}
-
-function detachAllSessions() {
-  for (const [id, session] of sessions) {
+  await session.processHandle.kill();
+  if (sessions.get(id) === session) {
     clearMobileTerminalFrame(id);
     session.outputNormalizer?.dispose();
     session.rendererFlow.dispose();
     sessions.delete(id);
-    if (session.windowsHosted && typeof session.processHandle.detach === 'function') {
-      session.processHandle.detach();
-    } else {
-      try {
-        session.processHandle.kill();
-      } catch {
-        // The process may already have exited.
+  } else {
+    const exited = desktopExitedSessions.get(id);
+    exited?.processHandle.acknowledgeExitedSession?.(exited.exitClaimToken);
+    desktopExitedSessions.delete(id);
+  }
+  broadcastMobileSnapshot();
+  return true;
+  })();
+  try {
+    return await session.closePromise;
+  } catch (error) {
+    session.closePromise = null;
+    throw error;
+  }
+}
+
+function detachAllSessions() {
+  if (detachAllSessionsPromise) return detachAllSessionsPromise;
+  terminalSessionDrainActive = true;
+  const drain = (async () => {
+    await Promise.allSettled([...pendingTerminalCloseOperations]);
+    for (const [id, session] of sessions) {
+      clearMobileTerminalFrame(id);
+      session.outputNormalizer?.dispose();
+      session.rendererFlow.dispose();
+      sessions.delete(id);
+      if (session.windowsHosted && typeof session.processHandle.detach === 'function') {
+        session.processHandle.detach();
+      } else {
+        try {
+          session.processHandle.kill();
+        } catch {
+          // The process may already have exited.
+        }
       }
     }
-  }
-  disconnectWindowsPtyHost();
+    disconnectWindowsPtyHost();
+  })();
+  detachAllSessionsPromise = drain.finally(() => {
+    terminalSessionDrainActive = false;
+    detachAllSessionsPromise = null;
+  });
+  return detachAllSessionsPromise;
 }
 
 function scrollSession(id, amount) {
@@ -4037,6 +4128,9 @@ function scrollSession(id, amount) {
 
 function registerIpc() {
   ipcMain.on('workspace:get-sync', (event) => { event.returnValue = readWorkspaceBackup(); });
+  ipcMain.on('workspace:get-terminal-checkpoint-sync', (event, id) => {
+    event.returnValue = readTerminalCheckpointBackup(id);
+  });
   ipcMain.handle('workspace:save', (_event, raw) => {
     writeWorkspaceBackup(raw);
     return true;
@@ -4057,7 +4151,7 @@ function registerIpc() {
       );
       if (deliveryIndex >= 0) {
         const [delivery] = session.rendererOutputInFlight.splice(deliveryIndex, 1);
-        session.rendererFlow.acknowledge(Buffer.byteLength(delivery.data));
+        session.rendererFlow.acknowledge(delivery.acceptedBytes ?? Buffer.byteLength(delivery.data));
       }
     }
     if (session?.rendererReplayInFlight?.claimToken === String(replayClaimToken || '')
@@ -4082,6 +4176,12 @@ function registerIpc() {
       acknowledgeDesktopExitedSession(String(id || ''), exited);
     }
   });
+  ipcMain.handle('workspace:save-terminal-checkpoint', (_event, checkpoint) => (
+    writeTerminalCheckpointBackup(checkpoint)
+  ));
+  ipcMain.handle('workspace:prune-terminal-checkpoints', (_event, activeIds) => (
+    pruneTerminalCheckpointBackups(activeIds)
+  ));
   ipcMain.on('terminal:exit-ack', (_event, { id, exitClaimToken, exitDeliveryToken }) => {
     const exited = desktopExitedSessions.get(String(id || ''));
     if (exited?.exitClaimToken !== String(exitClaimToken || '')
@@ -4110,7 +4210,16 @@ function registerIpc() {
     };
     session.githubPushOutput = '';
   });
-  ipcMain.on('terminal:close', (_event, id) => closeSession(id));
+  ipcMain.handle('terminal:close', (_event, id) => {
+    if (terminalSessionDrainActive) throw new Error('SideTerm is already detaching terminal sessions.');
+    const operation = closeSession(String(id || ''));
+    pendingTerminalCloseOperations.add(operation);
+    void operation.then(
+      () => pendingTerminalCloseOperations.delete(operation),
+      () => pendingTerminalCloseOperations.delete(operation)
+    );
+    return operation;
+  });
   ipcMain.handle('terminal:get-state', (_event, id) => {
     const session = sessions.get(id);
     if (!session) return null;
@@ -4380,7 +4489,6 @@ function createWindow() {
   });
   mainWindow.webContents.on('did-start-loading', resetDesktopVoiceActivation);
   mainWindow.webContents.on('did-start-loading', detachTerminalRenderers);
-  mainWindow.webContents.on('did-finish-load', resetTerminalOutputFlow);
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appLog.error('renderer process gone', details);
     resetDesktopVoiceActivation();
@@ -4419,7 +4527,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     resetDesktopVoiceActivation();
-    detachAllSessions();
+    void detachAllSessions();
     mainWindow = null;
   });
 }
@@ -4449,7 +4557,15 @@ app.on('window-all-closed', () => {
   })) app.quit();
 });
 
-app.on('before-quit', () => { quitRequested = true; });
+app.on('before-quit', (event) => {
+  quitRequested = true;
+  if (quitSessionDrainComplete) return;
+  event.preventDefault();
+  void detachAllSessions().finally(() => {
+    quitSessionDrainComplete = true;
+    app.quit();
+  });
+});
 app.on('will-quit', () => {
   appLog.info('SideTerm quitting');
   eventLoopLagMonitor.stop();
@@ -4457,7 +4573,6 @@ app.on('will-quit', () => {
   githubMonitorTimer = null;
   destroyBackgroundTray();
   stopHarnessBridge();
-  detachAllSessions();
 });
 
 app.on('before-quit', stopSpeechWorker);

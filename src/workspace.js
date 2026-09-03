@@ -69,6 +69,64 @@ export function decodeTerminalState(value) {
   return decoded.join('');
 }
 
+export function applyTerminalCheckpointBackups(workspace, raw) {
+  if (!workspace) return workspace;
+  let values;
+  try {
+    values = JSON.parse(String(raw || ''));
+  } catch {
+    return workspace;
+  }
+  if (!Array.isArray(values)) return workspace;
+  const checkpoints = new Map();
+  for (const value of values) {
+    const terminalState = typeof value?.terminalState === 'string'
+      && value.terminalState.length > 0
+      && value.terminalState.length <= MAX_DECOMPRESSED_TERMINAL_STATE_CHARS
+      && decodeTerminalState(value.terminalState)
+      ? value.terminalState
+      : '';
+    const id = typeof value?.id === 'string' ? value.id : '';
+    const hostGeneration = typeof value?.hostGeneration === 'string'
+      ? value.hostGeneration.slice(0, 100)
+      : '';
+    if (!id || !terminalState || !hostGeneration
+      || !Number.isSafeInteger(value.durableOutputRevision)
+      || value.durableOutputRevision < 0) continue;
+    const checkpoint = {
+      terminalState,
+      mobileTerminalState: typeof value.mobileTerminalState === 'string'
+        && value.mobileTerminalState.length <= MAX_DECOMPRESSED_TERMINAL_STATE_CHARS
+        && decodeTerminalState(value.mobileTerminalState)
+        ? value.mobileTerminalState
+        : '',
+      terminalStateCols: Number.isInteger(value.terminalStateCols)
+        ? Math.min(1_000, Math.max(2, value.terminalStateCols))
+        : 80,
+      terminalStateRows: Number.isInteger(value.terminalStateRows)
+        ? Math.min(500, Math.max(1, value.terminalStateRows))
+        : 24,
+      hostGeneration,
+      durableOutputRevision: value.durableOutputRevision
+    };
+    const existing = checkpoints.get(id);
+    if (!existing || checkpoint.durableOutputRevision > existing.durableOutputRevision) {
+      checkpoints.set(id, checkpoint);
+    }
+  }
+  return {
+    ...workspace,
+    sessions: workspace.sessions.map((session) => {
+      const checkpoint = checkpoints.get(session.id);
+      if (!checkpoint || (session.hostGeneration
+        && session.hostGeneration !== checkpoint.hostGeneration)) return session;
+      if (session.hostGeneration === checkpoint.hostGeneration
+        && session.durableOutputRevision > checkpoint.durableOutputRevision) return session;
+      return { ...session, ...checkpoint };
+    })
+  };
+}
+
 export function persistedCheckpointCoversDelivery(session, delivery) {
   return Boolean(session
     && session.lastPersistedHostGeneration === String(delivery?.hostGeneration || '')
@@ -133,6 +191,7 @@ export function serializeWorkspaceWithinBudget(
   for (const session of leastImportantFirst) {
     if (!session.terminalState || protectedCheckpointSessionIds.has(session.id)) continue;
     session.terminalState = '';
+    if ('mobileTerminalState' in session) session.mobileTerminalState = '';
     session.hostGeneration = '';
     session.durableOutputRevision = 0;
     serialized = encode();
@@ -296,6 +355,11 @@ export function parseSavedWorkspace(raw) {
           && session.durableOutputRevision >= 0
           ? session.durableOutputRevision
           : 0;
+        const mobileTerminalState = terminalState && typeof session.mobileTerminalState === 'string'
+          && session.mobileTerminalState.length <= MAX_WORKSPACE_BACKUP_BYTES
+          && decodeTerminalState(session.mobileTerminalState)
+          ? session.mobileTerminalState
+          : '';
         return {
         id: session.id,
         groupId: session.groupId,
@@ -305,6 +369,7 @@ export function parseSavedWorkspace(raw) {
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
         terminalState,
+        mobileTerminalState,
         terminalStateCols: Number.isInteger(session.terminalStateCols) && session.terminalStateCols >= 2
           ? Math.min(1_000, session.terminalStateCols)
           : 80,

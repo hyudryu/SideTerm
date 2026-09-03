@@ -354,13 +354,7 @@ function handleCommand(socket, message) {
     const dimensions = safeDimensions(message.cols, message.rows);
     session.processHandle.resize(dimensions.cols, dimensions.rows);
   } else if (message.action === 'kill') {
-    sessions.delete(id);
-    try {
-      session.processHandle.kill();
-    } catch {
-      // The process may already be exiting.
-    }
-    scheduleIdleExit();
+    killSession(id, message.generation);
   } else if (message.action === 'pause') {
     if (session.pausedClients.size === 0) session.processHandle.pause();
     session.pausedClients.add(socket);
@@ -370,12 +364,47 @@ function handleCommand(socket, message) {
   }
 }
 
+function killSession(id, generation = '') {
+  const session = sessions.get(id);
+  if (!session) {
+    const exited = exitedSessions.get(id);
+    if (exited && exited.generation !== generation) {
+      throw new Error('The terminal generation changed before it could be closed.');
+    }
+    if (exited) {
+      exitedSessions.delete(id);
+      scheduleIdleExit();
+    }
+    return { killed: false };
+  }
+  if (generation !== session.generation) {
+    throw new Error('The terminal generation changed before it could be closed.');
+  }
+  session.closing = true;
+  sessions.delete(id);
+  try {
+    session.processHandle.kill();
+  } catch (error) {
+    session.closing = false;
+    sessions.set(id, session);
+    throw error;
+  }
+  scheduleIdleExit();
+  return { killed: true };
+}
+
 function handleRequest(socket, message) {
   const requestId = String(message.requestId || '');
   if (!requestId) return;
   try {
     if (message.action === 'create') {
       response(socket, requestId, createSession(message.session, socket));
+      return;
+    }
+    if (message.action === 'kill') {
+      response(socket, requestId, killSession(
+        String(message.id || ''), String(message.generation || '')
+      ));
       return;
     }
     if (message.action === 'shutdown-if-idle') {

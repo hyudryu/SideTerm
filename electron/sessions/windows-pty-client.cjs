@@ -165,9 +165,18 @@ class WindowsPtyHandle {
     this.client.command({ action: 'resize', id: this.id, generation: this.generation, cols, rows });
   }
 
-  kill() {
-    this.client.command({ action: 'kill', id: this.id, generation: this.generation });
-    this.detach();
+  async kill() {
+    if (this.killPromise) return this.killPromise;
+    this.killPromise = this.client.request('kill', { id: this.id, generation: this.generation })
+      .then((result) => {
+        this.detach();
+        return result;
+      })
+      .catch((error) => {
+        this.killPromise = null;
+        throw error;
+      });
+    return this.killPromise;
   }
 
   pause() {

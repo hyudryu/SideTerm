@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_GROUP_COLOR,
   WORKSPACE_VERSION,
+  applyTerminalCheckpointBackups,
   createSerializedAsyncQueue,
   createGroup,
   decodeTerminalState,
@@ -323,4 +324,26 @@ test('workspace restoration chooses the newest valid browser or native copy', ()
   assert.equal(newestSavedWorkspace(native, browser), browser);
   assert.equal(newestSavedWorkspace(browser, native), browser);
   assert.equal(newestSavedWorkspace(native, null), native);
+});
+
+test('per-session checkpoint sidecars overlay workspace sessions without replacing a newer generation', () => {
+  const workspace = {
+    version: WORKSPACE_VERSION,
+    groups: [],
+    sessions: [
+      { id: 'dropped-inline', hostGeneration: '', durableOutputRevision: 0, terminalState: '' },
+      { id: 'new-generation', hostGeneration: 'new', durableOutputRevision: 1, terminalState: '\u001bcnew' }
+    ]
+  };
+  const restored = applyTerminalCheckpointBackups(workspace, JSON.stringify([
+    { id: 'dropped-inline', terminalState: '\u001bcsidecar', mobileTerminalState: '\u001bcmobile', terminalStateCols: 90, terminalStateRows: 32, hostGeneration: 'host-a', durableOutputRevision: 8 },
+    { id: 'new-generation', terminalState: '\u001bcstale', hostGeneration: 'old', durableOutputRevision: 99 }
+  ]));
+
+  assert.equal(restored.sessions[0].terminalState, '\u001bcsidecar');
+  assert.equal(restored.sessions[0].mobileTerminalState, '\u001bcmobile');
+  assert.equal(restored.sessions[0].hostGeneration, 'host-a');
+  assert.equal(restored.sessions[0].durableOutputRevision, 8);
+  assert.equal(restored.sessions[1].terminalState, '\u001bcnew');
+  assert.equal(restored.sessions[1].hostGeneration, 'new');
 });

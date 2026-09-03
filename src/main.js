@@ -20,6 +20,7 @@ import {
 } from './keyboard.js';
 import {
   WORKSPACE_VERSION,
+  applyTerminalCheckpointBackups,
   createSerializedAsyncQueue,
   createGroup,
   decodeTerminalState,
@@ -42,6 +43,7 @@ const WORKSPACE_KEY = 'sidetermWorkspace';
 const MAX_HISTORY_LINES = 400;
 const MAX_HISTORY_CHARS = 120_000;
 const LIVE_TERMINAL_SCROLLBACK_LINES = 3_000;
+const MAX_MOBILE_TERMINAL_STATE_CHARS = 1_000_000;
 const SESSION_BUSY_SETTLE_MS = 1_400;
 const SESSION_BUSY_UNKNOWN_GRACE_MS = 5_000;
 const ACTIVATION_REDRAW_SUPPRESS_MS = 900;
@@ -63,10 +65,11 @@ const GROUP_SORT_OPTIONS = [
   { value: 'name', label: 'Name', initialDirection: 'asc' }
 ];
 const sessions = new Map();
-const restoredWorkspace = newestSavedWorkspace(
+const savedWorkspace = newestSavedWorkspace(
   parseSavedWorkspace(api.getWorkspaceSync()),
   parseSavedWorkspace(localStorage.getItem(WORKSPACE_KEY))
 );
+const restoredWorkspace = savedWorkspace;
 const defaultGroup = createGroup(`group-${crypto.randomUUID()}`, 'General');
 let groups = restoredWorkspace?.groups ?? [defaultGroup];
 let activeGroupId = restoredWorkspace?.activeGroupId ?? groups[0].id;
@@ -829,13 +832,22 @@ function terminalHistory(terminal) {
 
 function serializedTerminalCheckpoint(session) {
   try {
-    const state = `\x1bc${session.serializeAddon.serialize({ scrollback: 0 })}`;
+    const state = `\x1bc${session.serializeAddon.serialize({ scrollback: LIVE_TERMINAL_SCROLLBACK_LINES })}`;
     const encoded = encodeTerminalState(state);
     if (!encoded) throw new Error('Terminal state exceeds the durable checkpoint limit.');
+    let mobileState = '';
+    try {
+      const mobileSnapshot = `\x1bc${session.serializeAddon.serialize({ scrollback: 0 })}`;
+      if (mobileSnapshot.length <= MAX_MOBILE_TERMINAL_STATE_CHARS) {
+        mobileState = encodeTerminalState(mobileSnapshot);
+      }
+    } catch {}
     session.lastSerializedTerminalState = encoded;
+    session.lastSerializedMobileTerminalState = mobileState;
   } catch {
     return {
       state: session.lastSerializedTerminalState,
+      mobileState: session.lastSerializedMobileTerminalState,
       hostGeneration: session.lastSerializedHostGeneration,
       outputRevision: session.lastSerializedOutputRevision
     };
@@ -844,6 +856,7 @@ function serializedTerminalCheckpoint(session) {
   session.lastSerializedOutputRevision = session.durableOutputRevision;
   return {
     state: session.lastSerializedTerminalState,
+    mobileState: session.lastSerializedMobileTerminalState,
     hostGeneration: session.lastSerializedHostGeneration,
     outputRevision: session.lastSerializedOutputRevision
   };
@@ -1189,6 +1202,7 @@ async function persistWorkspaceSnapshot({
         cwd: session.cwd,
         history: terminalHistory(session.terminal),
         terminalState: terminalCheckpoint.state,
+        mobileTerminalState: terminalCheckpoint.mobileState,
         terminalStateCols: session.terminal.cols,
         terminalStateRows: session.terminal.rows,
         hostGeneration: terminalCheckpoint.hostGeneration,
@@ -1236,17 +1250,17 @@ async function persistWorkspaceSnapshot({
     activeId,
     activeGroupId
   };
-  const durableCheckpointSessionIds = new Set(protectedCheckpointSessionIds);
-  for (const session of sessions.values()) {
-    if (session.lastPersistedHostGeneration
-      && session.lastPersistedHostGeneration === session.hostGeneration
-      && session.lastPersistedOutputRevision > 0) {
-      durableCheckpointSessionIds.add(session.id);
+  const checkpointSidecars = new Map();
+  const savedSessionMap = new Map(savedSessions.map((session) => [session.id, session]));
+  for (const id of protectedCheckpointSessionIds) {
+    const checkpoint = savedSessionMap.get(id);
+    if (!checkpoint?.terminalState || !checkpoint.hostGeneration) {
+      throw new Error('A restorable terminal checkpoint is required before acknowledging output.');
     }
+    await api.saveTerminalCheckpoint(checkpoint);
+    checkpointSidecars.set(id, checkpoint);
   }
-  const durableWorkspace = serializeWorkspaceWithinBudget(
-    workspaceRecord, undefined, durableCheckpointSessionIds
-  );
+  const durableWorkspace = serializeWorkspaceWithinBudget(workspaceRecord);
   const durableSave = await persistWorkspaceCopies(durableWorkspace.serialized, {
     saveBrowser: (raw) => localStorage.setItem(WORKSPACE_KEY, raw),
     saveBackup: (raw) => api.saveWorkspace(raw),
@@ -1258,11 +1272,24 @@ async function persistWorkspaceSnapshot({
       durableWorkspace.workspace.sessions.map((session) => [session.id, session])
     );
     for (const session of sessions.values()) {
+      const sidecar = checkpointSidecars.get(session.id);
+      if (sidecar) {
+        session.lastPersistedHostGeneration = sidecar.hostGeneration;
+        session.lastPersistedOutputRevision = sidecar.durableOutputRevision;
+        continue;
+      }
+      if (session.lastPersistedHostGeneration === session.hostGeneration
+        && session.lastPersistedOutputRevision > 0) continue;
       const persisted = persistedSessions.get(session.id);
       session.lastPersistedHostGeneration = String(persisted?.hostGeneration || '');
       session.lastPersistedOutputRevision = Number.isSafeInteger(persisted?.durableOutputRevision)
         ? persisted.durableOutputRevision
         : 0;
+    }
+    try {
+      await api.pruneTerminalCheckpoints(savedSessions.map((session) => session.id));
+    } catch {
+      // Stale sidecars are retried on the next successful workspace save.
     }
   }
   api.updateMobileWorkspace({
@@ -1985,7 +2012,7 @@ async function handleAgentAction({ requestId, type, payload }) {
       if (!session) throw new Error('The session is no longer available.');
       const group = getGroupForSession(session.id);
       const result = { id: session.id, title: session.title, group: group?.title || '' };
-      closeSession(session.id);
+      await closeSession(session.id);
       api.resolveAgentAction(requestId, result);
       return;
     }
@@ -2581,7 +2608,7 @@ function renderGroups() {
     });
     section.querySelector('.group-delete').addEventListener('click', (event) => {
       event.stopPropagation();
-      deleteGroup(group.id);
+      void deleteGroup(group.id);
     });
     section.querySelector('.group-header').addEventListener('click', (event) => {
       if (event.target.closest('button') || title.isContentEditable) return;
@@ -3085,6 +3112,7 @@ async function addSession(cwd, options = {}) {
       ? options.durableOutputRevision
       : 0,
     lastSerializedTerminalState: String(options.terminalState || ''),
+    lastSerializedMobileTerminalState: String(options.mobileTerminalState || ''),
     lastSerializedHostGeneration: String(options.hostGeneration || ''),
     lastSerializedOutputRevision: Number.isSafeInteger(options.durableOutputRevision)
       ? options.durableOutputRevision
@@ -3161,13 +3189,16 @@ async function addSession(cwd, options = {}) {
     if (sessions.get(id) !== session) return session;
     const savedHostGeneration = session.hostGeneration;
     const restoredTerminalState = decodeTerminalState(options.terminalState);
+    const restoredMobileTerminalState = decodeTerminalState(options.mobileTerminalState);
     const details = await api.createSession({
       id,
       cwd,
       cols: terminal.cols,
       rows: terminal.rows,
       checkpointGeneration: session.hostGeneration,
-      checkpointRevision: session.durableOutputRevision
+      checkpointRevision: session.durableOutputRevision,
+      terminalState: restoredTerminalState,
+      mobileTerminalState: restoredMobileTerminalState
     });
     if (sessions.get(id) !== session) return session;
     session.shell = details.shell;
@@ -3191,6 +3222,7 @@ async function addSession(cwd, options = {}) {
       }
       session.durableOutputRevision = 0;
       session.lastSerializedTerminalState = '';
+      session.lastSerializedMobileTerminalState = '';
       session.lastSerializedHostGeneration = '';
       session.lastSerializedOutputRevision = 0;
     }
@@ -3218,12 +3250,21 @@ async function addSession(cwd, options = {}) {
   return session;
 }
 
-function closeSession(id) {
+async function closeSession(id, { ensureSession = true } = {}) {
   const session = sessions.get(id);
-  if (!session) return;
+  if (!session || session.closing) return false;
   const ids = orderedSessionIds();
   const index = ids.indexOf(id);
-  if (!session.exited) api.close(id);
+  if (!session.exited) {
+    session.closing = true;
+    try {
+      await api.close(id);
+    } catch (error) {
+      session.closing = false;
+      showToast(`Could not close the terminal: ${error.message}`);
+      return false;
+    }
+  }
   session.exited = true;
   window.clearTimeout(session.busyTimer);
   clearAiSummaryTimer(session);
@@ -3237,8 +3278,9 @@ function closeSession(id) {
   if (sessions.size === 0) {
     activeId = null;
     renderGroups();
-    void addSession(undefined, { groupId: activeGroupId });
-    return;
+    if (ensureSession) void addSession(undefined, { groupId: activeGroupId });
+    else schedulePersist();
+    return true;
   }
   if (activeId === id) {
     const remaining = orderedSessionIds();
@@ -3246,6 +3288,7 @@ function closeSession(id) {
   }
   renderGroups();
   schedulePersist();
+  return true;
 }
 
 async function createNewGroup() {
@@ -3263,7 +3306,7 @@ async function createNewGroup() {
   if (title) startGroupRename(group, title);
 }
 
-function deleteGroup(groupId) {
+async function deleteGroup(groupId) {
   if (groups.length === 1) {
     showToast('SideTerm needs at least one group');
     return;
@@ -3279,19 +3322,12 @@ function deleteGroup(groupId) {
 
   const fallback = groups[index > 0 ? index - 1 : index + 1];
   const removedActiveSession = removed.sessionIds.includes(activeId);
-  for (const sessionId of removed.sessionIds) {
-    const session = sessions.get(sessionId);
-    if (!session) continue;
-    if (!session.exited) api.close(sessionId);
-    session.exited = true;
-    window.clearTimeout(session.busyTimer);
-    clearAiSummaryTimer(session);
-    window.clearTimeout(session.responseSortTimer);
-    session.terminal.dispose();
-    session.pane.remove();
-    session.item.remove();
-    sessions.delete(sessionId);
+  let allClosed = true;
+  for (const sessionId of [...removed.sessionIds]) {
+    if (!sessions.has(sessionId)) continue;
+    if (!await closeSession(sessionId, { ensureSession: false })) allClosed = false;
   }
+  if (!allClosed) return;
   groups = groups.filter((group) => group.id !== groupId);
   if (activeGroupId === groupId) activeGroupId = fallback.id;
   renderGroups();
@@ -3841,8 +3877,11 @@ async function restoreSavedWorkspace() {
     const descriptors = new Map((restoredWorkspace?.sessions ?? []).map((session) => [session.id, session]));
     const restoreOrder = groups.flatMap((group) => group.sessionIds);
     for (const id of restoreOrder) {
-      const saved = descriptors.get(id);
-      if (!saved) continue;
+      const savedDescriptor = descriptors.get(id);
+      if (!savedDescriptor) continue;
+      const saved = applyTerminalCheckpointBackups(
+        { sessions: [savedDescriptor] }, api.getTerminalCheckpointSync(id)
+      ).sessions[0];
       await addSession(saved.cwd, {
         id: saved.id,
         groupId: getGroupForSession(saved.id)?.id ?? saved.groupId,
@@ -3851,6 +3890,7 @@ async function restoreSavedWorkspace() {
         shell: saved.shell,
         history: saved.history,
         terminalState: saved.terminalState,
+        mobileTerminalState: saved.mobileTerminalState,
         terminalStateCols: saved.terminalStateCols,
         terminalStateRows: saved.terminalStateRows,
         hostGeneration: saved.hostGeneration,

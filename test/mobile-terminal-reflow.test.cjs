@@ -157,7 +157,11 @@ test('mobile client normalizes only capture frames, not raw streams', () => {
 
 test('mobile server tracks the session grid and serves the new assets', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
-  assert.match(main, /cols: Math\.max\(2, Math\.floor\(cols\)\),\r?\n\s*rendererAttached: false,\r?\n\s*rendererReplay: '',[\s\S]*?mobileRevision: 0/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /const restoredMobileState = windowsHosted && processHandle\.reattached[\s\S]*?checkpointGeneration === String\(processHandle\.generation \|\| ''\)[\s\S]*?checkpointRevision > 0/);
+  assert.match(main, /typeof mobileTerminalState === 'string'[\s\S]*?mobileTerminalState\.length <= MOBILE_RESTORED_STATE_MAX_CHARACTERS[\s\S]*?\? mobileTerminalState/);
+  assert.match(main, /cols: Math\.max\(2, Math\.floor\(cols\)\),\r?\n\s*rendererAttached: false,\r?\n\s*rendererReplay: '',[\s\S]*?mobileRevision: restoredMobileState \? 1 : 0,[\s\S]*?mobileOutputBuffer: restoredMobileState/);
+  assert.match(renderer, /serializeAddon\.serialize\(\{ scrollback: 0 \}\)[\s\S]*?MAX_MOBILE_TERMINAL_STATE_CHARS/);
   assert.match(main, /session\.cols = Math\.max\(2, Math\.floor\(cols\)\);/);
   assert.match(main, /cols: session\.cols \|\| 100,\r?\n\s*rows: session\.rows \|\| 30/);
   assert.match(main, /require\.resolve\('@xterm\/addon-fit'\)/);
