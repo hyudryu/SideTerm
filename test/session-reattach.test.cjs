@@ -171,15 +171,18 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
 
   assert.ok(persist >= 0);
   assert.ok(spawn > persist);
-  assert.match(renderer, /if \(restoringWorkspace && !required\) return Promise\.resolve\(\);/);
+  assert.match(renderer, /if \(restoringWorkspace && !options\.required\) return Promise\.resolve\(\);/);
   assert.match(renderer, /if \(restoringWorkspace && !options\.id\) await workspaceRestoreComplete;/);
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}/);
   assert.match(renderer, /persistWorkspaceCopies\(durableWorkspace\.serialized, \{[\s\S]*?required,[\s\S]*?return durableSave;/);
+  assert.match(renderer, /const enqueueWorkspacePersistence = createSerializedAsyncQueue\(\);[\s\S]*?function persistWorkspaceNow\(options = \{\}\)[\s\S]*?enqueueWorkspacePersistence\(\(\) => persistWorkspaceSnapshot\(options\)\)/);
   assert.match(renderer, /function acknowledgeTerminalDataAfterCheckpoint\(id, hostGeneration, outputRevision, acknowledge\) \{\s*pendingTerminalCheckpointAcknowledgements\.push\(\{[\s\S]*?id, hostGeneration: String\(hostGeneration \|\| ''\), outputRevision, acknowledge/);
+  assert.match(renderer, /const acknowledgementGroups = groupTerminalCheckpointAcknowledgements\(acknowledgements\);[\s\S]*?for \(const \{ id, acknowledgements: sessionAcknowledgements \} of acknowledgementGroups\)[\s\S]*?protectedCheckpointSessionIds: new Set\(\[id\]\)[\s\S]*?unsatisfied\.push\(\.\.\.sessionAcknowledgements\)/);
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}[\s\S]*?if \(pendingTerminalCheckpointAcknowledgements\.length > 0\) \{\s*await flushTerminalCheckpointAcknowledgements\(\{ forceSave: true \}\);/);
   assert.match(renderer, /cursorBlink: false,\s*disableStdin: true,/);
   assert.match(renderer, /const serializeAddon = new SerializeAddon\(\);[\s\S]*?terminal\.loadAddon\(serializeAddon\)/);
   assert.match(renderer, /const terminalCheckpoint = serializedTerminalCheckpoint\(session\);[\s\S]*?terminalState: terminalCheckpoint\.state,\s*terminalStateCols: session\.terminal\.cols,\s*terminalStateRows: session\.terminal\.rows,\s*hostGeneration: terminalCheckpoint\.hostGeneration,\s*durableOutputRevision: terminalCheckpoint\.outputRevision/);
+  assert.match(renderer, /const durableCheckpointSessionIds = new Set\(protectedCheckpointSessionIds\);[\s\S]*?session\.lastPersistedHostGeneration === session\.hostGeneration[\s\S]*?durableCheckpointSessionIds\.add\(session\.id\)[\s\S]*?serializeWorkspaceWithinBudget\([\s\S]*?durableCheckpointSessionIds/);
   assert.match(renderer, /const restoredTerminalState = decodeTerminalState\(options\.terminalState\);[\s\S]*?const details = await api\.createSession[\s\S]*?const canRestoreTerminalState = Boolean\(restoredTerminalState[\s\S]*?nextHostGeneration === savedHostGeneration[\s\S]*?details\.reattached \|\| details\.exited[\s\S]*?terminal\.write\(restoredTerminalState, resolve\)[\s\S]*?safeHistory/);
   assert.match(renderer, /checkpointGeneration: session\.hostGeneration,\s*checkpointRevision: session\.durableOutputRevision/);
   assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?session\.durableOutputRevision = Math\.max\(session\.durableOutputRevision, outputRevision\);[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(id, hostGeneration, outputRevision, acknowledge\)/);

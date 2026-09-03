@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_GROUP_COLOR,
   WORKSPACE_VERSION,
+  createSerializedAsyncQueue,
   createGroup,
   decodeTerminalState,
   encodeTerminalState,
+  groupTerminalCheckpointAcknowledgements,
   moveSession,
   nearestGroupGap,
   newestSavedWorkspace,
@@ -46,6 +48,46 @@ test('host delivery acknowledgements require the exact persisted generation and 
   assert.equal(persistedCheckpointCoversDelivery(session, {
     hostGeneration: 'generation-b', outputRevision: 4
   }), false);
+});
+
+test('terminal checkpoint acknowledgements are batched per session', () => {
+  const first = { id: 'first', outputRevision: 2 };
+  const second = { id: 'second', outputRevision: 3 };
+  const laterFirst = { id: 'first', outputRevision: 4 };
+
+  assert.deepEqual(groupTerminalCheckpointAcknowledgements([first, second, laterFirst]), [
+    { id: 'first', acknowledgements: [first, laterFirst] },
+    { id: 'second', acknowledgements: [second] }
+  ]);
+});
+
+test('workspace persistence is serialized before a later snapshot can replace it', async () => {
+  const enqueue = createSerializedAsyncQueue();
+  let releaseCheckpoint;
+  const checkpointBlocked = new Promise((resolve) => { releaseCheckpoint = resolve; });
+  let checkpointPersisted = false;
+  let finalBrowserCopy = '';
+  let finalBackupCopy = '';
+
+  const checkpointSave = enqueue(async () => {
+    await checkpointBlocked;
+    finalBrowserCopy = 'generation-a:revision-7';
+    finalBackupCopy = 'generation-a:revision-7';
+    checkpointPersisted = true;
+  });
+  const ordinarySave = enqueue(async () => {
+    const snapshot = checkpointPersisted ? 'generation-a:revision-7' : 'dropped';
+    finalBrowserCopy = snapshot;
+    await Promise.resolve();
+    finalBackupCopy = snapshot;
+  });
+
+  await Promise.resolve();
+  assert.equal(checkpointPersisted, false);
+  releaseCheckpoint();
+  await Promise.all([checkpointSave, ordinarySave]);
+  assert.equal(finalBrowserCopy, 'generation-a:revision-7');
+  assert.equal(finalBackupCopy, 'generation-a:revision-7');
 });
 
 test('large terminal checkpoints use a lossless compressed representation', () => {

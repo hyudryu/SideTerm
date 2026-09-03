@@ -77,6 +77,26 @@ export function persistedCheckpointCoversDelivery(session, delivery) {
     && session.lastPersistedOutputRevision >= delivery.outputRevision);
 }
 
+export function groupTerminalCheckpointAcknowledgements(entries) {
+  const grouped = new Map();
+  for (const entry of entries) {
+    const id = String(entry?.id || '');
+    if (!id) continue;
+    if (!grouped.has(id)) grouped.set(id, []);
+    grouped.get(id).push(entry);
+  }
+  return [...grouped].map(([id, acknowledgements]) => ({ id, acknowledgements }));
+}
+
+export function createSerializedAsyncQueue() {
+  let tail = Promise.resolve();
+  return (task) => {
+    const result = tail.then(task, task);
+    tail = result.catch(() => {});
+    return result;
+  };
+}
+
 export function serializeWorkspaceWithinBudget(
   workspace, maximumBytes = MAX_WORKSPACE_BACKUP_BYTES, protectedCheckpointSessionIds = new Set()
 ) {

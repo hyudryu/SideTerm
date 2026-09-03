@@ -305,6 +305,40 @@ test('live replay is acknowledged only after its data listener receives the leas
   }]);
 });
 
+test('orphan replay frames retain claim metadata until the handle is registered', async () => {
+  const socket = fakeSocket();
+  const client = new WindowsPtyHostClient(socket);
+  const commands = [];
+  client.command = (payload) => commands.push(payload);
+  client.request = async () => {
+    client.handleMessage({
+      type: 'replay', id: 'orphan-replay', generation: 'orphan-generation',
+      data: Buffer.from('orphan output').toString('base64'),
+      replayClaimToken: 'orphan-claim', outputRevision: 19
+    });
+    return {
+      id: 'orphan-replay', pid: 46, shell: 'powershell.exe', cwd: 'C:\\workspace',
+      generation: 'orphan-generation', replay: '', replayClaimToken: '', outputRevision: 0
+    };
+  };
+
+  const handle = await client.createSession({ id: 'orphan-replay' });
+  let delivery = null;
+  handle.onData((data, replayClaimToken, hostGeneration, outputRevision) => {
+    delivery = { data, replayClaimToken, hostGeneration, outputRevision };
+  });
+
+  assert.deepEqual(delivery, {
+    data: 'orphan output', replayClaimToken: 'orphan-claim',
+    hostGeneration: 'orphan-generation', outputRevision: 19
+  });
+  handle.acknowledgeReplay(delivery.replayClaimToken);
+  assert.deepEqual(commands, [{
+    action: 'ack-replay', id: 'orphan-replay', generation: 'orphan-generation',
+    claimToken: 'orphan-claim'
+  }]);
+});
+
 test('an exit from an older generation cannot terminate a replacement handle with the same id', () => {
   const socket = fakeSocket();
   const client = new WindowsPtyHostClient(socket);

@@ -20,9 +20,11 @@ import {
 } from './keyboard.js';
 import {
   WORKSPACE_VERSION,
+  createSerializedAsyncQueue,
   createGroup,
   decodeTerminalState,
   encodeTerminalState,
+  groupTerminalCheckpointAcknowledgements,
   moveSession,
   nearestGroupGap,
   newestSavedWorkspace,
@@ -79,6 +81,7 @@ const pendingTerminalCheckpointAcknowledgements = [];
 let terminalCheckpointPromise = null;
 let terminalCheckpointRetryTimer = null;
 let terminalCheckpointRetryDelayMs = 1_000;
+const enqueueWorkspacePersistence = createSerializedAsyncQueue();
 let dragState = null;
 let dropTarget = null;
 let clearApiKeyRequested = false;
@@ -1163,10 +1166,14 @@ function showLinkPopover(session, trigger) {
   requestAnimationFrame(() => linkPopover.classList.add('visible'));
 }
 
-async function persistWorkspaceNow({
+function persistWorkspaceNow(options = {}) {
+  if (restoringWorkspace && !options.required) return Promise.resolve();
+  return enqueueWorkspacePersistence(() => persistWorkspaceSnapshot(options));
+}
+
+async function persistWorkspaceSnapshot({
   required = false, protectedCheckpointSessionIds = new Set()
 } = {}) {
-  if (restoringWorkspace && !required) return Promise.resolve();
   const savedSessions = [];
   for (const group of groups) {
     for (const id of group.sessionIds) {
@@ -1229,8 +1236,16 @@ async function persistWorkspaceNow({
     activeId,
     activeGroupId
   };
+  const durableCheckpointSessionIds = new Set(protectedCheckpointSessionIds);
+  for (const session of sessions.values()) {
+    if (session.lastPersistedHostGeneration
+      && session.lastPersistedHostGeneration === session.hostGeneration
+      && session.lastPersistedOutputRevision > 0) {
+      durableCheckpointSessionIds.add(session.id);
+    }
+  }
   const durableWorkspace = serializeWorkspaceWithinBudget(
-    workspaceRecord, undefined, protectedCheckpointSessionIds
+    workspaceRecord, undefined, durableCheckpointSessionIds
   );
   const durableSave = await persistWorkspaceCopies(durableWorkspace.serialized, {
     saveBrowser: (raw) => localStorage.setItem(WORKSPACE_KEY, raw),
@@ -1299,18 +1314,29 @@ function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
   let checkpointSucceeded = false;
   terminalCheckpointPromise = (async () => {
     try {
-      await persistWorkspaceNow({
-        required: true,
-        protectedCheckpointSessionIds: new Set(acknowledgements.map((entry) => entry.id))
-      });
       const unsatisfied = [];
-      for (const entry of acknowledgements) {
-        const session = sessions.get(entry.id);
-        if (!session) continue;
-        if (persistedCheckpointCoversDelivery(session, entry)) {
-          entry.acknowledge();
-        } else {
-          unsatisfied.push(entry);
+      const acknowledgementGroups = groupTerminalCheckpointAcknowledgements(acknowledgements);
+      if (acknowledgementGroups.length === 0) {
+        await persistWorkspaceNow({ required: true });
+      }
+      for (const { id, acknowledgements: sessionAcknowledgements } of acknowledgementGroups) {
+        try {
+          await persistWorkspaceNow({
+            required: true,
+            protectedCheckpointSessionIds: new Set([id])
+          });
+        } catch {
+          unsatisfied.push(...sessionAcknowledgements);
+          continue;
+        }
+        for (const entry of sessionAcknowledgements) {
+          const session = sessions.get(entry.id);
+          if (!session) continue;
+          if (persistedCheckpointCoversDelivery(session, entry)) {
+            entry.acknowledge();
+          } else {
+            unsatisfied.push(entry);
+          }
         }
       }
       pendingTerminalCheckpointAcknowledgements.push(...unsatisfied);

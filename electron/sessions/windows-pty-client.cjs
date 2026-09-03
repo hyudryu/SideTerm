@@ -302,7 +302,17 @@ class WindowsPtyHostClient {
           message.type === 'replay' ? handle.replayOutputRevision : 0
         );
       } else {
-        this.orphanData.set(key, `${this.orphanData.get(key) || ''}${data}`);
+        const orphan = this.orphanData.get(key) || {
+          data: '', replayClaimToken: '', outputRevision: 0
+        };
+        orphan.data += data;
+        if (message.type === 'replay') {
+          orphan.replayClaimToken = String(message.replayClaimToken || '');
+          orphan.outputRevision = Number.isSafeInteger(message.outputRevision)
+            ? message.outputRevision
+            : 0;
+        }
+        this.orphanData.set(key, orphan);
       }
       return;
     }
@@ -391,11 +401,16 @@ class WindowsPtyHostClient {
     const replay = details.replay
       ? Buffer.from(String(details.replay), 'base64').toString('utf8')
       : '';
+    const orphan = this.orphanData.get(key);
     const pending = details.exited
       ? replay
-      : `${replay}${this.orphanData.get(key) || ''}`;
+      : `${replay}${orphan?.data || ''}`;
+    if (!details.exited && orphan?.replayClaimToken) {
+      handle.replayClaimToken = orphan.replayClaimToken;
+      handle.replayOutputRevision = orphan.outputRevision;
+    }
+    this.orphanData.delete(key);
     if (pending) {
-      this.orphanData.delete(key);
       handle.emitData(pending, handle.replayClaimToken, handle.replayOutputRevision);
     } else if (handle.replayClaimToken) {
       handle.emitData('', handle.replayClaimToken, handle.replayOutputRevision);
