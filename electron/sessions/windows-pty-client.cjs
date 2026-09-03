@@ -445,6 +445,15 @@ class WindowsPtyHostClient {
     return handle;
   }
 
+  cleanupExitedSession(id, generation) {
+    const sessionId = String(id || '');
+    const hostGeneration = String(generation || '');
+    if (!sessionId || !hostGeneration) {
+      return Promise.reject(new Error('A session id and host generation are required.'));
+    }
+    return this.request('kill', { id: sessionId, generation: hostGeneration });
+  }
+
   shutdownIfIdle() {
     return this.request('shutdown-if-idle');
   }

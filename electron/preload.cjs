@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('sideTerm', {
   scroll: (id, amount) => ipcRenderer.send('terminal:scroll', { id, amount }),
   armGithubPush: (id, details) => ipcRenderer.send('github:push-armed', { id, details }),
   close: (id) => ipcRenderer.invoke('terminal:close', id),
+  cleanupStopped: (id, hostGeneration, snapshot = {}) => ipcRenderer.invoke('terminal:cleanup-stopped', {
+    ...snapshot, id, hostGeneration
+  }),
   getSessionState: (id) => ipcRenderer.invoke('terminal:get-state', id),
   onData: (callback) => subscribe('terminal:data', callback),
   acknowledgeData: (id, byteLength, replayClaimToken = '', replayDeliveryToken = '', rendererDataDeliveryToken = '', exitClaimToken = '', exitDeliveryToken = '') => ipcRenderer.send('terminal:data-ack', {

@@ -237,6 +237,21 @@ test('a rejected hosted PTY kill preserves the handle and can be retried', async
   assert.equal(client.handles.has(handle.id), false);
 });
 
+test('generation-scoped stopped cleanup uses an awaited host request', async () => {
+  const socket = fakeSocket();
+  const client = new WindowsPtyHostClient(socket);
+  const cleanup = client.cleanupExitedSession('stopped-session', 'stopped-generation');
+  const request = socket.writes[0];
+
+  assert.equal(request.action, 'kill');
+  assert.equal(request.id, 'stopped-session');
+  assert.equal(request.generation, 'stopped-generation');
+  socket.emit('data', `${JSON.stringify({
+    type: 'response', requestId: request.requestId, result: { killed: false }
+  })}\n`);
+  assert.deepEqual(await cleanup, { killed: false });
+});
+
 test('exit events received before handle registration are delivered after creation', async () => {
   const socket = fakeSocket();
   const client = new WindowsPtyHostClient(socket);
@@ -584,6 +599,56 @@ test('an authenticated reconnect cancels the host idle-exit timer', {
   handle.write(`still-alive${os.EOL}`);
   await echoed;
   assert.equal(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).pid, hostPid);
+});
+
+test('fresh clients clean only the exact stopped host generation', {
+  timeout: 20_000,
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-stopped-cleanup-test-'));
+  const metadataPath = path.join(temporaryDirectory, 'host.json');
+  const hostScript = path.join(__dirname, '..', 'electron', 'sessions', 'windows-pty-host.cjs');
+  const id = 'stopped-cleanup-session';
+  let generation = '';
+  let client = null;
+  t.after(async () => {
+    try {
+      if (client && generation) await client.cleanupExitedSession(id, generation);
+      await client?.shutdownIfIdle();
+    } catch {
+      // Best-effort cleanup for a failed integration assertion.
+    }
+    client?.disconnect();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  const handle = await client.createSession({
+    id,
+    executable: process.execPath,
+    args: ['-e', 'setTimeout(() => process.exit(0), 100)'],
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd: temporaryDirectory,
+    env: {}
+  });
+  generation = handle.generation;
+  await new Promise((resolve) => handle.onExit(resolve));
+  client.disconnect();
+  client = null;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  assert.deepEqual(await client.shutdownIfIdle(), { idle: false });
+  await assert.rejects(
+    client.cleanupExitedSession(id, `${generation}-different`),
+    /generation changed/
+  );
+  assert.deepEqual(await client.shutdownIfIdle(), { idle: false });
+  assert.deepEqual(await client.cleanupExitedSession(id, generation), { killed: false });
+  assert.deepEqual(await client.shutdownIfIdle(), { idle: true });
+  generation = '';
 });
 
 test('detached PTY host preserves a live session across client restarts', {

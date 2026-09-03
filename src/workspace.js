@@ -200,19 +200,19 @@ export function serializeWorkspaceWithinBudget(
     return String(right.terminalState || '').length - String(left.terminalState || '').length;
   });
   for (const session of leastImportantFirst) {
-    if (!session.history) continue;
-    session.history = '';
+    if (!session.terminalState || protectedCheckpointSessionIds.has(session.id)) continue;
+    session.terminalState = '';
+    if ('mobileTerminalState' in session) session.mobileTerminalState = '';
+    session.hostGeneration = '';
+    session.durableOutputRevision = 0;
     serialized = encode();
     if (serializedByteLength(serialized) <= maximumBytes) {
       return { serialized, workspace: durableWorkspace };
     }
   }
   for (const session of leastImportantFirst) {
-    if (!session.terminalState || protectedCheckpointSessionIds.has(session.id)) continue;
-    session.terminalState = '';
-    if ('mobileTerminalState' in session) session.mobileTerminalState = '';
-    session.hostGeneration = '';
-    session.durableOutputRevision = 0;
+    if (!session.history) continue;
+    session.history = '';
     serialized = encode();
     if (serializedByteLength(serialized) <= maximumBytes) {
       return { serialized, workspace: durableWorkspace };
@@ -386,6 +386,7 @@ export function parseSavedWorkspace(raw) {
         manualTitle: Boolean(session.manualTitle),
         shell: typeof session.shell === 'string' ? session.shell : 'shell',
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
+        exited: Boolean(session.exited),
         history: typeof session.history === 'string' ? session.history : '',
         terminalState,
         mobileTerminalState,
