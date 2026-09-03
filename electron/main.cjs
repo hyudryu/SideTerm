@@ -4053,7 +4053,12 @@ async function closeSession(id) {
       // The shell may already have ended and removed its tmux session.
     }
   }
-  await session.processHandle.kill();
+  try {
+    await session.processHandle.kill();
+  } catch (error) {
+    if (session.windowsHosted) throw error;
+    // A direct node-pty process may have exited before its queued exit event runs.
+  }
   if (sessions.get(id) === session) {
     clearMobileTerminalFrame(id);
     session.outputNormalizer?.dispose();

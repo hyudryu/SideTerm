@@ -172,6 +172,17 @@ export function serializeWorkspaceWithinBudget(
     return { serialized, workspace: durableWorkspace };
   }
 
+  for (const session of durableWorkspace.sessions) {
+    if (!session.terminalState || session.hostGeneration) continue;
+    session.terminalState = '';
+    if ('mobileTerminalState' in session) session.mobileTerminalState = '';
+    session.durableOutputRevision = 0;
+  }
+  serialized = encode();
+  if (serializedByteLength(serialized) <= maximumBytes) {
+    return { serialized, workspace: durableWorkspace };
+  }
+
   const leastImportantFirst = [...durableWorkspace.sessions].sort((left, right) => {
     const leftProtected = protectedCheckpointSessionIds.has(left.id);
     const rightProtected = protectedCheckpointSessionIds.has(right.id);

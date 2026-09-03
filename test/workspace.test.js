@@ -155,6 +155,31 @@ test('workspace budgeting retains checkpoints with pending acknowledgements', ()
   assert.equal(result.workspace.sessions[1].terminalState, '');
 });
 
+test('workspace budgeting drops generationless snapshots before usable history', () => {
+  const workspace = {
+    version: WORKSPACE_VERSION,
+    savedAt: 1,
+    groups: [{ id: 'group', sessionIds: ['direct'] }],
+    sessions: [{
+      id: 'direct', groupId: 'group', history: 'usable history',
+      terminalState: 'x'.repeat(2_000), mobileTerminalState: 'mobile',
+      hostGeneration: '', durableOutputRevision: 0, links: []
+    }],
+    activeId: 'direct',
+    activeGroupId: 'group'
+  };
+  const withoutSnapshot = structuredClone(workspace);
+  withoutSnapshot.sessions[0].terminalState = '';
+  withoutSnapshot.sessions[0].mobileTerminalState = '';
+  const maximumBytes = new TextEncoder().encode(JSON.stringify(withoutSnapshot)).byteLength;
+
+  const result = serializeWorkspaceWithinBudget(workspace, maximumBytes);
+
+  assert.equal(result.workspace.sessions[0].terminalState, '');
+  assert.equal(result.workspace.sessions[0].mobileTerminalState, '');
+  assert.equal(result.workspace.sessions[0].history, 'usable history');
+});
+
 function fixture() {
   const first = createGroup('first', 'First');
   const second = createGroup('second', 'Second');

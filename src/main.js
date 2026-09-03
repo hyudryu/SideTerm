@@ -831,6 +831,9 @@ function terminalHistory(terminal) {
 }
 
 function serializedTerminalCheckpoint(session) {
+  if (!session.hostGeneration) {
+    return { state: '', mobileState: '', hostGeneration: '', outputRevision: 0 };
+  }
   try {
     const state = `\x1bc${session.serializeAddon.serialize({ scrollback: LIVE_TERMINAL_SCROLLBACK_LINES })}`;
     const encoded = encodeTerminalState(state);

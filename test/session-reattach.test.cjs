@@ -194,6 +194,8 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(renderer, /checkpointGeneration: session\.hostGeneration,\s*checkpointRevision: session\.durableOutputRevision/);
   assert.match(renderer, /checkpointRevision: session\.durableOutputRevision,\s*terminalState: restoredTerminalState/);
   assert.match(renderer, /async function closeSession\(id, \{ ensureSession = true \} = \{\}\)[\s\S]*?await api\.close\(id\)[\s\S]*?sessions\.delete\(id\)/);
+  assert.match(main, /await session\.processHandle\.kill\(\);\s*\} catch \(error\) \{\s*if \(session\.windowsHosted\) throw error;/);
+  assert.match(renderer, /function serializedTerminalCheckpoint\(session\) \{\s*if \(!session\.hostGeneration\)[\s\S]*?state: '', mobileState: ''/);
   assert.match(renderer, /async function deleteGroup\(groupId\)[\s\S]*?await closeSession\(sessionId, \{ ensureSession: false \}\)[\s\S]*?if \(!allClosed\) return;[\s\S]*?groups = groups\.filter/);
   assert.match(main, /terminalSessionDrainActive = true;[\s\S]*?await Promise\.allSettled\(\[\.\.\.pendingTerminalCloseOperations\]\)[\s\S]*?detachAllSessionsPromise = null/);
   assert.match(main, /ipcMain\.handle\('terminal:close'[\s\S]*?if \(terminalSessionDrainActive\) throw new Error/);
