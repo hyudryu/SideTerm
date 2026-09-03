@@ -51,7 +51,7 @@ const { providerConfigurationError, providerDescriptor, providerScopedSetting, S
 const { parseMobileCreateSessionRequest } = require('./mobile/workspace-actions.cjs');
 const { bufferRendererOutput, reattachSession, sessionDetails, takeRendererOutput } = require('./sessions/reattach.cjs');
 const { connectWindowsPtyHost } = require('./sessions/windows-pty-client.cjs');
-const { createWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
+const { createReplayAwareWindowsVtOutputNormalizer } = require('./sessions/windows-vt-output.cjs');
 const { SupervisorActor } = require('./supervisor/actor.cjs');
 const { normalizeSupervisorEvent, PriorityEventBus, recoverAbandonedEvents } = require('./supervisor/event-bus.cjs');
 const { interpretConfirmationApprovalAnswer, PendingInteractionManager, normalizePendingInteraction, shouldConsumeInteractionAnswer } = require('./supervisor/interactions.cjs');
@@ -2878,11 +2878,18 @@ function requeueRendererOutput(session) {
   const inFlight = session?.rendererOutputInFlight || [];
   if (inFlight.length > 0) {
     const unacknowledged = inFlight.map((entry) => entry.data).join('');
-    session.rendererReplay = `${unacknowledged}${session.rendererReplay || ''}`.slice(-300_000);
+    session.rendererReplay = `${unacknowledged}${session.rendererReplay || ''}`;
+    const checkpointed = [...inFlight].reverse().find((entry) => entry.outputRevision);
+    if (checkpointed) {
+      session.rendererReplayGeneration = checkpointed.hostGeneration;
+      session.rendererReplayOutputRevision = checkpointed.outputRevision;
+    }
     session.rendererOutputInFlight = [];
   }
   if (session?.rendererReplayInFlight) {
     session.rendererReplayClaimToken = session.rendererReplayInFlight.claimToken;
+    session.rendererReplayGeneration = session.rendererReplayInFlight.hostGeneration;
+    session.rendererReplayOutputRevision = session.rendererReplayInFlight.outputRevision;
     session.rendererReplayInFlight = null;
   }
 }
@@ -2896,7 +2903,7 @@ function detachTerminalRenderers() {
     if (!exited.exitClaimToken) continue;
     const unacknowledged = (exited.rendererOutputInFlight || []).map((entry) => entry.data).join('');
     if (unacknowledged) {
-      exited.rendererReplay = `${unacknowledged}${exited.rendererReplay || ''}`.slice(-300_000);
+      exited.rendererReplay = `${unacknowledged}${exited.rendererReplay || ''}`;
       exited.rendererOutputInFlight = [];
     }
     exited.replayAcknowledged = !exited.rendererReplay;
@@ -2908,22 +2915,29 @@ function detachTerminalRenderers() {
   resetTerminalOutputFlow();
 }
 
-function sendTerminalData(id, data, rendererFlow = null, replayClaimToken = '') {
+function sendTerminalData(
+  id, data, rendererFlow = null, replayClaimToken = '', hostGeneration = '', outputRevision = 0
+) {
   if (!data) return false;
   const byteLength = Buffer.byteLength(data);
   const session = sessions.get(id);
   const rendererDataDeliveryToken = crypto.randomUUID();
   const replayDeliveryToken = replayClaimToken ? rendererDataDeliveryToken : '';
-  session?.rendererOutputInFlight.push({ deliveryToken: rendererDataDeliveryToken, data });
+  session?.rendererOutputInFlight.push({
+    deliveryToken: rendererDataDeliveryToken, data, hostGeneration, outputRevision
+  });
   if (replayClaimToken && session) {
     session.rendererReplayInFlight = {
       claimToken: replayClaimToken,
       deliveryToken: replayDeliveryToken,
-      data
+      data,
+      hostGeneration,
+      outputRevision
     };
   }
   send('terminal:data', {
-    id, data, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken
+    id, data, byteLength, replayClaimToken, replayDeliveryToken, rendererDataDeliveryToken,
+    hostGeneration, outputRevision
   });
   rendererFlow?.accept(byteLength);
   return true;
@@ -2950,7 +2964,9 @@ function deliverDesktopExitedSession(id, exited) {
       data: exited.rendererReplay,
       byteLength,
       exitClaimToken: exited.exitClaimToken,
-      exitDeliveryToken: exited.dataDeliveryToken
+      exitDeliveryToken: exited.dataDeliveryToken,
+      hostGeneration: exited.hostGeneration,
+      outputRevision: exited.outputRevision
     });
   }
   send('terminal:exit', {
@@ -2976,8 +2992,14 @@ function markTerminalRendererReady(id) {
   if (!session) return false;
   const replay = takeRendererOutput(session);
   const replayClaimToken = session.rendererReplayClaimToken;
+  const hostGeneration = session.rendererReplayGeneration;
+  const outputRevision = session.rendererReplayOutputRevision;
   session.rendererReplayClaimToken = '';
-  if (!sendTerminalData(id, replay, session.rendererFlow, replayClaimToken) && replayClaimToken) {
+  session.rendererReplayGeneration = '';
+  session.rendererReplayOutputRevision = 0;
+  if (!sendTerminalData(
+    id, replay, session.rendererFlow, replayClaimToken, hostGeneration, outputRevision
+  ) && replayClaimToken) {
     session.processHandle.acknowledgeReplay?.(replayClaimToken);
   }
   session.rendererAttached = true;
@@ -3640,6 +3662,7 @@ async function getWindowsPtyHostClient() {
       client.onClose(() => {
         if (windowsPtyHostClient === client) windowsPtyHostClient = null;
         if (windowsPtyHostConnection === connection) windowsPtyHostConnection = null;
+        if (!client.closedIntentionally) recoverWindowsPtyHostSessions(client);
       });
       return client;
     }).catch((error) => {
@@ -3657,25 +3680,91 @@ function disconnectWindowsPtyHost() {
   windowsPtyHostConnection = null;
 }
 
-function createSession({ id, cwd, cols = 100, rows = 30 }) {
+function createSession({
+  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0
+}) {
   if (!id) throw new Error('A session id is required.');
 
   const exitedSession = desktopExitedSessions.get(id);
-  if (exitedSession) return { ...exitedSession.details, reattached: true, exited: true };
+  if (exitedSession) {
+    applyPersistedRendererCheckpoint(exitedSession, checkpointGeneration, checkpointRevision);
+    return { ...exitedSession.details, reattached: true, exited: true };
+  }
   const existingSession = sessions.get(id);
-  if (existingSession) return reattachSession(id, existingSession, { cols, rows });
+  if (existingSession) {
+    applyPersistedRendererCheckpoint(existingSession, checkpointGeneration, checkpointRevision);
+    return reattachSession(id, existingSession, { cols, rows });
+  }
   const pendingSession = pendingSessionCreations.get(id);
   if (pendingSession) return pendingSession.promise;
 
   const pendingCreation = { cancelled: false, promise: null };
-  pendingCreation.promise = createNewSession({ id, cwd, cols, rows }, pendingCreation).finally(() => {
+  pendingCreation.promise = createNewSession({
+    id, cwd, cols, rows, checkpointGeneration, checkpointRevision
+  }, pendingCreation).finally(() => {
     if (pendingSessionCreations.get(id) === pendingCreation) pendingSessionCreations.delete(id);
   });
   pendingSessionCreations.set(id, pendingCreation);
   return pendingCreation.promise;
 }
 
-async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreation) {
+function applyPersistedRendererCheckpoint(session, generation, revision) {
+  const checkpointGeneration = String(generation || '');
+  const checkpointRevision = Number(revision);
+  if (!checkpointGeneration || !Number.isSafeInteger(checkpointRevision) || checkpointRevision < 0
+    || checkpointGeneration !== String(session.processHandle?.generation || '')) return false;
+  session.processHandle.checkpoint?.(checkpointRevision);
+
+  const retained = [];
+  for (const entry of session.rendererOutputInFlight || []) {
+    if (entry.hostGeneration === checkpointGeneration
+      && entry.outputRevision > 0 && entry.outputRevision <= checkpointRevision) {
+      session.rendererFlow?.acknowledge(Buffer.byteLength(entry.data));
+    } else {
+      retained.push(entry);
+    }
+  }
+  session.rendererOutputInFlight = retained;
+  if (session.rendererReplayGeneration === checkpointGeneration
+    && session.rendererReplayOutputRevision > 0
+    && session.rendererReplayOutputRevision <= checkpointRevision) {
+    session.rendererReplay = '';
+    session.rendererReplayClaimToken = '';
+    session.rendererReplayGeneration = '';
+    session.rendererReplayOutputRevision = 0;
+    session.rendererReplayInFlight = null;
+  }
+  if (session.hostGeneration === checkpointGeneration
+    && session.outputRevision > 0 && session.outputRevision <= checkpointRevision) {
+    session.rendererReplay = '';
+    session.rendererOutputInFlight = [];
+  }
+  return true;
+}
+
+function recoverWindowsPtyHostSessions(client) {
+  let shouldReload = pendingSessionCreations.size > 0;
+  for (const [id, session] of sessions) {
+    if (!session.windowsHosted || session.processHandle?.client !== client) continue;
+    session.outputNormalizer?.dispose();
+    session.rendererFlow.dispose();
+    sessions.delete(id);
+    shouldReload = true;
+  }
+  for (const [id, exited] of desktopExitedSessions) {
+    if (exited.processHandle?.client !== client) continue;
+    desktopExitedSessions.delete(id);
+    shouldReload = true;
+  }
+  if (!shouldReload || !mainWindow || mainWindow.isDestroyed()) return;
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+  }, 0);
+}
+
+async function createNewSession({
+  id, cwd, cols = 100, rows = 30, checkpointGeneration = '', checkpointRevision = 0
+}, pendingCreation) {
   const shellPath = resolveShell();
   const workingDirectory = safeCwd(cwd);
   const tmux = tmuxRuntime();
@@ -3706,7 +3795,9 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
       cols: Math.max(2, cols),
       rows: Math.max(1, rows),
       cwd: workingDirectory,
-      env: sessionEnvironment
+      env: sessionEnvironment,
+      checkpointGeneration,
+      checkpointRevision
     })
     : pty.spawn(executable, args, {
       name: 'xterm-256color',
@@ -3737,6 +3828,8 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
     rendererAttached: false,
     rendererReplay: '',
     rendererReplayClaimToken: '',
+    rendererReplayGeneration: '',
+    rendererReplayOutputRevision: 0,
     rendererReplayInFlight: null,
     rendererOutputInFlight: [],
     mobileRevision: 0,
@@ -3750,49 +3843,54 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
   };
   mobileExitedSessions.delete(id);
   sessions.set(id, session);
-  const forwardOutput = (data, replayClaimToken = '') => {
+  const forwardOutput = (
+    data, replayClaimToken = '', hostGeneration = '', outputRevision = 0
+  ) => {
     if ((!data && !replayClaimToken) || sessions.get(id) !== session) return;
     if (!data) {
       if (session.rendererAttached && terminalRendererCanAcknowledge()) {
         processHandle.acknowledgeReplay?.(replayClaimToken);
       } else {
         session.rendererReplayClaimToken = replayClaimToken;
+        session.rendererReplayGeneration = hostGeneration;
+        session.rendererReplayOutputRevision = outputRevision;
       }
       return;
     }
     observePotentialGitPush(id, data);
     if (session.rendererAttached && terminalRendererCanAcknowledge()) {
-      sendTerminalData(id, data, session.rendererFlow, replayClaimToken);
+      sendTerminalData(
+        id, data, session.rendererFlow, replayClaimToken, hostGeneration, outputRevision
+      );
     } else {
       bufferRendererOutput(session, data);
-      if (replayClaimToken) session.rendererReplayClaimToken = replayClaimToken;
+      if (replayClaimToken) {
+        session.rendererReplayClaimToken = replayClaimToken;
+        session.rendererReplayGeneration = hostGeneration;
+        session.rendererReplayOutputRevision = outputRevision;
+      }
     }
     session.mobileRevision += 1;
     session.mobileOutputBuffer += data;
     if (session.mobileOutputBuffer.length > 360_000) session.mobileOutputBuffer = session.mobileOutputBuffer.slice(-300_000);
     broadcastMobileTerminalOutput(id, data, session.mobileRevision);
   };
-  let pendingReplayClaimToken = '';
-  const outputNormalizer = createWindowsVtOutputNormalizer({
-    onOutput: (data) => {
-      const replayClaimToken = pendingReplayClaimToken;
-      pendingReplayClaimToken = '';
-      forwardOutput(data, replayClaimToken);
-    }
+  const outputNormalizer = createReplayAwareWindowsVtOutputNormalizer({
+    onOutput: (data, replay) => forwardOutput(
+      data, replay.claimToken || '', replay.hostGeneration || '', replay.outputRevision || 0
+    )
   });
   session.outputNormalizer = outputNormalizer;
-  processHandle.onData((data, replayClaimToken = '') => {
-    const carriedClaimToken = replayClaimToken || pendingReplayClaimToken;
-    const output = outputNormalizer.push(data);
-    if (carriedClaimToken && outputNormalizer.hasPending) {
-      pendingReplayClaimToken = carriedClaimToken;
-      forwardOutput(output);
-    } else {
-      pendingReplayClaimToken = '';
-      forwardOutput(output, carriedClaimToken);
-    }
+  processHandle.onData((
+    data, replayClaimToken = '', hostGeneration = '', outputRevision = 0
+  ) => {
+    outputNormalizer.push(data, replayClaimToken
+      ? { claimToken: replayClaimToken, hostGeneration, outputRevision }
+      : null);
   });
-  processHandle.onExit(({ exitCode, signal, replay = '' }, exitClaimToken = '') => {
+  processHandle.onExit(({
+    exitCode, signal, replay = '', outputRevision = 0
+  }, exitClaimToken = '') => {
     if (sessions.get(id) !== session) {
       session.rendererFlow.dispose();
       outputNormalizer.dispose();
@@ -3807,14 +3905,15 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
         session.rendererOutputInFlight = [];
         session.rendererReplayInFlight = null;
         session.rendererReplayClaimToken = '';
+        session.rendererReplayGeneration = '';
+        session.rendererReplayOutputRevision = 0;
       } else {
         requeueRendererOutput(session);
       }
-      if (replay) forwardOutput(outputNormalizer.push(replay));
+      outputNormalizer.flush();
+      if (replay) outputNormalizer.push(replay);
     }
-    const replayClaimToken = pendingReplayClaimToken;
-    pendingReplayClaimToken = '';
-    forwardOutput(outputNormalizer.flush(), replayClaimToken);
+    outputNormalizer.flush();
     clearMobileTerminalFrame(id);
     const finalScreen = `${captureSessionScreen(session)}\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\n`;
     retainMobileExitedSession(id, session, finalScreen, exitCode);
@@ -3831,6 +3930,8 @@ async function createNewSession({ id, cwd, cols = 100, rows = 30 }, pendingCreat
         signal,
         exitClaimToken,
         processHandle,
+        hostGeneration: processHandle.generation || '',
+        outputRevision,
         rendererOutputInFlight,
         replayAcknowledged: false,
         dataAcknowledged: false,

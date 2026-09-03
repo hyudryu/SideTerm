@@ -4,13 +4,17 @@ import {
   DEFAULT_GROUP_COLOR,
   WORKSPACE_VERSION,
   createGroup,
+  decodeTerminalState,
+  encodeTerminalState,
   moveSession,
   nearestGroupGap,
   newestSavedWorkspace,
   parseSavedWorkspace,
+  persistedCheckpointCoversDelivery,
   persistWorkspaceCopies,
   removeSessionFromGroups,
   reorderGroup,
+  serializeWorkspaceWithinBudget,
   sortedSessionIds
 } from '../src/workspace.js';
 
@@ -29,6 +33,83 @@ test('required workspace persistence rejects before spawn when both durable copi
     saveBackup: async () => { throw new Error('backup unavailable'); },
     required: true
   }), true);
+});
+
+test('host delivery acknowledgements require the exact persisted generation and revision', () => {
+  const session = { lastPersistedHostGeneration: 'generation-a', lastPersistedOutputRevision: 4 };
+  assert.equal(persistedCheckpointCoversDelivery(session, {
+    hostGeneration: 'generation-a', outputRevision: 4
+  }), true);
+  assert.equal(persistedCheckpointCoversDelivery(session, {
+    hostGeneration: 'generation-a', outputRevision: 5
+  }), false);
+  assert.equal(persistedCheckpointCoversDelivery(session, {
+    hostGeneration: 'generation-b', outputRevision: 4
+  }), false);
+});
+
+test('large terminal checkpoints use a lossless compressed representation', () => {
+  const state = `\u001bc\u001b[?1049h${' '.repeat(1_500_000)}\u001b[?2004h`;
+  const encoded = encodeTerminalState(state);
+
+  assert.ok(encoded.length < state.length);
+  assert.equal(decodeTerminalState(encoded), state);
+  assert.equal(decodeTerminalState(state), state);
+});
+
+test('terminal checkpoint encoding and decoding reject over-limit state', () => {
+  const overLimit = 'z'.repeat((32 * 1024 * 1024) + 1);
+  assert.equal(encodeTerminalState(overLimit), '');
+  assert.equal(decodeTerminalState(overLimit), '');
+  assert.equal(decodeTerminalState(`sideterm:rle:\0${(32 * 1024 * 1024 + 1).toString(36)}:z`), '');
+});
+
+test('workspace budgeting preserves session/group identity and clears dropped checkpoints', () => {
+  const workspace = {
+    version: WORKSPACE_VERSION,
+    activeId: 'active',
+    activeGroupId: 'group',
+    groups: [{ id: 'group', title: 'Group', sessionIds: ['inactive', 'active'] }],
+    sessions: [
+      { id: 'inactive', groupId: 'group', history: 'old', terminalState: 'x'.repeat(600), hostGeneration: 'old-generation', durableOutputRevision: 8, links: [] },
+      { id: 'active', groupId: 'group', history: 'current', terminalState: 'y'.repeat(200), hostGeneration: 'active-generation', durableOutputRevision: 9, links: [] }
+    ]
+  };
+  const activeOnly = structuredClone(workspace);
+  Object.assign(activeOnly.sessions[0], { terminalState: '', hostGeneration: '', durableOutputRevision: 0 });
+  const budget = new TextEncoder().encode(JSON.stringify(activeOnly)).byteLength;
+  const result = serializeWorkspaceWithinBudget(workspace, budget);
+
+  assert.ok(new TextEncoder().encode(result.serialized).byteLength <= budget);
+  assert.deepEqual(result.workspace.groups[0].sessionIds, ['inactive', 'active']);
+  assert.equal(result.workspace.sessions[0].terminalState, '');
+  assert.equal(result.workspace.sessions[0].hostGeneration, '');
+  assert.equal(result.workspace.sessions[0].durableOutputRevision, 0);
+  assert.equal(result.workspace.sessions[1].terminalState.length, 200);
+  assert.equal(workspace.sessions[0].terminalState.length, 600);
+});
+
+test('workspace budgeting retains checkpoints with pending acknowledgements', () => {
+  const workspace = {
+    version: WORKSPACE_VERSION,
+    activeId: 'active',
+    activeGroupId: 'group',
+    groups: [{ id: 'group', title: 'Group', sessionIds: ['pending', 'active'] }],
+    sessions: [
+      { id: 'pending', groupId: 'group', history: 'h'.repeat(500), terminalState: 'p'.repeat(300), hostGeneration: 'pending-generation', durableOutputRevision: 7, links: [] },
+      { id: 'active', groupId: 'group', history: 'h'.repeat(500), terminalState: 'a'.repeat(600), hostGeneration: 'active-generation', durableOutputRevision: 8, links: [] }
+    ]
+  };
+  const pendingOnly = structuredClone(workspace);
+  for (const session of pendingOnly.sessions) session.history = '';
+  Object.assign(pendingOnly.sessions[1], { terminalState: '', hostGeneration: '', durableOutputRevision: 0 });
+  const budget = new TextEncoder().encode(JSON.stringify(pendingOnly)).byteLength;
+  const result = serializeWorkspaceWithinBudget(workspace, budget, new Set(['pending']));
+
+  assert.equal(result.workspace.sessions[0].terminalState.length, 300);
+  assert.equal(result.workspace.sessions[0].hostGeneration, 'pending-generation');
+  assert.equal(result.workspace.sessions[0].durableOutputRevision, 7);
+  assert.equal(result.workspace.sessions[1].terminalState, '');
 });
 
 function fixture() {
@@ -110,7 +191,7 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
       { id: 'second', title: '', color: 'not-a-color', collapsed: true, sessionIds: [] }
     ],
     sessions: [
-      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', notified: true, inputRequired: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, lastAiContextActivityAt: 1220, staleAiSummaryDone: true, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
+      { id: 'a', groupId: 'first', title: 'One', manualTitle: true, cwd: '/tmp', history: 'hello', terminalState: '\u001b[?1049hfull screen', terminalStateCols: 132, terminalStateRows: 41, hostGeneration: 'generation-a', durableOutputRevision: 17, notified: true, inputRequired: true, attentionCycleId: 'cycle-a', activityArmed: true, displayName: 'API work', summary: 'Fix auth', agent: 'Codex', aiInitialSummaryDone: true, lastAiSummaryAt: 1234, lastAiContextActivityAt: 1220, staleAiSummaryDone: true, createdAt: 10, lastResponseAt: 20, links: [{ url: 'https://example.com/docs', seenAt: 0 }, { url: 'https://github.com/a/b/pull/1/files', seenAt: 1 }] },
       { id: 'b', groupId: 'second', title: 'Two' }
     ]
   }));
@@ -135,6 +216,11 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
   assert.equal(saved.sessions[0].staleAiSummaryDone, true);
   assert.equal(saved.sessions[0].createdAt, 10);
   assert.equal(saved.sessions[0].lastResponseAt, 20);
+  assert.equal(saved.sessions[0].terminalState, '\u001b[?1049hfull screen');
+  assert.equal(saved.sessions[0].terminalStateCols, 132);
+  assert.equal(saved.sessions[0].terminalStateRows, 41);
+  assert.equal(saved.sessions[0].hostGeneration, 'generation-a');
+  assert.equal(saved.sessions[0].durableOutputRevision, 17);
   assert.equal(saved.sessions[0].links.length, 1);
   assert.equal(saved.sessions[0].links[0].url, 'https://github.com/a/b/pull/1');
 });
@@ -142,6 +228,22 @@ test('saved workspaces validate, deduplicate, and restore unassigned sessions', 
 test('invalid saved workspace data is ignored', () => {
   assert.equal(parseSavedWorkspace('{oops'), null);
   assert.equal(parseSavedWorkspace(JSON.stringify({ version: 999, groups: [], sessions: [] })), null);
+});
+
+test('workspace checkpoints require a valid state and matching host generation', () => {
+  const parsed = parseSavedWorkspace(JSON.stringify({
+    version: WORKSPACE_VERSION,
+    groups: [{ id: 'group', title: 'Group', sessionIds: ['empty', 'missing-generation'] }],
+    sessions: [
+      { id: 'empty', groupId: 'group', terminalState: '', hostGeneration: 'host-a', durableOutputRevision: 5 },
+      { id: 'missing-generation', groupId: 'group', terminalState: '\u001bcstate', durableOutputRevision: 6 }
+    ]
+  }));
+
+  assert.equal(parsed.sessions[0].hostGeneration, '');
+  assert.equal(parsed.sessions[0].durableOutputRevision, 0);
+  assert.equal(parsed.sessions[1].hostGeneration, '');
+  assert.equal(parsed.sessions[1].durableOutputRevision, 0);
 });
 
 test('pending initial AI context survives workspace restoration', () => {

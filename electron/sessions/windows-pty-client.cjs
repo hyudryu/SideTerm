@@ -52,7 +52,7 @@ function send(socket, payload) {
   socket.write(`${JSON.stringify(payload)}\n`);
 }
 
-function connectSocket(metadata, timeoutMs = 1_000) {
+function connectSocket(metadata, timeoutMs = 1_000, replayAcknowledgements = true) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(metadata.pipeName);
     socket.setEncoding('utf8');
@@ -96,7 +96,7 @@ function connectSocket(metadata, timeoutMs = 1_000) {
       connected = true;
       send(socket, {
         type: 'auth', token: metadata.token,
-        capabilities: { replayAcknowledgements: true }
+        capabilities: { replayAcknowledgements }
       });
     });
   });
@@ -112,7 +112,11 @@ class WindowsPtyHandle {
     this.reattached = Boolean(details.reattached);
     this.generation = String(details.generation || '');
     this.replayClaimToken = String(details.replayClaimToken || '');
+    this.replayOutputRevision = Number.isSafeInteger(details.outputRevision)
+      ? details.outputRevision
+      : 0;
     this.pendingReplayClaimToken = '';
+    this.pendingReplayOutputRevision = 0;
     this.exitClaimToken = String(details.exitClaimToken || '');
     this.exitDelivered = false;
     this.dataListeners = new Set();
@@ -126,9 +130,11 @@ class WindowsPtyHandle {
     if (this.pendingData || this.pendingReplayClaimToken) {
       const data = this.pendingData;
       const replayClaimToken = this.pendingReplayClaimToken;
+      const outputRevision = this.pendingReplayOutputRevision;
       this.pendingData = '';
       this.pendingReplayClaimToken = '';
-      listener(data, replayClaimToken);
+      this.pendingReplayOutputRevision = 0;
+      listener(data, replayClaimToken, this.generation, outputRevision);
     }
     return { dispose: () => this.dataListeners.delete(listener) };
   }
@@ -178,6 +184,7 @@ class WindowsPtyHandle {
     this.exitListeners.clear();
     this.pendingData = '';
     this.pendingReplayClaimToken = '';
+    this.pendingReplayOutputRevision = 0;
     this.pendingExit = null;
     this.replayClaimToken = '';
     this.exitClaimToken = '';
@@ -199,13 +206,27 @@ class WindowsPtyHandle {
     });
   }
 
-  emitData(data, replayClaimToken = '') {
+  checkpoint(outputRevision) {
+    if (!Number.isSafeInteger(outputRevision) || outputRevision < 0) return;
+    if (this.replayOutputRevision <= outputRevision) {
+      this.replayClaimToken = '';
+      this.replayOutputRevision = 0;
+    }
+    this.client.command({
+      action: 'checkpoint', id: this.id, generation: this.generation, outputRevision
+    });
+  }
+
+  emitData(data, replayClaimToken = '', outputRevision = 0) {
     if (this.dataListeners.size === 0) {
-      this.pendingData = `${this.pendingData}${data}`.slice(-300_000);
+      this.pendingData = `${this.pendingData}${data}`;
       if (replayClaimToken) this.pendingReplayClaimToken = replayClaimToken;
+      if (outputRevision) this.pendingReplayOutputRevision = outputRevision;
       return;
     }
-    for (const listener of this.dataListeners) listener(data, replayClaimToken);
+    for (const listener of this.dataListeners) {
+      listener(data, replayClaimToken, this.generation, outputRevision);
+    }
   }
 
   emitExit(event) {
@@ -271,10 +292,17 @@ class WindowsPtyHostClient {
       if (handle && (!generation || handle.generation === generation)) {
         if (message.type === 'replay') {
           handle.replayClaimToken = String(message.replayClaimToken || '');
+          handle.replayOutputRevision = Number.isSafeInteger(message.outputRevision)
+            ? message.outputRevision
+            : 0;
         }
-        handle.emitData(data, message.type === 'replay' ? handle.replayClaimToken : '');
+        handle.emitData(
+          data,
+          message.type === 'replay' ? handle.replayClaimToken : '',
+          message.type === 'replay' ? handle.replayOutputRevision : 0
+        );
       } else {
-        this.orphanData.set(key, `${this.orphanData.get(key) || ''}${data}`.slice(-300_000));
+        this.orphanData.set(key, `${this.orphanData.get(key) || ''}${data}`);
       }
       return;
     }
@@ -285,13 +313,18 @@ class WindowsPtyHostClient {
       const event = {
         exitCode: Number(message.exitCode),
         signal: Number(message.signal),
-        exitClaimToken: String(message.exitClaimToken || '')
+        exitClaimToken: String(message.exitClaimToken || ''),
+        outputRevision: Number.isSafeInteger(message.outputRevision) ? message.outputRevision : 0
       };
       const handle = this.handles.get(id);
       const replay = Buffer.from(String(message.replay || ''), 'base64').toString('utf8');
       if (handle && (!generation || handle.generation === generation)) {
         handle.exitClaimToken = event.exitClaimToken;
-        const exitEvent = { exitCode: event.exitCode, signal: event.signal };
+        const exitEvent = {
+          exitCode: event.exitCode,
+          signal: event.signal,
+          outputRevision: event.outputRevision
+        };
         if (replay) exitEvent.replay = replay;
         handle.emitExit(exitEvent);
       } else {
@@ -306,9 +339,7 @@ class WindowsPtyHostClient {
     const error = new Error('The Windows PTY host connection closed.');
     for (const pending of this.pendingRequests.values()) pending.reject(error);
     this.pendingRequests.clear();
-    if (!this.closedIntentionally) {
-      for (const handle of this.handles.values()) handle.emitExit({ exitCode: -1, signal: 0 });
-    }
+    for (const handle of this.handles.values()) handle.detach();
     this.handles.clear();
     this.orphanData.clear();
     this.orphanExits.clear();
@@ -365,20 +396,25 @@ class WindowsPtyHostClient {
       : `${replay}${this.orphanData.get(key) || ''}`;
     if (pending) {
       this.orphanData.delete(key);
-      handle.emitData(pending, handle.replayClaimToken);
+      handle.emitData(pending, handle.replayClaimToken, handle.replayOutputRevision);
     } else if (handle.replayClaimToken) {
-      handle.emitData('', handle.replayClaimToken);
+      handle.emitData('', handle.replayClaimToken, handle.replayOutputRevision);
     }
     const orphanExit = this.orphanExits.get(key);
     const pendingExit = details.exited ? {
       exitCode: Number(details.exitCode),
       signal: Number(details.signal),
-      exitClaimToken: String(details.exitClaimToken || '')
+      exitClaimToken: String(details.exitClaimToken || ''),
+      outputRevision: Number.isSafeInteger(details.outputRevision) ? details.outputRevision : 0
     } : orphanExit;
     if (pendingExit) {
       this.orphanExits.delete(key);
       handle.exitClaimToken = pendingExit.exitClaimToken;
-      const exitEvent = { exitCode: pendingExit.exitCode, signal: pendingExit.signal };
+      const exitEvent = {
+        exitCode: pendingExit.exitCode,
+        signal: pendingExit.signal,
+        outputRevision: pendingExit.outputRevision
+      };
       if (!details.exited && pendingExit.replay) exitEvent.replay = pendingExit.replay;
       handle.emitExit(exitEvent);
     }
@@ -430,7 +466,10 @@ async function launchHost({ metadataPath, hostScript, executablePath, staleMetad
   return { protocol: 1, pipeName, token, pid: child.pid };
 }
 
-async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath = process.execPath, timeoutMs = 5_000 }) {
+async function connectWindowsPtyHost({
+  metadataPath, hostScript, executablePath = process.execPath, timeoutMs = 5_000,
+  replayAcknowledgements = true
+}) {
   const deadline = Date.now() + timeoutMs;
   const existing = readMetadata(metadataPath);
   if (existing) {
@@ -441,7 +480,7 @@ async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath 
     while (Date.now() < deadline) {
       try {
         const remaining = Math.max(50, Math.min(1_000, deadline - Date.now()));
-        const connected = await connectSocket(existing, remaining);
+        const connected = await connectSocket(existing, remaining, replayAcknowledgements);
         return new WindowsPtyHostClient(connected.socket, connected.remainder);
       } catch (error) {
         lastError = error;
@@ -465,13 +504,15 @@ async function connectWindowsPtyHost({ metadataPath, hostScript, executablePath 
     if (error?.code !== 'SIDETERM_PTY_METADATA_CHANGED') throw error;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw error;
-    return connectWindowsPtyHost({ metadataPath, hostScript, executablePath, timeoutMs: remaining });
+    return connectWindowsPtyHost({
+      metadataPath, hostScript, executablePath, timeoutMs: remaining, replayAcknowledgements
+    });
   }
   let lastError = null;
   while (Date.now() < deadline) {
     try {
       const metadata = readMetadata(metadataPath) || launched;
-      const connected = await connectSocket(metadata, 250);
+      const connected = await connectSocket(metadata, 250, replayAcknowledgements);
       return new WindowsPtyHostClient(connected.socket, connected.remainder);
     } catch (error) {
       lastError = error;

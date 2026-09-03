@@ -4,7 +4,7 @@ function positiveInteger(value, fallback) {
 }
 
 function sessionDetails(id, session, { resumed = Boolean(session.resumed), reattached = false } = {}) {
-  return {
+  const details = {
     id,
     pid: session.processHandle.pid,
     cwd: session.cwd,
@@ -14,11 +14,13 @@ function sessionDetails(id, session, { resumed = Boolean(session.resumed), reatt
     persistent: Boolean(session.tmux || session.windowsHosted),
     serverScrollback: Boolean(session.tmux)
   };
+  if (session.processHandle.generation) details.hostGeneration = session.processHandle.generation;
+  return details;
 }
 
-function bufferRendererOutput(session, data, maximumCharacters = 300_000) {
+function bufferRendererOutput(session, data) {
   if (!session || !data) return;
-  session.rendererReplay = `${session.rendererReplay || ''}${data}`.slice(-maximumCharacters);
+  session.rendererReplay = `${session.rendererReplay || ''}${data}`;
 }
 
 function takeRendererOutput(session) {

@@ -3,6 +3,126 @@ import { normalizeGithubPullRequestUrl } from './activity.js';
 export const WORKSPACE_VERSION = 1;
 export const DEFAULT_GROUP_COLOR = '#60cdff';
 export const GROUP_SORTS = ['default', 'created', 'response', 'name'];
+export const MAX_WORKSPACE_BACKUP_BYTES = 7 * 1024 * 1024;
+
+const TERMINAL_STATE_COMPRESSION_PREFIX = 'sideterm:rle:';
+const TERMINAL_STATE_RUN_MARKER = '\0';
+const MAX_DECOMPRESSED_TERMINAL_STATE_CHARS = 32 * 1024 * 1024;
+
+function serializedByteLength(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+export function encodeTerminalState(value) {
+  const state = String(value || '');
+  if (!state || state.length > MAX_DECOMPRESSED_TERMINAL_STATE_CHARS) return '';
+  const encoded = [];
+  for (let index = 0; index < state.length;) {
+    const character = state[index];
+    let end = index + 1;
+    while (end < state.length && state[end] === character) end += 1;
+    const count = end - index;
+    if (character === TERMINAL_STATE_RUN_MARKER || count >= 4) {
+      encoded.push(TERMINAL_STATE_RUN_MARKER, count.toString(36), ':', character);
+    } else {
+      encoded.push(state.slice(index, end));
+    }
+    index = end;
+  }
+  const compressed = `${TERMINAL_STATE_COMPRESSION_PREFIX}${encoded.join('')}`;
+  return compressed.length < state.length ? compressed : state;
+}
+
+export function decodeTerminalState(value) {
+  const stored = String(value || '');
+  if (!stored.startsWith(TERMINAL_STATE_COMPRESSION_PREFIX)) {
+    return stored.length <= MAX_DECOMPRESSED_TERMINAL_STATE_CHARS ? stored : '';
+  }
+  const body = stored.slice(TERMINAL_STATE_COMPRESSION_PREFIX.length);
+  const decoded = [];
+  let decodedLength = 0;
+  for (let index = 0; index < body.length;) {
+    const marker = body.indexOf(TERMINAL_STATE_RUN_MARKER, index);
+    if (marker < 0) {
+      const remainder = body.slice(index);
+      if (decodedLength + remainder.length > MAX_DECOMPRESSED_TERMINAL_STATE_CHARS) return '';
+      decoded.push(remainder);
+      break;
+    }
+    if (marker > index) {
+      const literal = body.slice(index, marker);
+      if (decodedLength + literal.length > MAX_DECOMPRESSED_TERMINAL_STATE_CHARS) return '';
+      decoded.push(literal);
+      decodedLength += literal.length;
+    }
+    const separator = body.indexOf(':', marker + 1);
+    if (separator < 0 || separator - marker > 8 || separator + 1 >= body.length) return '';
+    const countText = body.slice(marker + 1, separator);
+    if (!/^[0-9a-z]+$/.test(countText)) return '';
+    const count = Number.parseInt(countText, 36);
+    if (!Number.isSafeInteger(count) || count <= 0
+      || decodedLength + count > MAX_DECOMPRESSED_TERMINAL_STATE_CHARS) return '';
+    decoded.push(body[separator + 1].repeat(count));
+    decodedLength += count;
+    index = separator + 2;
+  }
+  return decoded.join('');
+}
+
+export function persistedCheckpointCoversDelivery(session, delivery) {
+  return Boolean(session
+    && session.lastPersistedHostGeneration === String(delivery?.hostGeneration || '')
+    && Number.isSafeInteger(delivery?.outputRevision)
+    && delivery.outputRevision >= 0
+    && session.lastPersistedOutputRevision >= delivery.outputRevision);
+}
+
+export function serializeWorkspaceWithinBudget(
+  workspace, maximumBytes = MAX_WORKSPACE_BACKUP_BYTES, protectedCheckpointSessionIds = new Set()
+) {
+  const durableWorkspace = {
+    ...workspace,
+    groups: workspace.groups.map((group) => ({ ...group, sessionIds: [...group.sessionIds] })),
+    sessions: workspace.sessions.map((session) => ({
+      ...session,
+      links: Array.isArray(session.links) ? session.links.map((link) => ({ ...link })) : []
+    }))
+  };
+  const encode = () => JSON.stringify(durableWorkspace);
+  let serialized = encode();
+  if (serializedByteLength(serialized) <= maximumBytes) {
+    return { serialized, workspace: durableWorkspace };
+  }
+
+  const leastImportantFirst = [...durableWorkspace.sessions].sort((left, right) => {
+    const leftProtected = protectedCheckpointSessionIds.has(left.id);
+    const rightProtected = protectedCheckpointSessionIds.has(right.id);
+    if (leftProtected !== rightProtected) return leftProtected ? 1 : -1;
+    if (left.id === durableWorkspace.activeId) return 1;
+    if (right.id === durableWorkspace.activeId) return -1;
+    return String(right.terminalState || '').length - String(left.terminalState || '').length;
+  });
+  for (const session of leastImportantFirst) {
+    if (!session.history) continue;
+    session.history = '';
+    serialized = encode();
+    if (serializedByteLength(serialized) <= maximumBytes) {
+      return { serialized, workspace: durableWorkspace };
+    }
+  }
+  for (const session of leastImportantFirst) {
+    if (!session.terminalState || protectedCheckpointSessionIds.has(session.id)) continue;
+    session.terminalState = '';
+    session.hostGeneration = '';
+    session.durableOutputRevision = 0;
+    serialized = encode();
+    if (serializedByteLength(serialized) <= maximumBytes) {
+      return { serialized, workspace: durableWorkspace };
+    }
+  }
+
+  throw new Error('Workspace checkpoints exceed the durable backup limit.');
+}
 
 export async function persistWorkspaceCopies(serializedWorkspace, {
   saveBrowser,
@@ -141,7 +261,22 @@ export function parseSavedWorkspace(raw) {
 
     const sessions = value.sessions
       .filter((session) => session && typeof session.id === 'string' && typeof session.groupId === 'string')
-      .map((session) => ({
+      .map((session) => {
+        const terminalState = typeof session.terminalState === 'string'
+          && session.terminalState.length > 0
+          && session.terminalState.length <= MAX_WORKSPACE_BACKUP_BYTES
+          && decodeTerminalState(session.terminalState)
+          ? session.terminalState
+          : '';
+        const hostGeneration = terminalState && typeof session.hostGeneration === 'string'
+          ? session.hostGeneration.slice(0, 100)
+          : '';
+        const durableOutputRevision = terminalState && hostGeneration
+          && Number.isSafeInteger(session.durableOutputRevision)
+          && session.durableOutputRevision >= 0
+          ? session.durableOutputRevision
+          : 0;
+        return {
         id: session.id,
         groupId: session.groupId,
         title: typeof session.title === 'string' ? session.title : 'Terminal',
@@ -149,6 +284,15 @@ export function parseSavedWorkspace(raw) {
         shell: typeof session.shell === 'string' ? session.shell : 'shell',
         cwd: typeof session.cwd === 'string' ? session.cwd : '',
         history: typeof session.history === 'string' ? session.history : '',
+        terminalState,
+        terminalStateCols: Number.isInteger(session.terminalStateCols) && session.terminalStateCols >= 2
+          ? Math.min(1_000, session.terminalStateCols)
+          : 80,
+        terminalStateRows: Number.isInteger(session.terminalStateRows) && session.terminalStateRows >= 1
+          ? Math.min(500, session.terminalStateRows)
+          : 24,
+        hostGeneration,
+        durableOutputRevision,
         notified: Boolean(session.notified),
         inputRequired: Boolean(session.inputRequired),
         attentionCycleId: typeof session.attentionCycleId === 'string' ? session.attentionCycleId.slice(0, 200) : '',
@@ -172,7 +316,8 @@ export function parseSavedWorkspace(raw) {
             .filter((link) => link.url)
             .slice(-100)
           : []
-      }));
+      };
+      });
     const validSessionIds = new Set(sessions.map((session) => session.id));
     const seenGroupIds = new Set();
     const groups = value.groups

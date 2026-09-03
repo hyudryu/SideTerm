@@ -60,17 +60,27 @@ function waitForOutput(handle, pattern, timeoutMs = 5_000) {
 function waitForUnacknowledgedOutput(handle, pattern, timeoutMs = 5_000) {
   return new Promise((resolve, reject) => {
     let output = '';
+    let checkpoint = null;
     let subscription = null;
     const timer = setTimeout(() => {
       subscription?.dispose();
       reject(new Error(`Timed out waiting for unacknowledged PTY output matching ${pattern}. Received: ${output}`));
     }, timeoutMs);
-    subscription = handle.onData((data) => {
+    subscription = handle.onData((data, replayClaimToken, hostGeneration, outputRevision) => {
       output += data;
-      if (!pattern.test(output)) return;
+      if (replayClaimToken) {
+        checkpoint = { replayClaimToken, hostGeneration, outputRevision };
+      }
+      if (!pattern.test(output)) {
+        if (replayClaimToken) {
+          handle.acknowledgeReplay(replayClaimToken);
+          checkpoint = null;
+        }
+        return;
+      }
       clearTimeout(timer);
       subscription?.dispose();
-      resolve(output);
+      resolve({ output, ...checkpoint });
     });
   });
 }
@@ -122,6 +132,23 @@ test('hosted PTY handles satisfy output flow control with remote pause and resum
     { action: 'pause', id: 'flow-session', generation: 'flow-generation' },
     { action: 'resume', id: 'flow-session', generation: 'flow-generation' }
   ]);
+});
+
+test('hosted PTY checkpoints are generation-scoped and clear covered local leases', () => {
+  const commands = [];
+  const client = { command: (payload) => commands.push(payload), handles: new Map() };
+  const handle = new WindowsPtyHandle(client, {
+    id: 'checkpoint-session', pid: 42, shell: 'powershell.exe', cwd: 'C:\\workspace',
+    generation: 'checkpoint-generation', replayClaimToken: 'old-lease', outputRevision: 11
+  });
+
+  handle.checkpoint(11);
+
+  assert.equal(handle.replayClaimToken, '');
+  assert.equal(handle.replayOutputRevision, 0);
+  assert.deepEqual(commands, [{
+    action: 'checkpoint', id: 'checkpoint-session', generation: 'checkpoint-generation', outputRevision: 11
+  }]);
 });
 
 test('hosted PTY writes are chunked below the shared pipe frame limit', () => {
@@ -196,7 +223,7 @@ test('exit events received before handle registration are delivered after creati
   });
 
   assert.equal(data, 'last output');
-  assert.deepEqual(exit, { exitCode: 7, signal: 0, replay: 'tail output' });
+  assert.deepEqual(exit, { exitCode: 7, signal: 0, outputRevision: 0, replay: 'tail output' });
   assert.equal(exitClaimToken, 'instant-claim');
   assert.equal(client.handles.has('instant-exit'), false);
   assert.equal(client.orphanExits.size, 0);
@@ -235,7 +262,7 @@ test('collected exit tombstones are acknowledged only after replay and exit deli
   handle.onData((data) => { output += data; });
 
   assert.equal(output, 'final output');
-  assert.deepEqual(exit, { exitCode: 9, signal: 0 });
+  assert.deepEqual(exit, { exitCode: 9, signal: 0, outputRevision: 0 });
   assert.deepEqual(commands, []);
   handle.acknowledgeExitedSession(deliveredExitClaimToken);
   assert.deepEqual(commands, [{
@@ -315,6 +342,12 @@ test('a throwing PTY command is contained and later commands remain usable', () 
 test('PTY client close notifications are idempotent and support late subscribers', () => {
   const socket = fakeSocket();
   const client = new WindowsPtyHostClient(socket);
+  const handle = new WindowsPtyHandle(client, {
+    id: 'recoverable-session', pid: 47, shell: 'powershell.exe', cwd: 'C:\\workspace', generation: 'recoverable-generation'
+  });
+  client.handles.set(handle.id, handle);
+  let exits = 0;
+  handle.onExit(() => { exits += 1; });
   let notifications = 0;
   client.onClose(() => { notifications += 1; });
 
@@ -324,11 +357,15 @@ test('PTY client close notifications are idempotent and support late subscribers
 
   assert.equal(notifications, 2);
   assert.equal(client.closed, true);
+  assert.equal(exits, 0);
+  assert.equal(client.handles.size, 0);
 });
 
 test('main invalidates both cached PTY host references when their client closes', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /client\.onClose\(\(\) => \{\s*if \(windowsPtyHostClient === client\) windowsPtyHostClient = null;\s*if \(windowsPtyHostConnection === connection\) windowsPtyHostConnection = null;/);
+  assert.match(main, /if \(!client\.closedIntentionally\) recoverWindowsPtyHostSessions\(client\);/);
+  assert.match(main, /function recoverWindowsPtyHostSessions\(client\)[\s\S]*?session\.processHandle\?\.client !== client[\s\S]*?sessions\.delete\(id\)[\s\S]*?mainWindow\.webContents\.reload\(\)/);
 });
 
 test('Windows shell overrides are resolved before they cross the PTY host boundary', () => {
@@ -342,7 +379,9 @@ test('Windows shell overrides are resolved before they cross the PTY host bounda
   assert.match(host, /exitClaimToken: exited\.claimToken/);
   assert.match(host, /generation: session\.generation/);
   assert.match(host, /message\.action === 'ack-replay'[\s\S]*?session\.replayLease = null/);
-  assert.match(host, /session\.detachedOutput = `\$\{session\.detachedOutput\}\$\{data\}`\.slice\(-300_000\);[\s\S]*?deliverAttachedReplay\(id, session\)/);
+  assert.match(host, /session\.detachedOutput = `\$\{session\.detachedOutput\}\$\{data\}`;[\s\S]*?updateBufferedOutputBackpressure\(session\);[\s\S]*?deliverAttachedReplay\(id, session\)/);
+  assert.match(host, /HOST_BUFFER_HIGH_WATER_CHARACTERS = 250_000[\s\S]*?session\.processHandle\.pause\(\)[\s\S]*?session\.processHandle\.resume\(\)/);
+  assert.match(host, /function exitedReplay\(exited\)[\s\S]*?return `\$\{leased\}\$\{detached\}`;/);
   assert.match(host, /retainExitedSession\(id, session, normalizedExitCode, normalizedSignal\);[\s\S]*?type: 'exit'/);
   assert.match(host, /if \(message\?\.type === 'command'\) dispatchPtyCommand\(handleCommand, socket, message\);/);
   assert.match(host, /sideTermReplayAcknowledgements = message\?\.capabilities\?\.replayAcknowledgements === true/);
@@ -469,7 +508,7 @@ test('an authenticated reconnect cancels the host idle-exit timer', {
 });
 
 test('detached PTY host preserves a live session across client restarts', {
-  timeout: 20_000,
+  timeout: 30_000,
   skip: process.platform !== 'win32'
 }, async (t) => {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sideterm-pty-test-'));
@@ -494,7 +533,7 @@ test('detached PTY host preserves a live session across client restarts', {
     "process.stdin.setEncoding('utf8')",
     "process.stdout.write('HOST_READY\\n')",
     "setTimeout(() => process.stdout.write('WHILE_DETACHED\\n'), 500)",
-    "process.stdin.on('data', (data) => { if (data.includes('EXIT_WHILE_DETACHED')) { process.stdout.write('EXIT_SCHEDULED\\n'); setTimeout(() => { process.stdout.write('FINAL_DETACHED\\n'); process.exit(9); }, 200); } else { process.stdout.write('HOST_ECHO:' + data); } })",
+    "process.stdin.on('data', (data) => { if (data.includes('EXIT_BUFFER_BURST')) { process.stdout.write('EXIT_BURST_START\\n' + 'C'.repeat(350000) + 'EXIT_BUFFER_BURST_END\\n'); setTimeout(() => process.exit(13), 200); } else if (data.includes('EXIT_WHILE_DETACHED')) { process.stdout.write('EXIT_SCHEDULED\\n'); setTimeout(() => { process.stdout.write('FINAL_DETACHED\\n'); process.exit(9); }, 200); } else if (data.includes('BUFFER_BURST')) { process.stdout.write('B'.repeat(350000) + 'BUFFER_BURST_END\\n'); } else { process.stdout.write('HOST_ECHO:' + data); } })",
     'setInterval(() => {}, 1000)'
   ].join(';');
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'Path';
@@ -533,6 +572,21 @@ test('detached PTY host preserves a live session across client restarts', {
   handle.write(`hello${os.EOL}`);
   await echoed;
 
+  client.disconnect();
+  client = await connectWindowsPtyHost({
+    metadataPath, hostScript, executablePath: process.execPath, replayAcknowledgements: false
+  });
+  handle = await client.createSession(options);
+  assert.equal(handle.pid, originalPid);
+  const legacyBurst = waitForOutput(handle, /BUFFER_BURST_END/, 10_000);
+  handle.write(`BUFFER_BURST${os.EOL}`);
+  assert.match(await legacyBurst, /BUFFER_BURST_END/);
+
+  client.disconnect();
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  handle = await client.createSession(options);
+  assert.equal(handle.pid, originalPid);
+
   handle.pause();
   await new Promise((resolve) => setTimeout(resolve, 100));
   client.disconnect();
@@ -549,7 +603,10 @@ test('detached PTY host preserves a live session across client restarts', {
 
   const unacknowledged = waitForUnacknowledgedOutput(handle, /HOST_ECHO:checkpoint-me/);
   handle.write(`checkpoint-me${os.EOL}`);
-  await unacknowledged;
+  const checkpoint = await unacknowledged;
+  assert.match(checkpoint.output, /HOST_ECHO:checkpoint-me/);
+  assert.equal(checkpoint.hostGeneration, handle.generation);
+  assert.ok(checkpoint.outputRevision > 0);
   client.disconnect();
   client = null;
   handle = null;
@@ -559,9 +616,42 @@ test('detached PTY host preserves a live session across client restarts', {
   assert.equal(handle.pid, originalPid);
   assert.match(await waitForOutput(handle, /HOST_ECHO:checkpoint-me/), /HOST_ECHO:checkpoint-me/);
 
-  const exitScheduled = waitForOutput(handle, /EXIT_SCHEDULED/);
-  handle.write(`EXIT_WHILE_DETACHED${os.EOL}`);
-  await exitScheduled;
+  const alreadySaved = waitForUnacknowledgedOutput(handle, /HOST_ECHO:already-saved/);
+  handle.write(`already-saved${os.EOL}`);
+  const savedCheckpoint = await alreadySaved;
+  assert.equal(savedCheckpoint.hostGeneration, handle.generation);
+  assert.ok(savedCheckpoint.outputRevision > checkpoint.outputRevision);
+  client.disconnect();
+  client = null;
+  handle = null;
+
+  client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
+  handle = await client.createSession({
+    ...options,
+    checkpointGeneration: savedCheckpoint.hostGeneration,
+    checkpointRevision: savedCheckpoint.outputRevision
+  });
+  assert.equal(handle.pid, originalPid);
+  assert.equal(handle.pendingData, '');
+  const afterCheckpoint = waitForOutput(handle, /HOST_ECHO:after-checkpoint/);
+  handle.write(`after-checkpoint${os.EOL}`);
+  assert.match(await afterCheckpoint, /HOST_ECHO:after-checkpoint/);
+
+  const bufferAnchor = waitForUnacknowledgedOutput(handle, /HOST_ECHO:buffer-anchor/);
+  handle.write(`buffer-anchor${os.EOL}`);
+  const heldCheckpoint = await bufferAnchor;
+  assert.ok(heldCheckpoint.replayClaimToken);
+  handle.write(`BUFFER_BURST${os.EOL}`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const bufferedBurst = waitForOutput(handle, /BUFFER_BURST_END/, 10_000);
+  handle.acknowledgeReplay(heldCheckpoint.replayClaimToken);
+  assert.match(await bufferedBurst, /BUFFER_BURST_END/);
+
+  const exitBufferAnchor = waitForUnacknowledgedOutput(handle, /HOST_ECHO:exit-buffer-anchor/);
+  handle.write(`exit-buffer-anchor${os.EOL}`);
+  const heldExitCheckpoint = await exitBufferAnchor;
+  assert.ok(heldExitCheckpoint.replayClaimToken);
+  handle.write(`EXIT_BUFFER_BURST${os.EOL}`);
   client.disconnect();
   client = null;
   handle = null;
@@ -570,6 +660,18 @@ test('detached PTY host preserves a live session across client restarts', {
   client = await connectWindowsPtyHost({ metadataPath, hostScript, executablePath: process.execPath });
   handle = await client.createSession(options);
   assert.equal(handle.pid, originalPid);
-  assert.match(await waitForOutput(handle, /FINAL_DETACHED/), /FINAL_DETACHED/);
-  assert.deepEqual(await waitForExit(handle), { exitCode: 9, signal: 0 });
+  const exitReplay = await waitForOutput(handle, /EXIT_BUFFER_BURST_END/, 10_000);
+  const plainExitReplay = exitReplay.replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '');
+  const payloadStart = plainExitReplay.lastIndexOf('EXIT_BURST_START') + 'EXIT_BURST_START'.length;
+  const payloadEnd = plainExitReplay.indexOf('EXIT_BUFFER_BURST_END', payloadStart);
+  const exitPayload = plainExitReplay.slice(payloadStart, payloadEnd).replace(/\s/g, '');
+  assert.equal(payloadStart >= 'EXIT_BURST_START'.length, true);
+  assert.equal(payloadEnd > payloadStart, true);
+  assert.match(exitPayload, /^C+$/);
+  // ConPTY may redraw wrapped cells, but neither boundary nor any produced payload may be truncated.
+  assert.ok(exitPayload.length >= 350_000);
+  const exit = await waitForExit(handle);
+  assert.equal(exit.exitCode, 13);
+  assert.equal(exit.signal, 0);
+  assert.ok(exit.outputRevision > savedCheckpoint.outputRevision);
 });

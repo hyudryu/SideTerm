@@ -19,6 +19,7 @@ const sessions = new Map();
 const exitedSessions = new Map();
 const MAX_EXITED_SESSIONS = 20;
 const EXITED_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const HOST_BUFFER_HIGH_WATER_CHARACTERS = 250_000;
 let idleTimer = null;
 
 function send(socket, payload) {
@@ -44,11 +45,44 @@ function validExecutable(executable) {
 }
 
 function leaseSessionReplay(session) {
-  const replay = `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000);
-  const token = crypto.randomUUID();
+  if (session.replayLease) return session.replayLease;
+  const replay = session.detachedOutput;
+  if (!replay) return null;
   session.detachedOutput = '';
-  session.replayLease = { token, data: replay };
+  session.replayLease = {
+    token: crypto.randomUUID(),
+    data: replay,
+    outputRevision: session.outputRevision
+  };
   return session.replayLease;
+}
+
+function validCheckpointRevision(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function applySessionCheckpoint(session, generation, revision) {
+  if (String(generation || '') !== session.generation || !validCheckpointRevision(revision)) return;
+  const checkpoint = Math.min(revision, session.outputRevision);
+  if (checkpoint <= session.checkpointRevision) return;
+  session.checkpointRevision = checkpoint;
+  if (session.replayLease && checkpoint >= session.replayLease.outputRevision) session.replayLease = null;
+  if (checkpoint >= session.outputRevision) session.detachedOutput = '';
+}
+
+function updateBufferedOutputBackpressure(session) {
+  const shouldPause = session.detachedOutput.length >= HOST_BUFFER_HIGH_WATER_CHARACTERS;
+  if (shouldPause === session.bufferPaused) return;
+  session.bufferPaused = shouldPause;
+  try {
+    if (shouldPause) {
+      if (session.pausedClients.size === 0) session.processHandle.pause();
+    } else if (session.pausedClients.size === 0) {
+      session.processHandle.resume();
+    }
+  } catch {
+    // The process may already be exiting.
+  }
 }
 
 function deliverAttachedReplay(id, session) {
@@ -57,11 +91,13 @@ function deliverAttachedReplay(id, session) {
     .filter((socket) => socket.sideTermReplayAcknowledgements);
   if (recipients.length === 0) return false;
   const replayLease = leaseSessionReplay(session);
+  updateBufferedOutputBackpressure(session);
   for (const socket of recipients) {
     send(socket, {
       type: 'replay', id, generation: session.generation,
       data: Buffer.from(replayLease.data, 'utf8').toString('base64'),
-      replayClaimToken: replayLease.token
+      replayClaimToken: replayLease.token,
+      outputRevision: replayLease.outputRevision
     });
   }
   return true;
@@ -69,10 +105,12 @@ function deliverAttachedReplay(id, session) {
 
 function sessionResult(id, session, reattached, socket) {
   if (!socket?.sideTermReplayAcknowledgements) {
-    const replay = `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000);
+    const replay = `${session.replayLease?.data || ''}${session.detachedOutput || ''}`;
     session.replayLease = null;
     session.detachedOutput = '';
+    session.checkpointRevision = session.outputRevision;
     session.attachedClients.add(socket);
+    updateBufferedOutputBackpressure(session);
     return {
       id,
       pid: session.processHandle.pid,
@@ -84,6 +122,8 @@ function sessionResult(id, session, reattached, socket) {
     };
   }
   const replayLease = leaseSessionReplay(session);
+  session.attachedClients.add(socket);
+  updateBufferedOutputBackpressure(session);
   return {
     id,
     pid: session.processHandle.pid,
@@ -91,8 +131,9 @@ function sessionResult(id, session, reattached, socket) {
     shell: session.shell,
     generation: session.generation,
     reattached: Boolean(reattached),
-    replay: replayLease.data ? Buffer.from(replayLease.data, 'utf8').toString('base64') : '',
-    replayClaimToken: replayLease.token
+    replay: replayLease?.data ? Buffer.from(replayLease.data, 'utf8').toString('base64') : '',
+    replayClaimToken: replayLease?.token || '',
+    outputRevision: replayLease?.outputRevision || session.checkpointRevision
   };
 }
 
@@ -113,7 +154,11 @@ function retainExitedSession(id, session, exitCode, signal) {
     cwd: session.cwd,
     shell: session.shell,
     generation: session.generation,
-    replay: `${session.replayLease?.data || ''}${session.detachedOutput || ''}`.slice(-300_000),
+    replayLeaseData: session.replayLease?.data || '',
+    replayLeaseRevision: session.replayLease?.outputRevision || session.checkpointRevision,
+    detachedOutput: session.detachedOutput,
+    outputRevision: session.outputRevision,
+    checkpointRevision: session.checkpointRevision,
     exitCode,
     signal,
     exitedAt: Date.now(),
@@ -122,7 +167,26 @@ function retainExitedSession(id, session, exitCode, signal) {
   pruneExitedSessions();
 }
 
+function applyExitedCheckpoint(exited, generation, revision) {
+  if (String(generation || '') !== exited.generation || !validCheckpointRevision(revision)) return;
+  exited.checkpointRevision = Math.max(
+    exited.checkpointRevision,
+    Math.min(revision, exited.outputRevision)
+  );
+}
+
+function exitedReplay(exited) {
+  const leased = exited.checkpointRevision < exited.replayLeaseRevision
+    ? exited.replayLeaseData
+    : '';
+  const detached = exited.checkpointRevision < exited.outputRevision
+    ? exited.detachedOutput
+    : '';
+  return `${leased}${detached}`;
+}
+
 function exitedSessionResult(exited) {
+  const replay = exitedReplay(exited);
   return {
     id: exited.id,
     pid: exited.pid,
@@ -130,7 +194,8 @@ function exitedSessionResult(exited) {
     shell: exited.shell,
     generation: exited.generation,
     reattached: true,
-    replay: exited.replay ? Buffer.from(exited.replay, 'utf8').toString('base64') : '',
+    replay: replay ? Buffer.from(replay, 'utf8').toString('base64') : '',
+    outputRevision: exited.outputRevision,
     exited: true,
     exitCode: exited.exitCode,
     signal: exited.signal,
@@ -145,6 +210,7 @@ function createSession(input, socket) {
   pruneExitedSessions();
   const existing = sessions.get(id);
   if (existing) {
+    applySessionCheckpoint(existing, input.checkpointGeneration, input.checkpointRevision);
     try {
       existing.processHandle.resize(dimensions.cols, dimensions.rows);
     } catch {
@@ -154,7 +220,10 @@ function createSession(input, socket) {
     return sessionResult(id, existing, true, socket);
   }
   const exited = exitedSessions.get(id);
-  if (exited) return exitedSessionResult(exited);
+  if (exited) {
+    applyExitedCheckpoint(exited, input.checkpointGeneration, input.checkpointRevision);
+    return exitedSessionResult(exited);
+  }
 
   const executable = String(input.executable || '');
   const cwd = String(input.cwd || '');
@@ -186,21 +255,33 @@ function createSession(input, socket) {
     generation: crypto.randomUUID(),
     detachedOutput: '',
     replayLease: null,
+    outputRevision: 0,
+    checkpointRevision: 0,
+    bufferPaused: false,
     attachedClients: new Set(),
     pausedClients: new Set()
   };
   sessions.set(id, session);
   processHandle.onData((data) => {
-    session.detachedOutput = `${session.detachedOutput}${data}`.slice(-300_000);
+    session.outputRevision += 1;
+    session.detachedOutput = `${session.detachedOutput}${data}`;
+    updateBufferedOutputBackpressure(session);
+    let deliveredToLegacyClient = false;
     for (const socket of session.attachedClients) {
       if (!socket.sideTermReplayAcknowledgements) {
         send(socket, {
           type: 'data', id, generation: session.generation,
           data: Buffer.from(data, 'utf8').toString('base64')
         });
+        deliveredToLegacyClient = true;
       }
     }
-    deliverAttachedReplay(id, session);
+    const deliveredReplay = deliverAttachedReplay(id, session);
+    if (deliveredToLegacyClient && !deliveredReplay && !session.replayLease) {
+      session.detachedOutput = '';
+      session.checkpointRevision = session.outputRevision;
+    }
+    updateBufferedOutputBackpressure(session);
   });
   processHandle.onExit(({ exitCode, signal }) => {
     if (sessions.get(id) !== session) return;
@@ -216,6 +297,7 @@ function createSession(input, socket) {
         replay: socket.sideTermReplayAcknowledgements && tail
           ? Buffer.from(tail, 'utf8').toString('base64')
           : '',
+        outputRevision: session.outputRevision,
         exitCode: normalizedExitCode, signal: normalizedSignal,
         exitClaimToken: exited.claimToken
       });
@@ -236,14 +318,34 @@ function handleCommand(socket, message) {
     }
     return;
   }
+  if (message.action === 'checkpoint') {
+    const generation = String(message.generation || '');
+    const exited = exitedSessions.get(id);
+    if (exited?.generation === generation) {
+      applyExitedCheckpoint(exited, generation, message.outputRevision);
+      return;
+    }
+    const checkpointedSession = sessions.get(id);
+    if (checkpointedSession?.generation !== generation) return;
+    applySessionCheckpoint(checkpointedSession, generation, message.outputRevision);
+    checkpointedSession.attachedClients.add(socket);
+    deliverAttachedReplay(id, checkpointedSession);
+    updateBufferedOutputBackpressure(checkpointedSession);
+    return;
+  }
   const session = sessions.get(id);
   if (!session) return;
   if (message.generation && message.generation !== session.generation) return;
   if (message.action === 'ack-replay') {
     if (session.replayLease?.token !== String(message.claimToken || '')) return;
+    session.checkpointRevision = Math.max(
+      session.checkpointRevision,
+      session.replayLease.outputRevision
+    );
     session.replayLease = null;
     session.attachedClients.add(socket);
     deliverAttachedReplay(id, session);
+    updateBufferedOutputBackpressure(session);
     return;
   }
   if (message.action === 'write') {
@@ -264,7 +366,7 @@ function handleCommand(socket, message) {
     session.pausedClients.add(socket);
   } else if (message.action === 'resume') {
     const released = session.pausedClients.delete(socket);
-    if (released && session.pausedClients.size === 0) session.processHandle.resume();
+    if (released && session.pausedClients.size === 0 && !session.bufferPaused) session.processHandle.resume();
   }
 }
 
@@ -331,7 +433,7 @@ function shutdownIfStillIdle() {
 function releasePausedSessions(socket) {
   for (const session of sessions.values()) {
     session.attachedClients.delete(socket);
-    if (!session.pausedClients.delete(socket) || session.pausedClients.size > 0) continue;
+    if (!session.pausedClients.delete(socket) || session.pausedClients.size > 0 || session.bufferPaused) continue;
     try {
       session.processHandle.resume();
     } catch {

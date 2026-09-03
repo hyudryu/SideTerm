@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  createReplayAwareWindowsVtOutputNormalizer,
   createWindowsVtOutputNormalizer,
   repairWindowsVtOutput,
   shouldRepairWindowsVtOutput
@@ -137,6 +138,23 @@ test('flush preserves a pending sentinel prefix', () => {
   assert.equal(normalizer.push(`wait${ARROW}[?`), 'wait');
   assert.equal(normalizer.flush(), `${ARROW}[?`);
   timers.runAll();
+});
+
+test('replay metadata remains atomic while a split sentinel is pending', () => {
+  const timers = fakeTimers();
+  const output = [];
+  const normalizer = createReplayAwareWindowsVtOutputNormalizer({
+    enabled: true,
+    onOutput: (data, replay) => output.push({ data, replay }),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer
+  });
+  const replay = { claimToken: 'lease', hostGeneration: 'generation', outputRevision: 12 };
+
+  normalizer.push(`safe-prefix${ARROW}[?`, replay);
+  assert.deepEqual(output, []);
+  timers.runAll();
+  assert.deepEqual(output, [{ data: `safe-prefix${ARROW}[?`, replay }]);
 });
 
 test('dispose cancels delayed output and drops pending data', () => {
