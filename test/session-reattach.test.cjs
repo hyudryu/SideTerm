@@ -181,8 +181,8 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}/);
   assert.match(renderer, /persistWorkspaceCopies\(durableWorkspace\.serialized, \{[\s\S]*?required,[\s\S]*?return durableSave;/);
   assert.match(renderer, /const enqueueWorkspacePersistence = createSerializedAsyncQueue\(\);[\s\S]*?function persistWorkspaceNow\(options = \{\}\)[\s\S]*?enqueueWorkspacePersistence\(\(\) => persistWorkspaceSnapshot\(options\)\)/);
-  assert.match(renderer, /function acknowledgeTerminalDataAfterCheckpoint\(id, hostGeneration, outputRevision, acknowledge\) \{\s*pendingTerminalCheckpointAcknowledgements\.push\(\{[\s\S]*?id, hostGeneration: String\(hostGeneration \|\| ''\), outputRevision, acknowledge/);
-  assert.match(renderer, /const acknowledgementGroups = groupTerminalCheckpointAcknowledgements\(acknowledgements\);[\s\S]*?for \(const \{ id, acknowledgements: sessionAcknowledgements \} of acknowledgementGroups\)[\s\S]*?protectedCheckpointSessionIds: new Set\(\[id\]\)[\s\S]*?unsatisfied\.push\(\.\.\.sessionAcknowledgements\)/);
+  assert.match(renderer, /function acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\) \{\s*if \(session\.checkpointRetired \|\| sessions\.get\(session\.id\) !== session\) return;\s*pendingTerminalCheckpointAcknowledgements\.push\(\{[\s\S]*?id: session\.id, session,[\s\S]*?hostGeneration: String\(hostGeneration \|\| ''\), outputRevision, acknowledge/);
+  assert.match(renderer, /const acknowledgementGroups = groupTerminalCheckpointAcknowledgements\([\s\S]*?activeTerminalCheckpointAcknowledgements\(acknowledgements, sessions\)[\s\S]*?for \(const \{ id, acknowledgements: sessionAcknowledgements \} of acknowledgementGroups\)[\s\S]*?protectedCheckpointSessionIds: new Set\(\[id\]\)[\s\S]*?activeTerminalCheckpointAcknowledgements\(activeAcknowledgements, sessions\)/);
   assert.match(renderer, /finally \{\s*restoringWorkspace = false;\s*resolveWorkspaceRestore\(\);\s*\}[\s\S]*?if \(pendingTerminalCheckpointAcknowledgements\.length > 0\) \{\s*await flushTerminalCheckpointAcknowledgements\(\{ forceSave: true \}\);/);
   assert.match(renderer, /cursorBlink: false,\s*disableStdin: true,/);
   assert.match(renderer, /const serializeAddon = new SerializeAddon\(\);[\s\S]*?terminal\.loadAddon\(serializeAddon\)/);
@@ -194,12 +194,14 @@ test('renderer durably saves a new session id before asking the PTY host to spaw
   assert.match(renderer, /checkpointGeneration: session\.hostGeneration,\s*checkpointRevision: session\.durableOutputRevision/);
   assert.match(renderer, /checkpointRevision: session\.durableOutputRevision,\s*terminalState: restoredTerminalState/);
   assert.match(renderer, /async function closeSession\(id, \{ ensureSession = true \} = \{\}\)[\s\S]*?await api\.close\(id\)[\s\S]*?sessions\.delete\(id\)/);
+  assert.match(renderer, /session\.closing = true;\s*try \{\s*await api\.close\(id\);[\s\S]*?session\.checkpointRetired = true;[\s\S]*?pendingTerminalCheckpointAcknowledgements\.splice/);
   assert.match(main, /await session\.processHandle\.kill\(\);\s*\} catch \(error\) \{\s*if \(session\.windowsHosted\) throw error;/);
+  assert.match(main, /if \(exitedSession\?\.exitClaimToken[\s\S]*?await exitedSession\.processHandle\.kill\(\);[\s\S]*?desktopExitedSessions\.delete\(id\)/);
   assert.match(renderer, /function serializedTerminalCheckpoint\(session\) \{\s*if \(!session\.hostGeneration\)[\s\S]*?state: '', mobileState: ''/);
   assert.match(renderer, /async function deleteGroup\(groupId\)[\s\S]*?await closeSession\(sessionId, \{ ensureSession: false \}\)[\s\S]*?if \(!allClosed\) return;[\s\S]*?groups = groups\.filter/);
   assert.match(main, /terminalSessionDrainActive = true;[\s\S]*?await Promise\.allSettled\(\[\.\.\.pendingTerminalCloseOperations\]\)[\s\S]*?detachAllSessionsPromise = null/);
   assert.match(main, /ipcMain\.handle\('terminal:close'[\s\S]*?if \(terminalSessionDrainActive\) throw new Error/);
-  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?session\.durableOutputRevision = Math\.max\(session\.durableOutputRevision, outputRevision\);[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(id, hostGeneration, outputRevision, acknowledge\)/);
+  assert.match(renderer, /session\.terminal\.write\(data, \(\) => \{[\s\S]*?session\.durableOutputRevision = Math\.max\(session\.durableOutputRevision, outputRevision\);[\s\S]*?acknowledgeTerminalDataAfterCheckpoint\(session, hostGeneration, outputRevision, acknowledge\)/);
   assert.match(renderer, /terminal\.onData\(\(data\) => \{\s*if \(session\.exited \|\| session\.connecting\) return;/);
   assert.match(renderer, /await api\.markRendererReady\(id\);[\s\S]*?if \(!details\.exited\) \{\s*session\.connecting = false;\s*terminal\.options\.disableStdin = false;\s*api\.resize\(id, terminal\.cols, terminal\.rows\);/);
 });

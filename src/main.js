@@ -20,6 +20,7 @@ import {
 } from './keyboard.js';
 import {
   WORKSPACE_VERSION,
+  activeTerminalCheckpointAcknowledgements,
   applyTerminalCheckpointBackups,
   createSerializedAsyncQueue,
   createGroup,
@@ -1345,23 +1346,28 @@ function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
   terminalCheckpointPromise = (async () => {
     try {
       const unsatisfied = [];
-      const acknowledgementGroups = groupTerminalCheckpointAcknowledgements(acknowledgements);
+      const acknowledgementGroups = groupTerminalCheckpointAcknowledgements(
+        activeTerminalCheckpointAcknowledgements(acknowledgements, sessions)
+      );
       if (acknowledgementGroups.length === 0) {
         await persistWorkspaceNow({ required: true });
       }
       for (const { id, acknowledgements: sessionAcknowledgements } of acknowledgementGroups) {
+        const activeAcknowledgements = activeTerminalCheckpointAcknowledgements(
+          sessionAcknowledgements, sessions
+        );
+        if (activeAcknowledgements.length === 0) continue;
         try {
           await persistWorkspaceNow({
             required: true,
             protectedCheckpointSessionIds: new Set([id])
           });
         } catch {
-          unsatisfied.push(...sessionAcknowledgements);
+          unsatisfied.push(...activeTerminalCheckpointAcknowledgements(activeAcknowledgements, sessions));
           continue;
         }
-        for (const entry of sessionAcknowledgements) {
+        for (const entry of activeTerminalCheckpointAcknowledgements(activeAcknowledgements, sessions)) {
           const session = sessions.get(entry.id);
-          if (!session) continue;
           if (persistedCheckpointCoversDelivery(session, entry)) {
             entry.acknowledge();
           } else {
@@ -1374,7 +1380,9 @@ function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
       if (checkpointSucceeded) terminalCheckpointRetryDelayMs = 1_000;
       return checkpointSucceeded;
     } catch {
-      pendingTerminalCheckpointAcknowledgements.unshift(...acknowledgements);
+      pendingTerminalCheckpointAcknowledgements.unshift(
+        ...activeTerminalCheckpointAcknowledgements(acknowledgements, sessions)
+      );
       return false;
     } finally {
       terminalCheckpointPromise = null;
@@ -1388,9 +1396,11 @@ function flushTerminalCheckpointAcknowledgements({ forceSave = false } = {}) {
   return terminalCheckpointPromise;
 }
 
-function acknowledgeTerminalDataAfterCheckpoint(id, hostGeneration, outputRevision, acknowledge) {
+function acknowledgeTerminalDataAfterCheckpoint(session, hostGeneration, outputRevision, acknowledge) {
+  if (session.checkpointRetired || sessions.get(session.id) !== session) return;
   pendingTerminalCheckpointAcknowledgements.push({
-    id, hostGeneration: String(hostGeneration || ''), outputRevision, acknowledge
+    id: session.id, session,
+    hostGeneration: String(hostGeneration || ''), outputRevision, acknowledge
   });
   if (!restoringWorkspace) void flushTerminalCheckpointAcknowledgements();
 }
@@ -3061,6 +3071,7 @@ async function addSession(cwd, options = {}) {
     pane,
     item: null,
     exited: false,
+    checkpointRetired: false,
     notified: Boolean(options.notified),
     inputRequired: Boolean(options.inputRequired),
     attentionCycleId: String(options.attentionCycleId || (options.notified ? `restored:${id}` : '')).slice(0, 200),
@@ -3258,15 +3269,23 @@ async function closeSession(id, { ensureSession = true } = {}) {
   if (!session || session.closing) return false;
   const ids = orderedSessionIds();
   const index = ids.indexOf(id);
-  if (!session.exited) {
-    session.closing = true;
-    try {
-      await api.close(id);
-    } catch (error) {
-      session.closing = false;
-      showToast(`Could not close the terminal: ${error.message}`);
-      return false;
+  session.closing = true;
+  try {
+    await api.close(id);
+  } catch (error) {
+    session.closing = false;
+    showToast(`Could not close the terminal: ${error.message}`);
+    return false;
+  }
+  session.checkpointRetired = true;
+  for (let pendingIndex = pendingTerminalCheckpointAcknowledgements.length - 1; pendingIndex >= 0; pendingIndex -= 1) {
+    if (pendingTerminalCheckpointAcknowledgements[pendingIndex].session === session) {
+      pendingTerminalCheckpointAcknowledgements.splice(pendingIndex, 1);
     }
+  }
+  if (pendingTerminalCheckpointAcknowledgements.length === 0) {
+    window.clearTimeout(terminalCheckpointRetryTimer);
+    terminalCheckpointRetryTimer = null;
   }
   session.exited = true;
   window.clearTimeout(session.busyTimer);
@@ -3504,7 +3523,7 @@ api.onData(({
       exitClaimToken, exitDeliveryToken
     );
     if (replayClaimToken || exitClaimToken) {
-      acknowledgeTerminalDataAfterCheckpoint(id, hostGeneration, outputRevision, acknowledge);
+      acknowledgeTerminalDataAfterCheckpoint(session, hostGeneration, outputRevision, acknowledge);
     } else {
       acknowledge();
     }

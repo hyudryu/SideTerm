@@ -146,6 +146,14 @@ export function groupTerminalCheckpointAcknowledgements(entries) {
   return [...grouped].map(([id, acknowledgements]) => ({ id, acknowledgements }));
 }
 
+export function activeTerminalCheckpointAcknowledgements(entries, sessions) {
+  return entries.filter((entry) => (
+    entry?.session
+    && !entry.session.checkpointRetired
+    && sessions.get(entry.id) === entry.session
+  ));
+}
+
 export function createSerializedAsyncQueue() {
   let tail = Promise.resolve();
   return (task) => {

@@ -4036,7 +4036,11 @@ async function closeSession(id) {
     return closeSession(id);
   }
   const exitedSession = desktopExitedSessions.get(id);
-  exitedSession?.processHandle.acknowledgeExitedSession?.(exitedSession.exitClaimToken);
+  if (exitedSession?.exitClaimToken && typeof exitedSession.processHandle?.kill === 'function') {
+    await exitedSession.processHandle.kill();
+  } else {
+    exitedSession?.processHandle?.acknowledgeExitedSession?.(exitedSession.exitClaimToken);
+  }
   desktopExitedSessions.delete(id);
   const session = sessions.get(id);
   const removedExitedSession = mobileExitedSessions.delete(id);

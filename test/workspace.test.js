@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_GROUP_COLOR,
   WORKSPACE_VERSION,
+  activeTerminalCheckpointAcknowledgements,
   applyTerminalCheckpointBackups,
   createSerializedAsyncQueue,
   createGroup,
@@ -60,6 +61,24 @@ test('terminal checkpoint acknowledgements are batched per session', () => {
     { id: 'first', acknowledgements: [first, laterFirst] },
     { id: 'second', acknowledgements: [second] }
   ]);
+});
+
+test('terminal checkpoint acknowledgements retire by session identity', () => {
+  const oldSession = { id: 'shared', checkpointRetired: false };
+  const replacementSession = { id: 'shared', checkpointRetired: false };
+  const sessions = new Map([['shared', oldSession]]);
+  const oldDelivery = { id: 'shared', session: oldSession, outputRevision: 2 };
+  const replacementDelivery = { id: 'shared', session: replacementSession, outputRevision: 1 };
+
+  assert.deepEqual(activeTerminalCheckpointAcknowledgements([oldDelivery], sessions), [oldDelivery]);
+  oldSession.checkpointRetired = true;
+  assert.deepEqual(activeTerminalCheckpointAcknowledgements([oldDelivery], sessions), []);
+
+  sessions.set('shared', replacementSession);
+  assert.deepEqual(
+    activeTerminalCheckpointAcknowledgements([oldDelivery, replacementDelivery], sessions),
+    [replacementDelivery]
+  );
 });
 
 test('workspace persistence is serialized before a later snapshot can replace it', async () => {
